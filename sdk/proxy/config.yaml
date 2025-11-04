@@ -1,0 +1,61 @@
+# RLLM LiteLLM Proxy Configuration
+
+# Server settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  log_level: "info"
+
+# Tracing settings
+tracing:
+  enabled: true
+  log_dir: "./logs/llm_traces"
+  enable_logprobs: true  # Request logprobs by default (may incur costs)
+  enable_prompt_tokens: true
+  logprobs_count: 5  # Number of top logprobs to return
+
+# LiteLLM settings
+litellm:
+  drop_params: false  # Don't drop unknown parameters
+  set_verbose: false  # Disable verbose logging
+
+  # Model routing configuration
+  # Format: model_name -> provider/model_name
+  model_list:
+    - model_name: gpt-4
+      litellm_params:
+        model: openai/gpt-4
+        api_key: ${OPENAI_API_KEY}
+
+    - model_name: gpt-3.5-turbo
+      litellm_params:
+        model: openai/gpt-3.5-turbo
+        api_key: ${OPENAI_API_KEY}
+
+    - model_name: claude-3-opus
+      litellm_params:
+        model: anthropic/claude-3-opus-20240229
+        api_key: ${ANTHROPIC_API_KEY}
+
+    - model_name: claude-3-sonnet
+      litellm_params:
+        model: anthropic/claude-3-sonnet-20240229
+        api_key: ${ANTHROPIC_API_KEY}
+
+# Session header configuration
+headers:
+  session_id: "X-RLLM-Session"  # Header for session/episode ID
+  metadata: "X-RLLM-Metadata"    # Header for JSON metadata
+  request_id: "X-RLLM-Request-ID"  # Header for request tracking
+
+# Security settings
+security:
+  # API key validation (optional)
+  require_api_key: false
+  api_keys: []
+
+  # Rate limiting (optional)
+  rate_limit:
+    enabled: false
+    requests_per_minute: 60

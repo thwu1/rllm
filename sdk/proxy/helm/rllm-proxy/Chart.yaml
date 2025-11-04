@@ -1,0 +1,15 @@
+apiVersion: v2
+name: rllm-proxy
+description: RLLM LiteLLM Proxy with episodic tracing
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - rllm
+  - litellm
+  - llm
+  - proxy
+  - tracing
+maintainers:
+  - name: RLLM Team
+    email: support@together.ai

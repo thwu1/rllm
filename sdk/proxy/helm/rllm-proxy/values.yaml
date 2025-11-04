@@ -1,0 +1,142 @@
+# Default values for rllm-proxy
+
+replicaCount: 2
+
+image:
+  repository: rllm/proxy
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: rllm-proxy.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: rllm-proxy-tls
+  #    hosts:
+  #      - rllm-proxy.example.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Environment variables
+env:
+  # LLM Provider API Keys (set via --set or secrets)
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+  COHERE_API_KEY: ""
+  GOOGLE_API_KEY: ""
+
+  # Proxy Configuration
+  RLLM_ENABLE_LOGPROBS: "true"
+  RLLM_ENABLE_PROMPT_TOKENS: "true"
+  RLLM_LOG_LEVEL: "info"
+
+# Configuration
+config:
+  # Path to mount config.yaml
+  mountPath: /app/config.yaml
+
+  # Config content (inline)
+  data: |
+    server:
+      host: "0.0.0.0"
+      port: 8000
+      log_level: "info"
+
+    tracing:
+      enabled: true
+      log_dir: "/app/logs"
+      enable_logprobs: true
+      enable_prompt_tokens: true
+      logprobs_count: 5
+
+    litellm:
+      drop_params: false
+      set_verbose: false
+
+# Persistent storage for logs
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /app/logs
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
+
+# Redis (optional, for caching)
+redis:
+  enabled: false
+  host: rllm-redis
+  port: 6379
