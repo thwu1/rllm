@@ -4,4 +4,5 @@
 	branch = main
 [submodule "episodic"]
 	path = episodic
-	url = file:///home/tianhao/rllm/episodic_tmp
+	url = git@github.com:agentica-org/episodic.git
+	branch = main
