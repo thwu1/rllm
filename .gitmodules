@@ -2,3 +2,6 @@
 	path = verl
 	url = https://github.com/volcengine/verl.git
 	branch = main
+[submodule "episodic"]
+	path = episodic
+	url = file:///home/tianhao/rllm/episodic_tmp
