@@ -1,6 +1,6 @@
 """Proxy integration helpers for the rLLM SDK."""
 
-from .litellm_callbacks import SamplingParametersCallback
+from .litellm_callbacks import SamplingParametersCallback, TracingCallback
 from .metadata_slug import (
     assemble_routing_metadata,
     build_proxied_base_url,
@@ -18,4 +18,5 @@ __all__ = [
     "extract_metadata_from_path",
     "MetadataRoutingMiddleware",
     "SamplingParametersCallback",
+    "TracingCallback",
 ]
