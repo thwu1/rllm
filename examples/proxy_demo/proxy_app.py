@@ -32,7 +32,7 @@ from litellm.proxy.proxy_server import app as litellm_app
 from litellm.proxy.proxy_server import initialize
 
 from episodic import ContextStore, LLMTracer
-from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback
+from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback, TracingCallback
 from rllm.sdk.proxy.middleware import MetadataRoutingMiddleware
 
 # Configuration via environment variables for convenience
@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
     """Initialize LiteLLM proxy on startup."""
     litellm.drop_params = True
     litellm.callbacks.append(SamplingParametersCallback())
+    litellm.callbacks.append(TracingCallback(tracer))
     await initialize(config=default_config, telemetry=False)
     yield
 
@@ -57,8 +58,8 @@ async def lifespan(app: FastAPI):
 # Set up our FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
-# Attach the rLLM middleware so every request is decoded and logged
-app.add_middleware(MetadataRoutingMiddleware, tracer=tracer)
+# Attach the rLLM middleware to extract and inject metadata
+app.add_middleware(MetadataRoutingMiddleware)
 
 # Mount LiteLLM at root after middleware is added
 app.mount("/", litellm_app)
