@@ -1,12 +1,14 @@
-"""RLLM SDK for automatic LLM trace collection and RL training."""
+"""
+Compatibility shim for the legacy top-level `sdk` package.
 
-from .client import RLLMClient
-from .context import get_current_metadata, get_current_session
-from .session import SessionContext
+The SDK implementation now lives under `rllm.sdk`. This module forwards imports
+so existing code that still does `import sdk` keeps working.
+"""
 
-__all__ = [
-    "RLLMClient",
-    "get_current_session",
-    "get_current_metadata",
-    "SessionContext",
-]
+import sys
+from importlib import import_module
+
+_sdk_mod = import_module("rllm.sdk")
+
+# Replace this module with the real implementation to preserve attribute access.
+sys.modules[__name__] = _sdk_mod
