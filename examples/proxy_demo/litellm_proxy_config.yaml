@@ -1,0 +1,20 @@
+# Minimal LiteLLM proxy config for OpenAI models
+# Usage:
+#   export OPENAI_API_KEY="sk-your-openai-key"
+#   export LITELLM_CONFIG="examples/proxy_demo/litellm_proxy_config.yaml"
+#   uvicorn examples.proxy_demo.proxy_app:app --port 4000
+
+# LiteLLM settings
+litellm_settings:
+  drop_params: true
+
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      # Upstream provider/model identifier. For OpenAI, just the model name.
+      model: gpt-4o-mini
+      drop_params: true
+
+# You can add more models/providers per LiteLLM docs, e.g. Anthropic, Azure, vLLM.
+# For OpenAI, make sure OPENAI_API_KEY is set in your environment.
+

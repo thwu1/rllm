@@ -15,19 +15,20 @@ This document sketches how to move tracing logic out of the Python SDK and into 
 
 2. **Tracing Middleware**
    - Implement a LiteLLM proxy middleware (FastAPI dependency) that:
-     - Extracts session/metadata headers injected by the SDK (e.g., `X-RLLM-Session`, `X-RLLM-Metadata`).
+     - Parses the metadata slug embedded in the routed path (see Metadata Slug Contract) and rewrites the ASGI scope back to the vanilla OpenAI path.
+     - Stashes the decoded metadata dict on `request.state.rllm_metadata` and injects a monotonic `x-sequence-id` header so downstream callbacks can attribute every request without assuming fixed metadata keys.
      - Adds sampling flags to the outgoing request (`logprobs`, `top_logprobs`, `return_prompt`, `return_token_ids`—names vary by provider, so map accordingly).
      - Measures latency across the upstream call.
      - After receiving the response, collects:
        - Prompt text (from request) and completion content.
        - Token IDs and logprobs when provided.
        - Usage statistics.
-     - Calls `LLMTracer.log_llm_call(...)` with the assembled payload.
+     - Calls `LLMTracer.log_llm_call(...)` directly with the assembled payload plus the metadata dict from `request.state`.
 
 3. **Context Propagation**
    - SDK updates:
-     - Inject session metadata into HTTP headers so the proxy can retrieve them. (Re-use the existing episodic context helpers.)
-     - Default the OpenAI base URL to `http://<proxy-host>:<port>/v1`.
+     - Resolve the metadata slug lazily on every request: the wrapped OpenAI client reads the current session contextvars, serializes them, and issues the call against `http://<proxy-host>:<port>/meta/{slug}/v1`. A single client instance can therefore serve multiple sessions without re-instantiation.
+     - Fall back to the plain proxy URL (`…/v1`) when no session is active so production traffic can route through the proxy without attribution.
 
 4. **Testing Strategy**
    - Unit-test middleware logic with mocked LiteLLM request/response objects.
@@ -38,19 +39,21 @@ This document sketches how to move tracing logic out of the Python SDK and into 
 1. **Prototype Middleware**
    - Create `sdk/proxy/middleware.py` with FastAPI dependencies for before/after hooks.
    - Use LiteLLM’s documented hook interfaces: `proxy.add_middleware()` or the `callbacks` setting in `litellm.conf`.
-2. **Session Header Contract**
-   - Define headers: `X-RLLM-Session`, `X-RLLM-Metadata` (JSON).
-   - Update SDK client to set these headers when a session is active.
-3. **Telemetry Normalisation**
-   - Map provider-specific telemetry objects (OpenAI: `choices[0].logprobs.content`, vLLM: `output_token_ids`, etc.) into a consistent format for the tracer.
+2. **Metadata Slug Contract**
+   - Define a metadata serializer that accepts the full session context dict (e.g., `session_id`, `split`, `job`, arbitrary key/value pairs) and produces a compact, URL-safe slug (base64url-encoded JSON with a version prefix for forward compatibility).
+   - Update SDK helpers (`get_chat_client`, `@entrypoint`) to construct provider clients using the rewritten base URL derived from session contextvars via the serializer.
+   - Ensure wrapped OpenAI clients recompute the base URL before each request so a single client instance can serve different sessions/metadata scopes without recreation.
+3. **Middleware Logging & Telemetry**
+   - Extend the proxy middleware to capture request/response payloads, normalize token usage fields, and submit them to `LLMTracer.log_llm_call(...)` using the decoded metadata dict.
+   - Treat custom LiteLLM callbacks as optional extensions (e.g., to push metrics elsewhere) rather than the primary logging path.
 4. **Tracer Integration**
-   - Inject `LLMTracer` via dependency (FastAPI `Depends`) or initialize inside middleware with access to the episodic context client.
+   - Wire the middleware to receive an `LLMTracer` instance (FastAPI dependency or app state) and ensure logging happens asynchronously without blocking the proxy event loop.
 5. **Configuration & Deployment**
    - Provide Helm/docker-compose snippets showing proxy + tracer store deployment.
    - Document environment variables for credentials and routing.
 
-## Open Questions
-- Some providers charge for logprobs token; decide whether to enable by default or gate via config.
-- Streaming support: decide whether to buffer full responses before logging or emit incremental trace events.
-- Authentication passthrough: ensure user API keys are forwarded securely if the proxy is shared across teams.
-
+## Design Notes & Open Questions
+- **Metadata slug versioning**: encode slugs as `rllm1:<base64url(json)>` so the proxy can validate and evolve the schema without breaking older clients.
+- **Logprob sampling cost**: make `return_logprobs` opt-in via config/metadata so high-cost providers (Anthropic, Gemini) can be excluded without code changes. Consider per-model defaults plus per-request overrides in the metadata slug.
+- **Streaming handling**: accumulate streamed chunks in `request.state` (content, logprobs, token ids) and flush a single `LLMTracer.log_llm_call(...)` when LiteLLM yields the final chunk or errors, to keep tracer payloads consistent with non-streaming calls.
+- **Authentication passthrough**: ensure user API keys are forwarded securely if the proxy is shared across teams.

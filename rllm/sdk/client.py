@@ -8,7 +8,13 @@ from typing import Any
 
 from openai import AsyncOpenAI, OpenAI
 
-from .chat import OpenAIChatClient, SimpleTrackedAsyncChatClient, SimpleTrackedChatClient
+from .chat import (
+    OpenAIChatClient,
+    ProxyTrackedAsyncChatClient,
+    ProxyTrackedChatClient,
+    SimpleTrackedAsyncChatClient,
+    SimpleTrackedChatClient,
+)
 from .session import SessionContext
 from .tracing import get_tracer
 
@@ -203,11 +209,20 @@ class RLLMClient:
 
         resolved_model = model or merged.get("default_model")
 
-        wrapper = SimpleTrackedChatClient(
-            tracer=self.tracer,
-            default_model=resolved_model,
-            client=client,
-        )
+        base_url = merged.get("base_url")
+        if base_url:
+            wrapper = ProxyTrackedChatClient(
+                tracer=self.tracer,
+                default_model=resolved_model,
+                base_url=base_url,
+                client=client,
+            )
+        else:
+            wrapper = SimpleTrackedChatClient(
+                tracer=self.tracer,
+                default_model=resolved_model,
+                client=client,
+            )
         self._attach_owner(wrapper)
         return wrapper
 
@@ -279,11 +294,20 @@ class RLLMClient:
 
         resolved_model = model or merged.get("default_model")
 
-        wrapper = SimpleTrackedAsyncChatClient(
-            tracer=self.tracer,
-            default_model=resolved_model,
-            client=client,
-        )
+        base_url = merged.get("base_url")
+        if base_url:
+            wrapper = ProxyTrackedAsyncChatClient(
+                tracer=self.tracer,
+                default_model=resolved_model,
+                base_url=base_url,
+                client=client,
+            )
+        else:
+            wrapper = SimpleTrackedAsyncChatClient(
+                tracer=self.tracer,
+                default_model=resolved_model,
+                client=client,
+            )
         self._attach_owner(wrapper)
         return wrapper
 
