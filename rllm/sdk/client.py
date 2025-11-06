@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from openai import AsyncOpenAI, OpenAI
 
@@ -17,6 +20,8 @@ from .chat import (
 )
 from .session import SessionContext
 from .tracing import get_tracer
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 class RLLMClient:
@@ -68,6 +73,92 @@ class RLLMClient:
     def session(self, session_id: str | None = None, **metadata: Any) -> SessionContext:
         """Create a session context manager for automatic trace tracking."""
         return SessionContext(session_id, **metadata)
+
+    def entrypoint(self, func: F | None = None) -> F | Callable[[F], F]:
+        """Decorator to wrap functions with automatic session and metadata propagation.
+
+        This decorator wraps a function so that when called, it automatically:
+        1. Extracts metadata from the special `_metadata` kwarg (if provided)
+        2. Creates a session context with that metadata
+        3. Executes the function within that context
+        4. Ensures all LLM calls inside get the session metadata
+
+        This is especially useful for:
+        - Wrapping agent functions for use with Run Facade / ProcessExecutor
+        - Ensuring context propagates across process boundaries (e.g., multiprocessing)
+        - Allowing the caller (e.g., Run Facade) to dynamically inject session metadata
+
+        Usage:
+            ```python
+            # User decorates their agent function (no arguments)
+            @client.entrypoint
+            def my_agent(task):
+                llm = client.get_chat_client(provider="openai")
+                return llm.chat.completions.create(...)
+
+            # User calls normally (auto-generated session):
+            my_agent(task)
+
+            # Run Facade calls with dynamic metadata:
+            my_agent(task, _metadata={"session_id": "run-123", "experiment": "v1"})
+            ```
+
+        Args:
+            func: The function to wrap (when used as @client.entrypoint without parens)
+
+        Returns:
+            Decorated function or decorator (depending on usage)
+
+        Special kwargs (consumed by wrapper, not passed to function):
+            _metadata: Optional metadata dict to use for the session.
+                Can include 'session_id' to override auto-generation.
+                All other keys become metadata for the session.
+
+        Note:
+            The wrapped function can be sync or async. The decorator preserves
+            the original function's signature and behavior.
+        """
+
+        def decorator(f: F) -> F:
+            is_async = inspect.iscoroutinefunction(f)
+
+            if is_async:
+
+                @functools.wraps(f)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    # Extract special _metadata kwarg (if provided by caller)
+                    metadata = kwargs.pop("_metadata", {})
+
+                    # Extract session_id from metadata (if present)
+                    session_id = metadata.pop("session_id", None)
+
+                    # Create session with metadata
+                    with self.session(session_id=session_id, **metadata):
+                        return await f(*args, **kwargs)
+
+                return async_wrapper  # type: ignore
+
+            else:
+
+                @functools.wraps(f)
+                def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    # Extract special _metadata kwarg (if provided by caller)
+                    metadata = kwargs.pop("_metadata", {})
+
+                    # Extract session_id from metadata (if present)
+                    session_id = metadata.pop("session_id", None)
+
+                    # Create session with metadata
+                    with self.session(session_id=session_id, **metadata):
+                        return f(*args, **kwargs)
+
+                return sync_wrapper  # type: ignore
+
+        # Support both @client.entrypoint and @client.entrypoint()
+        if func is None:
+            return decorator
+        else:
+            return decorator(func)
 
     # --------------------------------------------------------------------- Traces
     def _parse_time_filter(

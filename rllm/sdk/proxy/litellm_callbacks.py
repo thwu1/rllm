@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any
 
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.types.utils import ModelResponse, ModelResponseStream
 
 from rllm.sdk.tracing import LLMTracer
 
@@ -73,7 +74,7 @@ class TracingCallback(CustomLogger):
         super().__init__()
         self.tracer = tracer
 
-    async def async_log_success_event(self, kwargs: dict[str, Any], response_obj: Any, start_time: float, end_time: float) -> None:
+    async def async_log_success_event(self, kwargs: dict[str, Any], response_obj: ModelResponse | ModelResponseStream, start_time: float, end_time: float) -> None:
         """Called after successful LLM completion."""
         litellm_params = kwargs.get("litellm_params", {})
         # Whitelist metadata keys to avoid noisy provider internals
@@ -111,7 +112,7 @@ class TracingCallback(CustomLogger):
             tokens=tokens,
         )
 
-    async def async_log_failure_event(self, kwargs: dict[str, Any], response_obj: Any, start_time: float, end_time: float) -> None:
+    async def async_log_failure_event(self, kwargs: dict[str, Any], response_obj: ModelResponse | ModelResponseStream, start_time: float, end_time: float) -> None:
         """Called after failed LLM completion."""
         litellm_params = kwargs.get("litellm_params", {})
         # Whitelist metadata keys to avoid noisy provider internals
