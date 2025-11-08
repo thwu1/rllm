@@ -11,6 +11,8 @@ from typing import Any, TypeVar
 
 from openai import AsyncOpenAI, OpenAI
 
+from rllm.sdk.tracing import ContextStoreProtocol
+
 from .chat import (
     OpenAIChatClient,
     ProxyTrackedAsyncChatClient,
@@ -19,7 +21,7 @@ from .chat import (
     SimpleTrackedChatClient,
 )
 from .session import SessionContext
-from .tracing import get_tracer
+from .tracing import get_context_store, get_tracer
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -64,10 +66,9 @@ class RLLMClient:
         self._owns_tracer = False
         if tracer is None and cs_endpoint and cs_api_key:
             tracer = get_tracer(project=project, endpoint=cs_endpoint, api_key=cs_api_key)
-            if tracer is not None:
-                self._owns_tracer = True
 
         self.tracer = tracer
+        self.context_store = get_context_store(cs_endpoint, cs_api_key)
 
     # --------------------------------------------------------------------- Context
     def session(self, session_id: str | None = None, **metadata: Any) -> SessionContext:
@@ -177,6 +178,9 @@ class RLLMClient:
                 stacklevel=2,
             )
         return None
+
+    def get_context_store(self) -> ContextStoreProtocol:
+        return self.context_store
 
     async def get_traces_async(
         self,
@@ -303,14 +307,14 @@ class RLLMClient:
         base_url = merged.get("base_url")
         if base_url:
             wrapper = ProxyTrackedChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging; proxy will handle tracing
                 default_model=resolved_model,
                 base_url=base_url,
                 client=client,
             )
         else:
             wrapper = SimpleTrackedChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging universally
                 default_model=resolved_model,
                 client=client,
             )
@@ -355,7 +359,7 @@ class RLLMClient:
 
         wrapper = OpenAIChatClient(
             tokenizer=tokenizer,
-            tracer=self.tracer,
+            tracer=None,  # disable SDK-side logging for legacy client as well
             production_config=production_cfg,
             training_config=training_cfg,
             default_model=default_model,
@@ -388,14 +392,14 @@ class RLLMClient:
         base_url = merged.get("base_url")
         if base_url:
             wrapper = ProxyTrackedAsyncChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging; proxy handles tracing
                 default_model=resolved_model,
                 base_url=base_url,
                 client=client,
             )
         else:
             wrapper = SimpleTrackedAsyncChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging universally
                 default_model=resolved_model,
                 client=client,
             )
