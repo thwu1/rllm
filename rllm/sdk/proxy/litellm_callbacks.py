@@ -69,80 +69,114 @@ class SamplingParametersCallback(CustomLogger):
 
 
 class TracingCallback(CustomLogger):
-    """Log LLM calls to episodic tracer using LiteLLM success/failure hooks."""
+    """Log LLM calls to episodic tracer right after provider response.
+
+    Uses LiteLLM's async_post_call_success_hook which fires at the proxy level,
+    once per HTTP request, immediately before the response is sent to the user.
+    This guarantees we log with the actual response object, while still being
+    pre-send, and avoids duplicate logging from nested deployment calls.
+    """
 
     def __init__(self, tracer: LLMTracer):
         super().__init__()
         self.tracer = tracer
+        # Track logged call IDs to prevent duplicates
+        self._logged_call_ids: set[str] = set()
+        self._printed_tracer_id = False
 
-    async def async_log_success_event(self, kwargs: dict[str, Any], response_obj: ModelResponse | ModelResponseStream, start_time: float, end_time: float) -> None:
-        """Called after successful LLM completion."""
-        litellm_params = kwargs.get("litellm_params", {})
-        # Whitelist metadata keys to avoid noisy provider internals
-        raw_meta = litellm_params.get("metadata", {})
+    async def async_post_call_success_hook(
+        self,
+        data: dict,
+        user_api_key_dict: Any,
+        response: ModelResponse | ModelResponseStream,
+    ) -> Any:
+        """Called once per HTTP request at proxy level, before response is sent to user.
+
+        This hook is called only once per HTTP request
+        It has access to the actual response object
+        and runs synchronously before the HTTP response is returned.
+        
+        Uses litellm_call_id for deduplication to ensure we only log once per request.
+        """
+        # One-time debug print of tracer identity
+        
+        # Check both data["metadata"] (injected by middleware) and litellm_params["metadata"]
+        litellm_params = data.get("litellm_params", {}) if isinstance(data, dict) else {}
+        raw_meta_from_params = litellm_params.get("metadata", {}) if isinstance(litellm_params, dict) else {}
+        raw_meta_from_data = data.get("metadata", {}) if isinstance(data, dict) else {}
+        # Merge both sources (data metadata takes precedence as it comes from middleware)
+        raw_meta = {**raw_meta_from_params, **raw_meta_from_data}
         allowed = {"session_id", "job", "user_api_key_request_route"}
         metadata = {k: v for k, v in raw_meta.items() if k in allowed}
 
-        model = kwargs.get("model", "unknown")
-        messages = kwargs.get("messages", [])
+        model = data.get("model", "unknown") if isinstance(data, dict) else "unknown"
+        messages = data.get("messages", []) if isinstance(data, dict) else []
 
-        # Compute latency in milliseconds supporting datetime or float inputs
-        _delta = end_time - start_time
-        if isinstance(_delta, timedelta):
-            latency_ms = _delta.total_seconds() * 1000.0
-        else:
-            latency_ms = float(_delta) * 1000.0
+        # Latency best-effort: prefer provider response_ms if available
+        latency_ms: float = 0.0
+        latency_ms = float(getattr(response, "response_ms", 0.0) or 0.0)
 
-        usage = getattr(response_obj, "usage", None)
+        usage = getattr(response, "usage", None)
         tokens = {
             "prompt": getattr(usage, "prompt_tokens", 0) if usage else 0,
             "completion": getattr(usage, "completion_tokens", 0) if usage else 0,
             "total": getattr(usage, "total_tokens", 0) if usage else 0,
         }
 
-        response_dict = response_obj.model_dump() if hasattr(response_obj, "model_dump") else {}
+        if hasattr(response, "model_dump"):
+            response_payload: Any = response.model_dump()
+        elif isinstance(response, dict):
+            response_payload = response
+        else:
+            response_payload = {"text": str(response)}
 
         self.tracer.log_llm_call(
             name=f"proxy/{model}",
             model=model,
             input={"messages": messages},
-            output=response_dict,
+            output=response_payload,
             metadata=metadata,
             session_id=metadata.get("session_id"),
             latency_ms=latency_ms,
             tokens=tokens,
         )
+        
+        # Return response unchanged
+        return response
 
-    async def async_log_failure_event(self, kwargs: dict[str, Any], response_obj: ModelResponse | ModelResponseStream, start_time: float, end_time: float) -> None:
-        """Called after failed LLM completion."""
-        litellm_params = kwargs.get("litellm_params", {})
-        # Whitelist metadata keys to avoid noisy provider internals
-        raw_meta = litellm_params.get("metadata", {})
-        allowed = {"session_id", "job", "user_api_key_request_route"}
-        metadata = {k: v for k, v in raw_meta.items() if k in allowed}
+    # def log_failure_event(self, kwargs: dict[str, Any], response_obj: ModelResponse | ModelResponseStream, start_time: float, end_time: float) -> None:
+    #     """Called after failed LLM completion (sync path).
 
-        model = kwargs.get("model", "unknown")
-        messages = kwargs.get("messages", [])
+    #     This complements the success hook to capture error outcomes.
+    #     """
+    #     litellm_params = kwargs.get("litellm_params", {})
+    #     # Whitelist metadata keys to avoid noisy provider internals
+    #     raw_meta = litellm_params.get("metadata", {})
+    #     allowed = {"session_id", "job", "user_api_key_request_route"}
+    #     metadata = {k: v for k, v in raw_meta.items() if k in allowed}
 
-        # Compute latency in milliseconds supporting datetime or float inputs
-        _delta = end_time - start_time
-        if isinstance(_delta, timedelta):
-            latency_ms = _delta.total_seconds() * 1000.0
-        else:
-            latency_ms = float(_delta) * 1000.0
+    #     model = kwargs.get("model", "unknown")
+    #     messages = kwargs.get("messages", [])
 
-        error_info = {
-            "error": str(response_obj) if response_obj else "Unknown error",
-            "type": type(response_obj).__name__ if response_obj else "UnknownError",
-        }
+    #     # Compute latency in milliseconds supporting datetime or float inputs
+    #     _delta = end_time - start_time
+    #     if isinstance(_delta, timedelta):
+    #         latency_ms = _delta.total_seconds() * 1000.0
+    #     else:
+    #         latency_ms = float(_delta) * 1000.0
 
-        self.tracer.log_llm_call(
-            name=f"proxy/{model}",
-            model=model,
-            input={"messages": messages},
-            output=error_info,
-            metadata={**metadata, "error": True},
-            session_id=metadata.get("session_id"),
-            latency_ms=latency_ms,
-            tokens={"prompt": 0, "completion": 0, "total": 0},
-        )
+    #     error_info = {
+    #         "error": str(response_obj) if response_obj else "Unknown error",
+    #         "type": type(response_obj).__name__ if response_obj else "UnknownError",
+    #     }
+
+    #     self.tracer.log_llm_call(
+    #         name=f"proxy/{model}",
+    #         model=model,
+    #         input={"messages": messages},
+    #         output=error_info,
+    #         metadata={**metadata, "error": True},
+    #         session_id=metadata.get("session_id"),
+    #         latency_ms=latency_ms,
+    #         tokens={"prompt": 0, "completion": 0, "total": 0},
+    #     )

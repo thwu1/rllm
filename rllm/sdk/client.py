@@ -307,14 +307,14 @@ class RLLMClient:
         base_url = merged.get("base_url")
         if base_url:
             wrapper = ProxyTrackedChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging; proxy will handle tracing
                 default_model=resolved_model,
                 base_url=base_url,
                 client=client,
             )
         else:
             wrapper = SimpleTrackedChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging universally
                 default_model=resolved_model,
                 client=client,
             )
@@ -359,7 +359,7 @@ class RLLMClient:
 
         wrapper = OpenAIChatClient(
             tokenizer=tokenizer,
-            tracer=self.tracer,
+            tracer=None,  # disable SDK-side logging for legacy client as well
             production_config=production_cfg,
             training_config=training_cfg,
             default_model=default_model,
@@ -392,14 +392,14 @@ class RLLMClient:
         base_url = merged.get("base_url")
         if base_url:
             wrapper = ProxyTrackedAsyncChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging; proxy handles tracing
                 default_model=resolved_model,
                 base_url=base_url,
                 client=client,
             )
         else:
             wrapper = SimpleTrackedAsyncChatClient(
-                tracer=self.tracer,
+                tracer=None,  # disable SDK-side logging universally
                 default_model=resolved_model,
                 client=client,
             )
