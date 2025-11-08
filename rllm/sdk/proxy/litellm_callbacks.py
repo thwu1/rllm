@@ -28,7 +28,8 @@ class SamplingParametersCallback(CustomLogger):
         model = data.get("model", "")
 
         # Request token-level logprobs; do not force top_logprobs list
-        result = {**data, "logprobs": True}
+        # result = {**data, "logprobs": True}
+        result = {**data}
 
         # Only add return_token_ids if explicitly enabled AND model supports it
         if self.add_return_token_ids and self._supports_token_ids(model):

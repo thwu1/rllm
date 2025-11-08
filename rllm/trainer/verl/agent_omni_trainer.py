@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from functools import reduce
 from pprint import pprint
 
@@ -46,6 +47,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         role_worker_mapping: dict[Role, WorkerType],
         resource_pool_manager: ResourcePoolManager,
         ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
+        agent_run_func: Callable = None,
         # reward_fn=None,
         # val_reward_fn=None,
         # workflow_class=None,
@@ -65,6 +67,7 @@ class AgentOmniTrainer(RayPPOTrainer):
             endpoint=self.config.context_store.endpoint,
             api_key=self.config.context_store.api_key,
         )
+        self.agent_run_func = agent_run_func
 
     # def _validate_config(self):
     #     assert self.workflow_class is not None, "workflow_class is required for agent workflow trainer"
@@ -150,11 +153,11 @@ class AgentOmniTrainer(RayPPOTrainer):
             "model_name": self.config.actor_rollout_ref.model.path,
             "proxy_host": "127.0.0.1",
             "proxy_port": 4000,
-            "auto_start": True,  # Auto-start the proxy server
+            "auto_start": False,  # Auto-start the proxy server
         }
 
         self.agent_execution_engine = AgentOmniEngine(
-            agent_run_func=lambda task: task,
+            agent_run_func=self.agent_run_func,
             rollout_engine=rollout_engine,
             config=self.config,
             n_parallel_tasks=self.config.rllm.workflow.n_parallel_tasks,
