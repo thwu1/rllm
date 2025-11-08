@@ -34,6 +34,12 @@ class ContextStoreProtocol(Protocol):
         metadata: dict[str, Any],
     ) -> None: ...
 
+    async def store_batch(
+        self,
+        contexts: list[dict[str, Any]],
+        preserve_order: bool = True,
+    ) -> list[Any]: ...
+
     async def get(self, context_id: str) -> Context | None: ...
 
     async def query(self, context_filter: Any) -> list[Context]: ...
@@ -79,7 +85,7 @@ class LLMTracer:
         ```
     """
 
-    def __init__(self, context_store: ContextStoreProtocol, project: str | None = None, namespace: str | None = None, default_tags: list[str] | None = None, max_queue_size: int = 10000, max_concurrent_stores: int = 100):
+    def __init__(self, context_store: ContextStoreProtocol, project: str | None = None, namespace: str | None = None, default_tags: list[str] | None = None, max_queue_size: int = 10000, max_concurrent_stores: int = 100, max_batch_size: int = 8):
         """
         Initialize the LLM tracer.
 
@@ -111,11 +117,13 @@ class LLMTracer:
         self._max_queue_size = max_queue_size
         self._shutdown = False
         self._max_concurrent_stores = max_concurrent_stores
+        self._max_batch_size = max(1, max_batch_size)
 
         # Thread and event loop for background worker
         self._worker_thread: threading.Thread | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._worker_started = threading.Event()
+        self._all_tasks_done: asyncio.Event | None = None  # Created in worker loop
 
         # Start background worker
         self._start_background_worker()
@@ -132,67 +140,149 @@ class LLMTracer:
         self._worker_started.wait(timeout=5.0)
 
     def _run_worker_loop(self):
-        """Run the worker event loop in a separate thread."""
+        """Run the worker event loop forever in a separate thread."""
         # Create a new event loop for this thread
         self._worker_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._worker_loop)
 
+        # Create event for task coordination
+        self._all_tasks_done = asyncio.Event()
+        self._all_tasks_done.set()  # Initially set (no tasks)
+
         # Signal that the worker has started
         self._worker_started.set()
 
+        # Schedule the async worker as a task using the loop's create_task method
+        self._worker_loop.create_task(self._async_worker())
+
+        # Run the loop forever until explicitly stopped
         try:
-            # Run the async worker
-            self._worker_loop.run_until_complete(self._async_worker())
+            self._worker_loop.run_forever()
         finally:
-            self._worker_loop.close()
+            # Close the loop only after it has been stopped
+            if self._worker_loop and not self._worker_loop.is_closed():
+                self._worker_loop.close()
             self._worker_loop = None
 
     async def _async_worker(self):
         """
         Async worker that processes traces from the queue with parallel execution.
-        Single worker spawns tasks directly with controlled concurrency.
+        Runs continuously until shutdown is requested.
         """
         # Create semaphore for limiting concurrent operations
-        semaphore = asyncio.Semaphore(self._max_concurrent_stores)
+        semaphore = asyncio.Semaphore(self._max_concurrent_stores // (self._max_batch_size / 2))
         active_tasks = set()
 
         try:
-            while not self._shutdown or not self._trace_queue.empty() or active_tasks:
+            while True:
+                # Exit only when shutdown is requested AND queue is empty AND no active tasks
+                if self._shutdown and self._trace_queue.empty() and not active_tasks:
+                    break
+
                 # Get item from queue (non-blocking)
                 try:
                     trace_data = self._trace_queue.get_nowait()
-                    # Spawn task immediately
-                    task = asyncio.create_task(self._store_with_semaphore(semaphore, trace_data))
+                    batch = [trace_data]
+                    while len(batch) < self._max_batch_size:
+                        try:
+                            batch.append(self._trace_queue.get_nowait())
+                        except queue.Empty:
+                            break
+                    task = asyncio.create_task(self._store_batch_and_mark_done(semaphore, batch))
                     active_tasks.add(task)
+                    # Clear event when first task added
+                    if len(active_tasks) == 1 and self._all_tasks_done:
+                        self._all_tasks_done.clear()
                 except queue.Empty:
                     # No items, wait briefly for new items or tasks to complete
                     if active_tasks:
                         done, pending = await asyncio.wait(active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
                         # Update active set with only pending tasks
                         active_tasks = pending
+                        # Update event state after every check
+                        if not active_tasks and self._all_tasks_done:
+                            self._all_tasks_done.set()
+                        elif active_tasks and self._all_tasks_done and self._all_tasks_done.is_set():
+                            self._all_tasks_done.clear()
                     else:
                         await asyncio.sleep(0.1)
+                        # Set event when truly idle
+                        if self._all_tasks_done and not self._all_tasks_done.is_set():
+                            self._all_tasks_done.set()
 
-            # Wait for remaining tasks
+            # Wait for remaining tasks before exiting
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
+            # Signal all tasks are done
+            if self._all_tasks_done:
+                self._all_tasks_done.set()
 
         except Exception as e:
             logger.exception("Error in async worker: %s", e)
             # Wait for any remaining tasks
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
+            # Signal all tasks are done
+            if self._all_tasks_done:
+                self._all_tasks_done.set()
+        finally:
+            # Stop the loop when worker exits (schedule stop callback)
+            if self._worker_loop and not self._worker_loop.is_closed():
+                self._worker_loop.call_soon(self._worker_loop.stop)
+
+    def _stop_worker_loop(self):
+        """Stop the worker event loop gracefully."""
+        if self._worker_loop is None:
+            return
+
+        try:
+
+            def _stop():
+                if self._worker_loop and not self._worker_loop.is_closed():
+                    self._worker_loop.stop()
+
+            self._worker_loop.call_soon_threadsafe(_stop)
+            if self._worker_thread and self._worker_thread.is_alive():
+                self._worker_thread.join(timeout=5.0)
+            if self._worker_loop and not self._worker_loop.is_closed():
+                self._worker_loop.close()
+        except Exception as e:
+            logger.exception("Error stopping worker loop: %s", e)
+        finally:
+            self._worker_loop = None
 
     async def _store_with_semaphore(self, semaphore: asyncio.Semaphore, trace_data: dict[str, Any]):
-        """
-        Store trace with semaphore-controlled concurrency.
-
-        Args:
-            semaphore: Semaphore to limit concurrent store operations
-            trace_data: Trace data to store
-        """
         async with semaphore:
             await self._store_trace_with_retry(trace_data)
+
+    async def _store_batch_with_semaphore(self, semaphore: asyncio.Semaphore, batch: list[dict[str, Any]]):
+        async with semaphore:
+            await self._store_batch_with_retry(batch)
+
+    async def _store_batch_and_mark_done(self, semaphore: asyncio.Semaphore, batch: list[dict[str, Any]]):
+        try:
+            if len(batch) == 1:
+                await self._store_with_semaphore(semaphore, batch[0])
+            else:
+                await self._store_batch_with_semaphore(semaphore, batch)
+        finally:
+            for _ in batch:
+                self._trace_queue.task_done()
+
+    async def _store_batch_with_retry(self, batch: list[dict[str, Any]]):
+        max_retries = 3
+        retry_delays = [1, 2, 4]
+        for attempt in range(max_retries):
+            try:
+                await self._store_batch(batch)
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Failed to store trace batch (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delays[attempt]}s...")
+                    await asyncio.sleep(retry_delays[attempt])
+                else:
+                    logger.exception("Failed to store trace batch after %d attempts: %s", max_retries, e)
+                    raise
 
     async def _store_trace_with_retry(self, trace_data: dict[str, Any]):
         """
@@ -224,6 +314,26 @@ class LLMTracer:
             trace_data: Dict containing all trace information prepared by log_llm_call
         """
         await self.context_store.store(context_id=trace_data["context_id"], data=trace_data["data"], text=trace_data["text"], namespace=trace_data["namespace"], context_type=trace_data["context_type"], tags=trace_data["tags"], metadata=trace_data["metadata"])
+
+    async def _store_batch(self, batch: list[dict[str, Any]]):
+        store_batch_method = getattr(self.context_store, "store_batch", None)
+        if callable(store_batch_method):
+            contexts_payload = [
+                {
+                    "id": trace["context_id"],
+                    "data": trace["data"],
+                    "text": trace["text"],
+                    "namespace": trace["namespace"],
+                    "type": trace["context_type"],
+                    "tags": trace["tags"],
+                    "metadata": trace["metadata"],
+                }
+                for trace in batch
+            ]
+            await store_batch_method(contexts_payload, preserve_order=True)
+        else:
+            for trace in batch:
+                await self._store_trace(trace)
 
     def log_llm_call(self, name: str, input: str | list | dict, output: str | dict, model: str, latency_ms: float, tokens: dict[str, int], contexts: list[str | dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None, tags: list[str] | None = None, trace_id: str | None = None, parent_trace_id: str | None = None, cost: float | None = None, environment: str | None = None, tools: list[dict[str, Any]] | None = None, session_id: str | None = None) -> None:
         """
@@ -360,59 +470,67 @@ class LLMTracer:
 
         return f"[{name}] Model: {model}\nInput: {input_preview}\nOutput: {output_preview}"
 
+    def _wait_for_idle(self, timeout: float) -> None:
+        """Wait for queue and all active tasks to complete."""
+        loop = self._worker_loop
+        if loop is None or loop.is_closed():
+            return
+
+        start = time.time()
+
+        # Wait for queue with timeout
+        remaining = timeout
+        while not self._trace_queue.empty() and remaining > 0:
+            time.sleep(0.1)
+            remaining = timeout - (time.time() - start)
+
+        if not self._trace_queue.empty():
+            logger.warning(f"Queue not empty: {self._trace_queue.qsize()} traces")
+            return
+
+        # Now wait for active tasks via event
+        if self._all_tasks_done and remaining > 0:
+            # If event is already set, give worker a moment to update state
+            if self._all_tasks_done.is_set():
+                time.sleep(0.2)
+
+            # Schedule wait on worker loop
+            async def _wait():
+                try:
+                    await asyncio.wait_for(self._all_tasks_done.wait(), timeout=remaining)
+                    logger.info("All traces completed")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for active tasks")
+
+            try:
+                fut = asyncio.run_coroutine_threadsafe(_wait(), loop)
+                fut.result()
+            except Exception as e:
+                logger.exception("Error waiting: %s", e)
+
+    async def flush(self, timeout: float = 30.0) -> None:
+        """Flush all pending traces without shutting down the tracer."""
+        logger.info("Flushing pending traces...")
+        await asyncio.to_thread(self._wait_for_idle, timeout)
+
     async def close(self, timeout: float = 30.0) -> None:
-        """
-        Gracefully shutdown the tracer and flush all pending traces.
-
-        Args:
-            timeout: Maximum time in seconds to wait for pending traces to be stored
-        """
-        logger.info("Shutting down LLMTracer, flushing pending traces...")
+        """Gracefully shutdown the tracer and flush all pending traces."""
+        logger.info("Shutting down LLMTracer...")
         self._shutdown = True
+        await asyncio.to_thread(self._wait_for_idle, timeout)
+        self._stop_worker_loop()
 
-        # Wait for queue to empty
-        start_time = time.time()
-        while not self._trace_queue.empty() and (time.time() - start_time) < timeout:
-            await asyncio.sleep(0.1)
-
-        if self._trace_queue.empty():
-            logger.info("All pending traces flushed successfully")
-        else:
-            remaining = self._trace_queue.qsize()
-            logger.warning(f"Timeout reached during shutdown. {remaining} traces may not be stored.")
-
-        # Wait for worker thread to finish
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=5.0)
-            if self._worker_thread.is_alive():
-                logger.warning("Worker thread did not terminate gracefully")
+    def flush_sync(self, timeout: float = 30.0) -> None:
+        """Synchronous version of flush()."""
+        logger.info("Flushing pending traces...")
+        self._wait_for_idle(timeout)
 
     def close_sync(self, timeout: float = 30.0) -> None:
-        """
-        Synchronous version of close() for non-async contexts.
-
-        Args:
-            timeout: Maximum time in seconds to wait for pending traces to be stored
-        """
-        logger.info("Shutting down LLMTracer, flushing pending traces...")
+        """Synchronous version of close()."""
+        logger.info("Shutting down LLMTracer...")
         self._shutdown = True
-
-        # Wait for queue to empty
-        start_time = time.time()
-        while not self._trace_queue.empty() and (time.time() - start_time) < timeout:
-            time.sleep(0.1)
-
-        if self._trace_queue.empty():
-            logger.info("All pending traces flushed successfully")
-        else:
-            remaining = self._trace_queue.qsize()
-            logger.warning(f"Timeout reached during shutdown. {remaining} traces may not be stored.")
-
-        # Wait for worker thread to finish
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=5.0)
-            if self._worker_thread.is_alive():
-                logger.warning("Worker thread did not terminate gracefully")
+        self._wait_for_idle(timeout)
+        self._stop_worker_loop()
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -455,8 +573,8 @@ class LLMTracer:
         # Build filter - only include since if provided
         filter_kwargs = {"namespaces": [self.namespace], "tags": tags if tags else None, "context_types": ["llm_trace"], "limit": limit}
 
-        if since:
-            filter_kwargs["since"] = since
+        # if since:
+        #     filter_kwargs["since"] = since
 
         filter_obj = ContextFilter(**filter_kwargs)
 
@@ -464,6 +582,22 @@ class LLMTracer:
 
 
 _TRACER: LLMTracer | None = None
+_CONTEXT_STORE: ContextStoreProtocol | None = None
+
+
+def get_context_store(endpoint: str | None, api_key: str | None) -> ContextStoreProtocol | None:
+    from episodic import ContextStore
+
+    global _CONTEXT_STORE
+    if _CONTEXT_STORE is not None:
+        return _CONTEXT_STORE
+
+    if not endpoint:
+        raise ValueError("Endpoint is required")
+
+    _ContextStore = ContextStore(endpoint=endpoint, api_key=api_key)
+    _CONTEXT_STORE = _ContextStore
+    return _CONTEXT_STORE
 
 
 def get_tracer(
@@ -472,32 +606,17 @@ def get_tracer(
     api_key: str | None,
 ) -> LLMTracer | None:
     """Lazily create or return a global LLMTracer instance."""
-    from episodic import ContextStore
 
     global _TRACER
     if _TRACER is not None:
         return _TRACER
 
     if not endpoint:
-        print("⚠️ Episodic: EPISODIC_ENDPOINT not configured")
-        return None
+        raise ValueError("Endpoint is required")
 
-    try:
-        print(f"🔄 Episodic: Initializing tracer with endpoint {endpoint}")
-        context_store: ContextStoreProtocol = ContextStore(
-            endpoint=endpoint,
-            api_key=api_key,
-        )
-        _TRACER = LLMTracer(
-            context_store=context_store,
-            project=project,
-        )
-        print(f"✅ Episodic: Tracer initialized successfully for project '{project or 'default'}'")
-        return _TRACER
-    except Exception as exc:  # pragma: no cover - diagnostic print
-        import traceback
-
-        print("❌ Episodic: Failed to initialize tracer:")
-        print(f"   Error: {exc}")
-        print(f"   Traceback: {traceback.format_exc()}")
-        return None
+    context_store: ContextStoreProtocol = get_context_store(endpoint, api_key)
+    _TRACER = LLMTracer(
+        context_store=context_store,
+        project=project,
+    )
+    return _TRACER

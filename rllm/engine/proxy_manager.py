@@ -14,6 +14,7 @@ import tempfile
 import threading
 from typing import TYPE_CHECKING, Any
 
+import requests
 import yaml
 
 from rllm.engine.rollout import RolloutEngine
@@ -62,6 +63,7 @@ class VerlProxyManager:
         proxy_port: int = 4000,
         tracer: LLMTracer | None = None,
         auto_instrument_vllm: bool = True,
+        proxy_access_log: bool = False,
     ):
         """Initialize the proxy manager.
 
@@ -72,6 +74,7 @@ class VerlProxyManager:
             proxy_port: Port to bind the proxy server
             tracer: Optional LLMTracer for logging
             auto_instrument_vllm: Whether to automatically instrument vLLM for token IDs (default: True)
+            proxy_access_log: Whether to emit uvicorn access logs for each request (default: False)
         """
         if not isinstance(rollout_engine, VerlEngine):
             raise TypeError(f"VerlProxyManager only supports VerlEngine, got {type(rollout_engine).__name__}")
@@ -82,6 +85,7 @@ class VerlProxyManager:
         self.proxy_port = proxy_port
         self.tracer = tracer
         self.auto_instrument_vllm = auto_instrument_vllm
+        self.proxy_access_log = proxy_access_log
 
         # Instrument vLLM if needed (before extracting server addresses)
         if auto_instrument_vllm:
@@ -93,6 +97,8 @@ class VerlProxyManager:
 
         # Generate LiteLLM config
         self._config = self._generate_litellm_config()
+        self._config_snapshot_path: str | None = None
+        self._config_snapshot_path = self._snapshot_config_to_file()
 
         # Proxy server state
         self._server_thread: threading.Thread | None = None
@@ -179,9 +185,72 @@ class VerlProxyManager:
 
         return config
 
+    def _snapshot_config_to_file(self, directory: str | None = None) -> str | None:
+        """Persist the auto-generated config to a readable path for debugging."""
+
+        base_dir = directory or os.getenv("RLLM_PROXY_CONFIG_DIR") or os.getcwd()
+        try:
+            os.makedirs(base_dir, exist_ok=True)
+            snapshot_path = os.path.join(base_dir, "litellm_proxy_config_autogen.yaml")
+            with open(snapshot_path, "w") as f:
+                yaml.dump(self._config, f, default_flow_style=False)
+            self._config_snapshot_path = snapshot_path
+            logger.info(f"📄 LiteLLM config snapshot written to {snapshot_path}")
+            return snapshot_path
+        except Exception as e:
+            logger.warning(f"Failed to write LiteLLM config snapshot: {e}")
+            return None
+
     def get_litellm_config(self) -> dict[str, Any]:
         """Get the generated LiteLLM configuration."""
         return self._config
+
+    def get_config_snapshot_path(self) -> str | None:
+        """Return the path of the last config snapshot written to disk."""
+        return self._config_snapshot_path
+
+    def reload_external_proxy(
+        self,
+        reload_url: str | None = None,
+        admin_token: str | None = None,
+        inline_payload: bool = True,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Ask an external LiteLLM proxy (started via scripts/litellm_proxy_server.py) to reload config.
+
+        Args:
+            reload_url: Full URL to the reload endpoint (default: http://{host}:{port}/admin/reload).
+            admin_token: Optional bearer token expected by the proxy.
+            inline_payload: When True (default) send YAML directly in the request body.
+                            Set to False to reference an on-disk config file.
+            timeout: HTTP timeout in seconds.
+        """
+
+        url = reload_url or f"http://{self.proxy_host}:{self.proxy_port}/admin/reload"
+
+        if inline_payload:
+            payload = {"config_yaml": yaml.dump(self._config, default_flow_style=False)}
+        else:
+            snapshot_path = self._config_snapshot_path or self._snapshot_config_to_file()
+            if not snapshot_path or not os.path.exists(snapshot_path):
+                raise RuntimeError("LiteLLM config snapshot is unavailable on disk.")
+            payload = {"config_path": snapshot_path}
+
+        headers = {"Content-Type": "application/json"}
+        if admin_token:
+            token = admin_token if admin_token.lower().startswith("bearer ") else f"Bearer {admin_token}"
+            headers["Authorization"] = token
+
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"Failed to reload LiteLLM proxy via {url}: {exc}") from exc
+
+        try:
+            return resp.json()
+        except ValueError:
+            return {"status": "ok", "raw": resp.text}
 
     def get_server_addresses(self) -> list[str]:
         """Get all vLLM server addresses."""
@@ -331,7 +400,13 @@ class VerlProxyManager:
         def run_server():
             logger.info("🔄 Server thread started, launching uvicorn...")
             try:
-                uvicorn.run(app, host=self.proxy_host, port=self.proxy_port, log_level="info")
+                uvicorn.run(
+                    app,
+                    host=self.proxy_host,
+                    port=self.proxy_port,
+                    log_level="info",
+                    access_log=self.proxy_access_log,
+                )
             except Exception as e:
                 logger.exception(f"❌ Server thread failed: {e}")
 
