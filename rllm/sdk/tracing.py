@@ -450,7 +450,6 @@ class LLMTracer:
 
         return f"[{name}] Model: {model}\nInput: {input_preview}\nOutput: {output_preview}"
 
-
     async def close(self, timeout: float = 30.0) -> None:
         """Stop the background worker without waiting for queue drain."""
         self._shutdown = True

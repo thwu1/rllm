@@ -66,8 +66,12 @@ class AgentOmniEngine:
         self.proxy_manager: VerlProxyManager | None = None
         self.rollout_engine_endpoint: str | None = None
 
+        proxy_config = proxy_config or {}
+
         if isinstance(rollout_engine, VerlEngine):
-            self._setup_verl_proxy(proxy_config or {}, tracer)
+            self._setup_verl_proxy(proxy_config, tracer)
+        else:
+            raise NotImplementedError(f"Rollout engine type {type(rollout_engine)} not supported")
 
         self.rllm_client = RLLMClient(
             base_url=self.proxy_manager.get_proxy_url(),
@@ -119,6 +123,7 @@ class AgentOmniEngine:
         proxy_port = proxy_config.get("proxy_port", 4000)
         auto_start = proxy_config.get("auto_start", False)
         proxy_access_log = proxy_config.get("proxy_access_log", False)
+        admin_token = proxy_config.get("admin_token", "my-shared-secret")
 
         self.proxy_manager = VerlProxyManager(
             rollout_engine=self.rollout_engine,
@@ -127,6 +132,7 @@ class AgentOmniEngine:
             proxy_port=proxy_port,
             tracer=tracer,
             proxy_access_log=proxy_access_log,
+            admin_token=admin_token,
         )
 
         self.rollout_engine_endpoint = self.proxy_manager.get_proxy_url()
@@ -138,7 +144,6 @@ class AgentOmniEngine:
             logger.info(f"Auto-started LiteLLM proxy at {self.rollout_engine_endpoint}")
         else:
             self.proxy_manager.reload_external_proxy(
-                admin_token="my-shared-secret",
                 inline_payload=True,
             )
 
@@ -170,29 +175,34 @@ class AgentOmniEngine:
         if self.agent_queue is not None:
             return
         self.agent_queue = asyncio.Queue(maxsize=self.n_parallel_tasks)
-        for i in range(self.n_parallel_tasks):
+        for _ in range(self.n_parallel_tasks):
             self.agent_queue.put_nowait(self.wrapped_agent_run_func)
 
-    async def _execute_agent_func(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
-        metadata = {"session_id": f"{task_id}/{rollout_idx}/{attempt_idx}", "task": task}
-        if inspect.iscoroutinefunction(self.wrapped_agent_run_func):
-            return await func(metadata, **task, **kwargs)
-        else:
-            loop = asyncio.get_event_loop()
-            bound_func = functools.partial(func, metadata, **task, **kwargs)
-            return await loop.run_in_executor(self.executor, bound_func)
+    async def _execute_agent_func_with_exception_handling(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
+        metadata = {"session_id": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
+        try:
+            if inspect.iscoroutinefunction(self.wrapped_agent_run_func):
+                output = await func(metadata, **task, **kwargs)
+                return True, output
+            else:
+                loop = asyncio.get_event_loop()
+                bound_func = functools.partial(func, metadata, **task, **kwargs)
+                output = await loop.run_in_executor(self.executor, bound_func)
+                return True, output
+        except Exception as e:
+            return False, e
 
-    async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, Episode]:
-        """Process a single task rollout with retry logic based on termination reasons.
+    async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, int, float]:
+        """Process a single task rollout with retry logic on exceptions.
 
         Args:
             task: Task dictionary containing the task specification.
             task_id: Unique identifier for the task.
             rollout_idx: Index of this rollout attempt for the task.
-            **kwargs: Additional arguments passed to the workflow.
+            **kwargs: Additional arguments passed to the agent function.
 
         Returns:
-            tuple[str, int, Episode]: Task ID, rollout index, and completed episode.
+            tuple[str, int, int, float]: Task ID, rollout index, retry attempt, and reward.
 
         Raises:
             Exception: If task fails permanently after retry_limit attempts and raise_on_error is True.
@@ -200,25 +210,43 @@ class AgentOmniEngine:
         agent_run_func = await self.agent_queue.get()
         try:
             for retry_attempt in range(1, self.retry_limit + 1):
-                uid = f"{task_id}/{rollout_idx}/{retry_attempt}"
-                reward = await self._execute_agent_func(agent_run_func, task=task, task_id=task_id, rollout_idx=rollout_idx, attempt_idx=retry_attempt, **kwargs)
-
-                colorful_print(f"[{uid}] Rollout completed with reward: {reward}", fg="green" if reward > 0 else "yellow")
-                return task_id, rollout_idx, retry_attempt, reward
+                uid = f"{task_id}:{rollout_idx}:{retry_attempt}"
+                success, reward_or_error = await self._execute_agent_func_with_exception_handling(agent_run_func, task=task, task_id=task_id, rollout_idx=rollout_idx, attempt_idx=retry_attempt, **kwargs)
+                if success:
+                    colorful_print(f"[{uid}] Rollout completed with reward: {reward_or_error}", fg="green" if reward_or_error > 0 else "yellow")
+                    return task_id, rollout_idx, retry_attempt, reward_or_error
+                if retry_attempt < self.retry_limit:
+                    print(f"[{uid}] Rollout failed on attempt {retry_attempt}/{self.retry_limit}, retrying...")
+                    continue
+                raise Exception(f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts: {reward_or_error}")
         finally:
             await self.agent_queue.put(agent_run_func)
 
-    async def start_collect_traces(self):
+    async def start_collect_traces(self, batch_end_token: str):
         traces_queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        self._batch_end_future: asyncio.Future | None = loop.create_future()
 
         @self.context_subscriber.on_context_update(namespaces=["rllm-agent-omni-engine"])
         async def add_to_queue(update):
-            data = update.context.data
-            traces_queue.put_nowait(data)
+            # Resolve future when the matching batch-end marker arrives
+            if update.context.type == "trace_batch_end":
+                if update.context.id == batch_end_token and self._batch_end_future:
+                    print(f"Received batch end signal for token {batch_end_token}")
+                    self._batch_end_future.set_result(True)
+
+                return
+
+            event = {
+                "id": update.context.id,
+                "type": update.context.type,
+                "data": update.context.data,
+            }
+            traces_queue.put_nowait(event)
 
         await self.context_subscriber.start()
 
-        return traces_queue
+        return traces_queue, self._batch_end_future
 
     async def execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
         """Run asynchronous workflow execution with retry logic for multiple tasks.
@@ -239,7 +267,8 @@ class AgentOmniEngine:
 
         task_states = defaultdict(lambda: {"idx": None, "task": None, "episodes": [], "completed": 0, "total_rollouts": 0, "is_complete": False})
 
-        traces_queue = await self.start_collect_traces()
+        batch_end_token = f"trace-batch-end-{uuid.uuid4().hex}"
+        traces_queue, end_future = await self.start_collect_traces(batch_end_token)
 
         futures = []
         idx_counter = 0
@@ -255,108 +284,77 @@ class AgentOmniEngine:
 
         uids_to_collect = set()
         rewards = dict()
+        start_time = time.time()
         with tqdm(total=len(tasks), desc="Generating trajectories") as pbar:
             for future in asyncio.as_completed(futures):
                 task_id, rollout_idx, retry_attempt, reward = await future
-                uids_to_collect.add(f"{task_id}/{rollout_idx}/{retry_attempt}")
-                rewards[f"{task_id}/{rollout_idx}/{retry_attempt}"] = reward
+                uids_to_collect.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
+                rewards[f"{task_id}:{rollout_idx}:{retry_attempt}"] = reward
                 state = task_states[task_id]
                 state["completed"] += 1
                 pbar.update(1)
 
-        logger.info("Flushing tracer before stopping context subscriber...")
+        print(f"Total time for generating trajectories: {time.time() - start_time:.2f} seconds")
+
+        # Emit batch-end marker via proxy and await it
+        self._current_batch_end_token = batch_end_token
         start_time = time.time()
-        await self.rllm_client.tracer.flush(timeout=240)
-        end_time = time.time()
-        logger.info(f"Tracer flushed successfully in {end_time - start_time:.2f} seconds")
+        await self.emit_batch_end_signal(batch_end_token)
+        print(f"Batch end signal emitted in {time.time() - start_time:.2f} seconds")
+        start_time = time.time()
 
-        traces_by_session_id: defaultdict[str, list[dict]] = defaultdict(list)
-        pending_sessions = set(uids_to_collect)
-        wait_start = time.time()
-        while pending_sessions and (time.time() - wait_start) < self.trace_wait_timeout:
-            remaining = self.trace_wait_timeout - (time.time() - wait_start)
-            timeout = min(self.trace_idle_timeout, remaining)
-            try:
-                trace = await asyncio.wait_for(traces_queue.get(), timeout=max(timeout, 0.01))
-            except asyncio.TimeoutError:
-                continue
+        received_batch_end = False
+        try:
+            await asyncio.wait_for(end_future, timeout=60.0)
+            received_batch_end = True
+            print(f"Batch end future resolved in {time.time() - start_time:.2f} seconds")
+        except asyncio.TimeoutError:
+            print("⚠️ WARNING: Batch end signal timeout after 60s, collecting available traces")
 
-            session_id = trace.get("session_id")
-            if not session_id:
-                logger.warning("Trace missing session_id, dropping it")
-                continue
-            if session_id not in pending_sessions:
-                logger.warning("Trace %s not expected, dropping it", session_id)
-                continue
+        # Drain remaining trace events without exceptions
+        traces_by_session_id = {}
+        for uid in uids_to_collect:
+            traces_by_session_id[uid] = []
 
-            traces_by_session_id[session_id].append(trace)
-            pending_sessions.discard(session_id)
-
-        # Drain any remaining traces that might have arrived late but before stop().
-        while True:
-            try:
-                trace = traces_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            session_id = trace.get("session_id")
+        while not traces_queue.empty():
+            event = traces_queue.get_nowait()
+            trace = event.get("data", {})
+            session_id = trace.get("session_id", None)
             if not session_id or session_id not in uids_to_collect:
                 continue
             traces_by_session_id[session_id].append(trace)
-            pending_sessions.discard(session_id)
-
-        if pending_sessions:
-            sample = list(pending_sessions)[:5]
-            logger.warning(
-                "Timed out waiting for traces from %d sessions (sample: %s)",
-                len(pending_sessions),
-                sample,
-            )
 
         await self.context_subscriber.stop()
 
-        # ADD PRINT 1: Show traces_by_session_id order
-        print(f"Number of session_ids: {len(traces_by_session_id)}")
-
-        # ADD PRINT 2: Show order episodes are created and appended
-        print("\n=== EPISODE CREATION ORDER ===")
         for session_id, traces in traces_by_session_id.items():
             steps = [self.convert_trace_to_step(trace) for trace in traces]
-            task_id = session_id.split("/")[0]
-            rollout_idx = int(session_id.split("/")[1])
-            retry_attempt = int(session_id.split("/")[2])
+            task_id = session_id.split(":")[0]
+            rollout_idx = int(session_id.split(":")[1])
+            retry_attempt = int(session_id.split(":")[2])
 
             trajectory = Trajectory(
-                uid=task_id,  # is this correct?
+                uid=f"{task_id}:{rollout_idx}",
                 steps=steps,
                 reward=rewards[session_id],
             )
-            episode = Episode(id=session_id, trajectories=[trajectory])
+            episode = Episode(id=session_id, trajectories=[trajectory], metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "received_batch_end": int(received_batch_end)})
             task_states[task_id]["episodes"].append(episode)
 
-        # ADD PRINT 3: Show final results order
-        print("\n=== FINAL RESULTS ORDER ===")
         results = []
         sorted_tasks = sorted(task_states.keys(), key=lambda task_id: task_states[task_id]["idx"])
         for task_id in sorted_tasks:
-            print(f"Task {task_id} (idx={task_states[task_id]['idx']}): {len(task_states[task_id]['episodes'])} episodes")
-            for i, episode in enumerate(task_states[task_id]["episodes"]):
-                session_id = episode.id
-                rollout_idx = int(session_id.split("/")[1])
-                retry_attempt = int(session_id.split("/")[2])
             results.extend(task_states[task_id]["episodes"])
-        print(f"Total results: {len(results)} episodes")
         return results
 
     def convert_trace_to_model_output(self, trace: dict) -> ModelOutput:
         output = trace.get("output", {})
-        assert output
-
         prompt_ids = output.get("prompt_token_ids", [])
         choices = output.get("choices", [])
         content = choices[0].get("message", {}).get("content", "")
         reasoning = choices[0].get("message", {}).get("reasoning", "")
         provider_specific_fields = choices[0].get("provider_specific_fields", {})
         completion_ids = provider_specific_fields.get("token_ids", [])
+        assert output, trace
         assert len(choices) == 1, "Only one choice is supported for now"
         assert prompt_ids, "Prompt IDs are required"
         assert completion_ids, "Completion IDs are required"
@@ -381,10 +379,11 @@ class AgentOmniEngine:
         assert response_message
         return Step(
             chat_completions=messages + [response_message],
-            thought="",  # fix this
-            action="",  # fix
             model_output=model_output,
         )
+
+    async def emit_batch_end_signal(self, token: str) -> bool:
+        return await self.proxy_manager.emit_batch_end_signal(token)
 
     async def execute_tasks_verl(self, batch: "DataProto", **kwargs) -> "DataProto":
         """Execute tasks from a Verl DataProto batch and return results.
@@ -412,17 +411,15 @@ class AgentOmniEngine:
         self.rollout_engine.validate = False
 
         # ADD PRINT 4: Show what's passed to transform_results_for_verl
-        print("\n=== TRANSFORM INPUT ===")
         print(f"Number of episodes: {len(results)}")
         print(f"Number of task_ids: {len(task_ids)}")
-        print(f"task_ids array (first 10): {task_ids[:10]}")
-        for i in range(min(10, len(results))):
-            episode = results[i]
-            session_id = episode.id
-            task_id_from_episode = session_id.split("/")[0]
-            task_id_from_array = task_ids[i] if i < len(task_ids) else "N/A"
-            print(f"  [{i}] episode.id={session_id}, task_ids[{i}]={task_id_from_array}, match={task_id_from_episode == task_id_from_array}")
-        print()
+        # for i in range(min(10, len(results))):
+        #     episode = results[i]
+        #     session_id = episode.id
+        #     task_id_from_episode = session_id.split(":")[0]
+        #     task_id_from_array = task_ids[i] if i < len(task_ids) else "N/A"
+        #     # print(f"  [{i}] episode.id={session_id}, task_ids[{i}]={task_id_from_array}, match={task_id_from_episode == task_id_from_array}")
+        # print()
 
         if free_cache_engine:
             if isinstance(self.rollout_engine, VerlEngine):
@@ -462,11 +459,11 @@ class AgentOmniEngine:
 
         for i, episode in enumerate(episodes):
             # ADD PRINT 5: Show mapping in transform
-            if i < 10:  # Only print first 10
-                session_id = episode.id if episode else "None"
-                task_id_from_episode = session_id.split("/")[0] if episode and "/" in session_id else "N/A"
-                task_id_from_array = task_ids[i] if i < len(task_ids) else "N/A"
-                print(f"  transform[{i}]: episode.id={session_id}, task_ids[{i}]={task_id_from_array}, match={task_id_from_episode == task_id_from_array}")
+            # if i < 10:  # Only print first 10
+            #     session_id = episode.id if episode else "None"
+            #     task_id_from_episode = session_id.split(":")[0] if episode and ":" in session_id else "N/A"
+            #     task_id_from_array = task_ids[i] if i < len(task_ids) else "N/A"
+            #     print(f"  transform[{i}]: episode.id={session_id}, task_ids[{i}]={task_id_from_array}, match={task_id_from_episode == task_id_from_array}")
 
             total_steps = 0
 
@@ -526,6 +523,7 @@ class AgentOmniEngine:
                 #     n_steps = 1
 
                 # else:
+                # TODO: auto merge the steps if they share some prefix
                 for step_idx, step in enumerate(trajectory.steps):
                     if isinstance(step.model_output, ModelOutput):
                         prompt_ids = torch.tensor(step.model_output.prompt_ids, dtype=torch.long)

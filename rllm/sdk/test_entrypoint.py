@@ -3,8 +3,6 @@
 import asyncio
 import multiprocessing as mp
 
-import pytest
-
 from rllm.sdk import RLLMClient, get_current_metadata, get_current_session
 
 
@@ -45,9 +43,7 @@ def test_entrypoint_async():
         return {"session_id": session_id, "metadata": metadata, "payload": payload}
 
     # Run async function with _metadata
-    result = asyncio.run(
-        handle_async_request({"input": "async-test"}, _metadata={"service": "async-test", "environment": "staging"})
-    )
+    result = asyncio.run(handle_async_request({"input": "async-test"}, _metadata={"service": "async-test", "environment": "staging"}))
 
     # Should have auto-generated session_id and metadata from _metadata
     assert result["session_id"] is not None
@@ -118,10 +114,7 @@ def test_entrypoint_dynamic_metadata():
     assert result1["metadata"] == {}  # No metadata
 
     # Call with _metadata - uses provided session_id and metadata
-    result2 = my_handler(
-        {"input": "test2"},
-        _metadata={"session_id": "run-123", "experiment": "v1", "mode": "training"}
-    )
+    result2 = my_handler({"input": "test2"}, _metadata={"session_id": "run-123", "experiment": "v1", "mode": "training"})
     assert result2["session_id"] == "run-123"  # From _metadata
     assert result2["metadata"]["mode"] == "training"  # From _metadata
     assert result2["metadata"]["experiment"] == "v1"  # From _metadata
@@ -151,7 +144,7 @@ def test_entrypoint_run_facade_pattern():
             "job": "training",
             "experiment": "v2",
             "batch": 1,
-        }
+        },
     )
     assert result2["session_id"] == "facade-run-456"
     assert result2["metadata"]["job"] == "training"
@@ -213,10 +206,7 @@ def call_worker_with_metadata(payload):
 
 
 def call_agent_with_metadata(task):
-    return my_agent_function(
-        task,
-        _metadata={"session_id": f"run-{task['id']}", "service": "my-agent", "experiment": "v1", "mode": "training"}
-    )
+    return my_agent_function(task, _metadata={"session_id": f"run-{task['id']}", "service": "my-agent", "experiment": "v1", "mode": "training"})
 
 
 def test_multiprocess_without_entrypoint():
@@ -275,7 +265,7 @@ def test_entrypoint_solves_run_facade_problem():
 
     # All results have correct context!
     for i, result in enumerate(results):
-        assert result["session_id"] == f"run-{i+1}"  # ✅ From _metadata
+        assert result["session_id"] == f"run-{i + 1}"  # ✅ From _metadata
         assert result["metadata"]["service"] == "my-agent"  # ✅ From _metadata
         assert result["metadata"]["experiment"] == "v1"  # ✅ From _metadata
         assert result["metadata"]["mode"] == "training"  # ✅ From _metadata
@@ -290,4 +280,3 @@ if __name__ == "__main__":
     print("\nTesting Run Facade scenario...")
     test_entrypoint_solves_run_facade_problem()
     print("✅ Success! Run Facade problem solved with @entrypoint.")
-

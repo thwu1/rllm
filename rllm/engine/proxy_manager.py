@@ -14,6 +14,7 @@ import tempfile
 import threading
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 import requests
 import yaml
 
@@ -61,6 +62,7 @@ class VerlProxyManager:
         model_name: str,
         proxy_host: str = "127.0.0.1",
         proxy_port: int = 4000,
+        admin_token: str | None = None,
         tracer: LLMTracer | None = None,
         auto_instrument_vllm: bool = True,
         proxy_access_log: bool = False,
@@ -86,6 +88,7 @@ class VerlProxyManager:
         self.tracer = tracer
         self.auto_instrument_vllm = auto_instrument_vllm
         self.proxy_access_log = proxy_access_log
+        self.admin_token = admin_token
 
         # Instrument vLLM if needed (before extracting server addresses)
         if auto_instrument_vllm:
@@ -104,6 +107,23 @@ class VerlProxyManager:
         self._server_thread: threading.Thread | None = None
         self._config_file: str | None = None
         self._is_running = False
+
+    async def emit_batch_end_signal(self, token: str) -> bool:
+        """Ask LiteLLM proxy to enqueue a batch-end marker."""
+
+        url = f"http://{self.proxy_host}:{self.proxy_port}/admin/tracer-signal"
+        headers = {"Content-Type": "application/json"}
+        headers["Authorization"] = f"Bearer {self.admin_token}"
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json={"token": token}, headers=headers) as resp:
+                    resp.raise_for_status()
+            return True
+        except Exception as exc:
+            logger.warning("Failed to emit batch end signal via proxy: %s", exc)
+            return False
 
     def _instrument_vllm_servers(self) -> None:
         """Instrument vLLM servers to return token IDs.
@@ -173,6 +193,12 @@ class VerlProxyManager:
                 }
             )
 
+        # model_list.append(
+        #     {
+        #         "model_name": f"gpt-4o-mini",
+        #     }
+        # )
+
         config = {
             "model_list": model_list,
             "litellm_settings": {
@@ -212,7 +238,6 @@ class VerlProxyManager:
     def reload_external_proxy(
         self,
         reload_url: str | None = None,
-        admin_token: str | None = None,
         inline_payload: bool = True,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
@@ -237,8 +262,8 @@ class VerlProxyManager:
             payload = {"config_path": snapshot_path}
 
         headers = {"Content-Type": "application/json"}
-        if admin_token:
-            token = admin_token if admin_token.lower().startswith("bearer ") else f"Bearer {admin_token}"
+        if self.admin_token:
+            token = self.admin_token if self.admin_token.lower().startswith("bearer ") else f"Bearer {self.admin_token}"
             headers["Authorization"] = token
 
         try:
