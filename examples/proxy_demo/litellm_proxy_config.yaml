@@ -15,6 +15,28 @@ model_list:
       model: gpt-4o-mini
       drop_params: true
 
+  # Qwen model via vLLM pass-through
+  - model_name: vllm-qwen-7b
+    litellm_params:
+      # Use hosted_vllm/ prefix for vLLM pass-through
+      model: hosted_vllm/Qwen/Qwen2.5-7B-Instruct
+      # Point to your vLLM server endpoint
+      api_base: http://localhost:30000/v1
+      # Optional: Request token IDs from vLLM (requires vLLM >= 0.10.2)
+      # extra_body:
+      #   return_token_ids: true
+
+  # Mock LLM for testing (no API key required)
+  - model_name: mock-gpt-4
+    litellm_params:
+      # Use openai/ prefix with mock_response parameter
+      model: openai/gpt-4
+      # This will return a fixed mock response instead of calling the API
+      mock_response: "This is a mock response from the test LLM. It will always return this text."
+      # No API key needed for mock responses
+
 # You can add more models/providers per LiteLLM docs, e.g. Anthropic, Azure, vLLM.
 # For OpenAI, make sure OPENAI_API_KEY is set in your environment.
+# For vLLM, ensure your vLLM server is running at the specified api_base.
+# For mock models, no external dependencies are required - they return the mock_response immediately.
 

@@ -27,11 +27,11 @@ print(f"Using LiteLLM config: {default_config}")
 from contextlib import asynccontextmanager
 
 import litellm
+from episodic import ContextStore, LLMTracer
 from fastapi import FastAPI
 from litellm.proxy.proxy_server import app as litellm_app
 from litellm.proxy.proxy_server import initialize
 
-from episodic import ContextStore, LLMTracer
 from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback, TracingCallback
 from rllm.sdk.proxy.middleware import MetadataRoutingMiddleware
 
@@ -49,7 +49,7 @@ tracer = LLMTracer(context_store, project=PROJECT)
 async def lifespan(app: FastAPI):
     """Initialize LiteLLM proxy on startup."""
     litellm.drop_params = True
-    litellm.callbacks.append(SamplingParametersCallback())
+    litellm.callbacks.append(SamplingParametersCallback(add_return_token_ids=True))
     litellm.callbacks.append(TracingCallback(tracer))
     await initialize(config=default_config, telemetry=False)
     yield
