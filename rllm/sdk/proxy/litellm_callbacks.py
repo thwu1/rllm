@@ -99,13 +99,12 @@ class TracingCallback(CustomLogger):
         """
         # One-time debug print of tracer identity
         # Check both data["metadata"] (injected by middleware) and litellm_params["metadata"]
-        litellm_params = data.get("litellm_params", {}) if isinstance(data, dict) else {}
-        raw_meta_from_params = litellm_params.get("metadata", {}) if isinstance(litellm_params, dict) else {}
+        # litellm_params = data.get("litellm_params", {}) if isinstance(data, dict) else {}
+        # raw_meta_from_params = litellm_params.get("metadata", {}) if isinstance(litellm_params, dict) else {}
         raw_meta_from_data = data.get("metadata", {}) if isinstance(data, dict) else {}
         # Merge both sources (data metadata takes precedence as it comes from middleware)
-        raw_meta = {**raw_meta_from_params, **raw_meta_from_data}
-        allowed = {"session_id", "job", "user_api_key_request_route"}
-        metadata = {k: v for k, v in raw_meta.items() if k in allowed}
+        # allowed = {"session_id", "job", "user_api_key_request_route"}
+        metadata = raw_meta_from_data.get("requester_metadata", {})
 
         model = data.get("model", "unknown") if isinstance(data, dict) else "unknown"
         messages = data.get("messages", []) if isinstance(data, dict) else []
