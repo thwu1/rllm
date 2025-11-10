@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 from litellm.integrations.custom_logger import CustomLogger
@@ -95,11 +94,10 @@ class TracingCallback(CustomLogger):
         This hook is called only once per HTTP request
         It has access to the actual response object
         and runs synchronously before the HTTP response is returned.
-        
+
         Uses litellm_call_id for deduplication to ensure we only log once per request.
         """
         # One-time debug print of tracer identity
-        
         # Check both data["metadata"] (injected by middleware) and litellm_params["metadata"]
         litellm_params = data.get("litellm_params", {}) if isinstance(data, dict) else {}
         raw_meta_from_params = litellm_params.get("metadata", {}) if isinstance(litellm_params, dict) else {}
@@ -140,7 +138,7 @@ class TracingCallback(CustomLogger):
             latency_ms=latency_ms,
             tokens=tokens,
         )
-        
+
         # Return response unchanged
         return response
 
