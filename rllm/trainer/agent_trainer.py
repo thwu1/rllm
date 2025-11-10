@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 import ray
@@ -24,6 +25,7 @@ class AgentTrainer:
         config: dict[str, Any] | list[str] | None = None,
         train_dataset: Dataset | None = None,
         val_dataset: Dataset | None = None,
+        agent_run_func: Callable | None = None,
     ):
         """
         Initialize the AgentTrainer.
@@ -58,6 +60,8 @@ class AgentTrainer:
         self.agent_args = agent_args or {}
         self.env_args = env_args or {}
 
+        self.agent_run_func = agent_run_func
+
         self.config = config
 
         if train_dataset is not None and self.config is not None and hasattr(self.config, "data"):
@@ -86,5 +90,6 @@ class AgentTrainer:
                 env_class=self.env_class,
                 agent_args=self.agent_args,
                 env_args=self.env_args,
+                agent_run_func=self.agent_run_func,
             )
         )

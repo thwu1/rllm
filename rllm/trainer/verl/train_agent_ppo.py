@@ -11,6 +11,7 @@ import ray
 from omegaconf import OmegaConf
 
 from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPING, WORKFLOW_CLASS_MAPPING
+from rllm.trainer.verl.agent_omni_trainer import AgentOmniTrainer
 from rllm.trainer.verl.agent_ppo_trainer import AgentPPOTrainer
 
 # Local application imports
@@ -59,7 +60,7 @@ class TaskRunner:
     to enable distributed execution across multiple nodes and GPUs.
     """
 
-    def run(self, config, workflow_class=None, workflow_args=None, agent_class=None, env_class=None, agent_args=None, env_args=None):
+    def run(self, config, workflow_class=None, workflow_args=None, agent_class=None, env_class=None, agent_args=None, env_args=None, agent_run_func=None):
         """Execute the main PPO training workflow.
 
         This method sets up the distributed training environment, initializes
@@ -155,7 +156,18 @@ class TaskRunner:
         val_reward_fn = load_reward_manager(config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {}))
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
-        if config.rllm.workflow.use_workflow:
+        # if config.rllm.workflow.use_workflow:
+        if agent_run_func is not None:
+            print("IMPORTANT: Using AgentOmniTrainer")
+            trainer = AgentOmniTrainer(
+                config=config,
+                tokenizer=tokenizer,
+                role_worker_mapping=role_worker_mapping,
+                resource_pool_manager=resource_pool_manager,
+                ray_worker_group_cls=ray_worker_group_cls,
+                agent_run_func=agent_run_func,
+            )
+        elif config.rllm.workflow.use_workflow:
             if workflow_class is None:
                 workflow_class = WORKFLOW_CLASS_MAPPING[config.rllm.workflow.name]
             workflow_args = workflow_args or {}
