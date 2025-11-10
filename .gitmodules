@@ -2,7 +2,3 @@
 	path = verl
 	url = https://github.com/volcengine/verl.git
 	branch = main
-[submodule "episodic"]
-	path = episodic
-	url = git@github.com:agentica-org/episodic.git
-	branch = main
