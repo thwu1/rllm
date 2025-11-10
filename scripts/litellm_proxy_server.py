@@ -61,6 +61,14 @@ class TracerSignalPayload(BaseModel):
     token: str = Field(..., description="Unique identifier for the batch completion marker.")
 
 
+class RewardPayload(BaseModel):
+    """Request body for publishing reward scores."""
+
+    context_id: str = Field(..., description="Unique identifier for the context (e.g., trace ID, step ID, or session ID).")
+    reward: float = Field(..., description="Reward score to assign to this context.")
+    metadata: dict | None = Field(default=None, description="Optional metadata associated with the reward.")
+
+
 class LiteLLMProxyRuntime:
     """Owns LiteLLM initialization and reload logic."""
 
@@ -69,13 +77,11 @@ class LiteLLMProxyRuntime:
         self._state_dir = state_dir
         self._tracer = tracer
         self._lock = asyncio.Lock()
-        self._initialized = False
 
     async def startup(self) -> None:
         # Don't initialize LiteLLM on startup - wait for first reload request
         # This allows the server to start even when backends aren't running yet
         logging.info("LiteLLM proxy server ready. Waiting for /admin/reload to configure backends.")
-        self._initialized = False
 
     async def reload(self, payload: ReloadPayload) -> Path:
         if payload.config_yaml:
@@ -86,12 +92,10 @@ class LiteLLMProxyRuntime:
             target = Path(payload.config_path).expanduser().resolve()  # type: ignore[arg-type]
 
         # Only verify health if this is a reload (not first-time initialization)
-        verify_health = self._initialized
-        await self._apply_config(target, verify_health=verify_health)
-        self._initialized = True
+        await self._apply_config(target)
         return target
 
-    async def _apply_config(self, config_path: Path, verify_health: bool = False) -> None:
+    async def _apply_config(self, config_path: Path) -> None:
         if not config_path.exists():
             raise FileNotFoundError(f"Config file does not exist: {config_path}")
 
@@ -124,17 +128,8 @@ class LiteLLMProxyRuntime:
             except Exception:
                 pass
 
-            # Verify backends are reachable (only during reload, not startup)
-            if verify_health:
-                await self._verify_backends_health(config_path)
-                logging.info("LiteLLM ready - all backends verified")
-            else:
-                logging.info("LiteLLM ready (health check skipped during startup)")
-
     def _install_callbacks(self) -> None:
-        callbacks = [
-            cb for cb in getattr(litellm, "callbacks", []) if not isinstance(cb, (SamplingParametersCallback, TracingCallback))
-        ]
+        callbacks = [cb for cb in getattr(litellm, "callbacks", []) if not isinstance(cb, SamplingParametersCallback | TracingCallback)]
         callbacks.append(SamplingParametersCallback(add_return_token_ids=True))
         if self._tracer:
             callbacks.append(TracingCallback(self._tracer))
@@ -165,15 +160,23 @@ class LiteLLMProxyRuntime:
             pass
         await self._tracer.flush(timeout=timeout)
 
-    async def _verify_backends_health(self, config_path: Path) -> None:
-        """Verify that LiteLLM router is initialized and ready."""
-        # Simple check: just verify LiteLLM initialized successfully
-        # The actual backend health will be checked on first request
-        if not hasattr(litellm, "router") or litellm.router is None:
-            raise RuntimeError("LiteLLM router not initialized")
+    async def publish_reward(self, context_id: str, reward: float, metadata: dict | None = None) -> None:
+        """Publish a reward score to the context store.
 
-        num_models = self._count_models(config_path)
-        logging.info("LiteLLM router ready with %d model(s)", num_models)
+        Args:
+            context_id: Unique identifier for the context (trace ID, step ID, or session ID).
+            reward: Reward score to assign.
+            metadata: Optional metadata associated with the reward.
+        """
+        if not self._tracer:
+            raise RuntimeError("Tracer is not configured on this proxy")
+
+        # Store reward as a signal in the context store
+        reward_data = {"reward": reward, **(metadata or {})}
+
+        logging.info("Publishing reward=%s for context_id=%s metadata=%s", reward, context_id, metadata)
+
+        await self._tracer.store_signal(context_id=context_id, context_type="reward", data=reward_data, tags=["reward"])
 
     @staticmethod
     def _count_models(config_path: Path) -> int:
@@ -186,10 +189,6 @@ class LiteLLMProxyRuntime:
     @property
     def config_path(self) -> str:
         return str(self._current_config)
-
-    @property
-    def is_initialized(self) -> bool:
-        return self._initialized
 
 
 def _build_tracer(endpoint: str | None, api_key: str | None, project: str | None) -> LLMTracer | None:
@@ -241,24 +240,16 @@ def main() -> None:
         if args.admin_token and authorization != f"Bearer {args.admin_token}":
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid admin token")
 
-    @litellm_app.get("/admin/health")
-    async def health():
-        return {
-            "status": "ok",
-            "initialized": runtime.is_initialized,
-            "config_path": runtime.config_path if runtime.is_initialized else None
-        }
-
     @litellm_app.post("/admin/reload", dependencies=[Depends(_require_token)])
     async def reload_proxy(payload: ReloadPayload):
         try:
             new_path = await runtime.reload(payload)
             return {"status": "reloaded", "config_path": str(new_path)}
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except Exception as exc:
             logging.exception("Reload failed")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
     @litellm_app.post("/admin/tracer-signal", dependencies=[Depends(_require_token)])
     async def tracer_signal(payload: TracerSignalPayload):
@@ -266,27 +257,39 @@ def main() -> None:
             await runtime.emit_tracer_signal(payload.token)
             return {"status": "queued", "token": payload.token}
         except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         except Exception as exc:
             logging.exception("Tracer signal failed")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
-    @litellm_app.post("/admin/tracer-signal-sync", dependencies=[Depends(_require_token)])
-    async def tracer_signal_sync(payload: TracerSignalPayload):
-        """Flush tracer queue for this instance, then enqueue the signal.
+    @litellm_app.post("/admin/publish-reward", dependencies=[Depends(_require_token)])
+    async def publish_reward(payload: RewardPayload):
+        """Publish a reward score for a specific context.
 
-        This guarantees the signal is emitted after all currently queued traces
-        for this process have been persisted.
+        This endpoint allows external services to publish reward scores that can be
+        associated with LLM traces, steps, or sessions. The reward is stored in the
+        context store with context_type="reward" and can be retrieved later.
+
+        Example:
+            ```bash
+            curl -X POST http://localhost:4000/admin/publish-reward \\
+                -H "Authorization: Bearer my-shared-secret" \\
+                -H "Content-Type: application/json" \\
+                -d '{
+                    "context_id": "task_123:0:1_solver_step0",
+                    "reward": 1.0,
+                    "metadata": {"is_correct": true, "step_type": "solver"}
+                }'
+            ```
         """
         try:
-            await runtime.flush_tracer()
-            await runtime.emit_tracer_signal(payload.token)
-            return {"status": "flushed_and_queued", "token": payload.token}
+            await runtime.publish_reward(context_id=payload.context_id, reward=payload.reward, metadata=payload.metadata)
+            return {"status": "published", "context_id": payload.context_id, "reward": payload.reward}
         except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         except Exception as exc:
-            logging.exception("Tracer signal sync failed")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+            logging.exception("Publish reward failed")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
     def _shutdown_handler(*_: int) -> None:
         raise SystemExit

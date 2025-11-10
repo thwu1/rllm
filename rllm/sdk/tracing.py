@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from .context import get_current_metadata, get_current_session
+from rllm.sdk.context import get_current_metadata, get_current_session
 
 if TYPE_CHECKING:
     from episodic.core import Context
@@ -273,8 +273,7 @@ class LLMTracer:
                     logger.warning(f"Failed to store trace (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delays[attempt]}s...")
                     await asyncio.sleep(retry_delays[attempt])
                 else:
-                    logger.exception("Failed to store trace after %d attempts: %s", max_retries, e)
-                    raise
+                    logger.exception("Dropping trace due to failed to store trace after %d attempts: %s", max_retries, e)
 
     async def _store_trace(self, trace_data: dict[str, Any]):
         """

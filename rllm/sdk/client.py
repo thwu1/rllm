@@ -11,17 +11,15 @@ from typing import Any, TypeVar
 
 from openai import AsyncOpenAI, OpenAI
 
-from rllm.sdk.tracing import ContextStoreProtocol
-
-from .chat import (
+from rllm.sdk.chat import (
     OpenAIChatClient,
     ProxyTrackedAsyncChatClient,
     ProxyTrackedChatClient,
     SimpleTrackedAsyncChatClient,
     SimpleTrackedChatClient,
 )
-from .session import SessionContext
-from .tracing import get_context_store, get_tracer
+from rllm.sdk.session import SessionContext
+from rllm.sdk.tracing import ContextStoreProtocol, get_context_store, get_tracer
 
 F = TypeVar("F", bound=Callable[..., Any])
 

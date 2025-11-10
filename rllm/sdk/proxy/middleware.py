@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .metadata_slug import extract_metadata_from_path
+from rllm.sdk.proxy.metadata_slug import extract_metadata_from_path
 
 logger = logging.getLogger(__name__)
 

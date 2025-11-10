@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from .context import get_current_metadata, get_current_session
+from rllm.sdk.context import get_current_metadata, get_current_session
 
 if TYPE_CHECKING:
     from episodic.core import Context
