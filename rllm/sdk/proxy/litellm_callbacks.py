@@ -80,8 +80,6 @@ class TracingCallback(CustomLogger):
         super().__init__()
         self.tracer = tracer
         # Track logged call IDs to prevent duplicates
-        self._logged_call_ids: set[str] = set()
-        self._printed_tracer_id = False
 
     async def async_post_call_success_hook(
         self,
@@ -127,6 +125,10 @@ class TracingCallback(CustomLogger):
         else:
             response_payload = {"text": str(response)}
 
+        # Extract the response ID from the LLM provider to use as trace_id/context_id
+        # This ensures the context_id matches the actual completion ID from the provider
+        response_id = response_payload.get("id", None)
+
         self.tracer.log_llm_call(
             name=f"proxy/{model}",
             model=model,
@@ -136,6 +138,7 @@ class TracingCallback(CustomLogger):
             session_id=metadata.get("session_id"),
             latency_ms=latency_ms,
             tokens=tokens,
+            trace_id=response_id,  # Use the provider's response ID as the trace_id
         )
 
         # Return response unchanged

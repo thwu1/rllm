@@ -11,9 +11,8 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
+from rllm.sdk.chat.simple_chat_client import _SimpleTrackedChatClientBase
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
-
-from .simple_chat_client import _SimpleTrackedChatClientBase
 
 
 class _ScopedClientMixin:

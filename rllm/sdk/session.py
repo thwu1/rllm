@@ -1,6 +1,6 @@
 """Session context manager for automatic trace tracking."""
 
-from .context import _metadata, _session_id
+from rllm.sdk.context import _metadata, _session_id
 
 
 class SessionContext:

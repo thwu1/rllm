@@ -82,35 +82,28 @@ def instrument_vllm(force: bool = False) -> bool:
         >>> instrument_vllm()
         >>> # Now all vLLM responses include token IDs in native format
     """
-    print("=" * 80)
-    print("[VLLM_INSTRUMENT] instrument_vllm() called")
-    print("=" * 80)
-
     # Force import vLLM modules to ensure they're loaded before patching
     try:
-        print("[VLLM_INSTRUMENT] Force importing vLLM modules...")
+        logger.info("[VLLM_INSTRUMENT] Force importing vLLM modules...")
         import vllm
         import vllm.entrypoints.openai.protocol
         import vllm.entrypoints.openai.serving_chat
 
-        print(f"[VLLM_INSTRUMENT] vLLM modules imported successfully, vllm.__version__={vllm.__version__}")
+        logger.info(f"[VLLM_INSTRUMENT] vLLM modules imported successfully, vllm.__version__={vllm.__version__}")
     except ImportError as e:
-        print(f"⚠️ [VLLM_INSTRUMENT] vLLM not available: {e}")
-        logger.warning(f"vLLM not available: {e}")
+        logger.warning(f"⚠️ [VLLM_INSTRUMENT] vLLM not available: {e}")
         return False
 
     if not _check_vllm_available():
-        print("⚠️ [VLLM_INSTRUMENT] vLLM not available, skipping instrumentation")
-        logger.warning("vLLM not available, skipping instrumentation")
+        logger.warning("⚠️ [VLLM_INSTRUMENT] vLLM not available, skipping instrumentation")
         return False
 
     # Check version
     version = _get_vllm_version()
-    print(f"🔍 [VLLM_INSTRUMENT] vLLM version detected: {version}")
+    logger.info(f"🔍 [VLLM_INSTRUMENT] vLLM version detected: {version}")
     if version and version >= (0, 10, 2) and not force:
         msg = f"vLLM {'.'.join(map(str, version))} has native return_token_ids support. Instrumentation not needed."
-        print(f"ℹ️ [VLLM_INSTRUMENT] {msg}")
-        logger.info(msg)
+        logger.info(f"ℹ️ [VLLM_INSTRUMENT] {msg}")
         return False
 
     try:
@@ -122,21 +115,17 @@ def instrument_vllm(force: bool = False) -> bool:
         global _is_instrumented, _original_chat_completion_full_generator, _original_response_class
 
         if _is_instrumented:
-            print("⚠️ [VLLM_INSTRUMENT] vLLM is already instrumented by RLLM. Skipping.")
-            logger.warning("vLLM is already instrumented by RLLM. Skipping.")
+            logger.warning("⚠️ [VLLM_INSTRUMENT] vLLM is already instrumented by RLLM. Skipping.")
             return False
 
-        print("🔧 [VLLM_INSTRUMENT] Starting vLLM instrumentation...")
-        logger.info("🔧 Starting vLLM instrumentation...")
+        logger.info("🔧 [VLLM_INSTRUMENT] Starting vLLM instrumentation...")
 
         # Store original references
         _original_chat_completion_full_generator = OpenAIServingChat.chat_completion_full_generator
         _original_response_class = ChatCompletionResponse
 
-        print(f"📦 [VLLM_INSTRUMENT] Stored original chat_completion_full_generator: {_original_chat_completion_full_generator}")
-        print(f"📦 [VLLM_INSTRUMENT] Stored original ChatCompletionResponse: {_original_response_class}")
-        logger.info(f"📦 Stored original chat_completion_full_generator: {_original_chat_completion_full_generator}")
-        logger.info(f"📦 Stored original ChatCompletionResponse: {_original_response_class}")
+        logger.info(f"📦 [VLLM_INSTRUMENT] Stored original chat_completion_full_generator: {_original_chat_completion_full_generator}")
+        logger.info(f"📦 [VLLM_INSTRUMENT] Stored original ChatCompletionResponse: {_original_response_class}")
 
         # Import ChatCompletionResponseChoice to patch it
         from vllm.entrypoints.openai.protocol import ChatCompletionResponseChoice
@@ -170,8 +159,7 @@ def instrument_vllm(force: bool = False) -> bool:
             request_metadata: Any,
         ) -> Any:
             """Patched generator that extracts token IDs and adds them in native vLLM 0.10.2+ format."""
-            print(f"🎯 [VLLM_INSTRUMENT] Patched generator called for request_id={request_id}")
-            logger.debug(f"🎯 Patched generator called for request_id={request_id}")
+            logger.debug(f"🎯 [VLLM_INSTRUMENT] Patched generator called for request_id={request_id}")
             prompt_token_ids: list[int] | None = None
             response_token_ids: list[list[int]] | None = None
 
@@ -183,8 +171,7 @@ def instrument_vllm(force: bool = False) -> bool:
                     # Extract token IDs from vLLM's internal RequestOutput
                     prompt_token_ids = res.prompt_token_ids
                     response_token_ids = [output.token_ids for output in res.outputs]
-                    print(f"🔍 [VLLM_INSTRUMENT] Extracted token IDs: prompt={len(prompt_token_ids) if prompt_token_ids else 0}, response={len(response_token_ids) if response_token_ids else 0} choices")
-                    logger.debug(f"🔍 Extracted token IDs: prompt={len(prompt_token_ids) if prompt_token_ids else 0}, response={len(response_token_ids) if response_token_ids else 0} choices")
+                    logger.debug(f"🔍 [VLLM_INSTRUMENT] Extracted token IDs: prompt={len(prompt_token_ids) if prompt_token_ids else 0}, response={len(response_token_ids) if response_token_ids else 0} choices")
 
             # Call original generator with interceptor
             response = await _original_chat_completion_full_generator(
@@ -201,8 +188,7 @@ def instrument_vllm(force: bool = False) -> bool:
             # Add token IDs to response in native vLLM 0.10.2+ format:
             # - prompt_token_ids at top level (for the prompt)
             # - token_ids per choice (for response tokens)
-            print(f"📝 [VLLM_INSTRUMENT] Adding token IDs to response: prompt={len(prompt_token_ids) if prompt_token_ids else 0}, response={len(response_token_ids) if response_token_ids else 0} choices")
-            logger.debug(f"📝 Adding token IDs to response: prompt={len(prompt_token_ids) if prompt_token_ids else 0}, response={len(response_token_ids) if response_token_ids else 0} choices")
+            logger.debug(f"📝 [VLLM_INSTRUMENT] Adding token IDs to response: prompt={len(prompt_token_ids) if prompt_token_ids else 0}, response={len(response_token_ids) if response_token_ids else 0} choices")
 
             # Update choices to add response token_ids directly to choice (matching native vLLM format)
             updated_choices = []
@@ -222,29 +208,24 @@ def instrument_vllm(force: bool = False) -> bool:
                 }
             )
 
-            print(f"✅ [VLLM_INSTRUMENT] Response has token IDs: prompt_token_ids={len(response.prompt_token_ids) if response.prompt_token_ids else 0}, choices[0].token_ids={len(response.choices[0].token_ids) if response.choices and response.choices[0].token_ids else 0}")
-            logger.debug(f"✅ Response has token IDs: prompt_token_ids={len(response.prompt_token_ids) if response.prompt_token_ids else 0}, choices[0].token_ids={len(response.choices[0].token_ids) if response.choices and response.choices[0].token_ids else 0}")
+            logger.debug(f"✅ [VLLM_INSTRUMENT] Response has token IDs: prompt_token_ids={len(response.prompt_token_ids) if response.prompt_token_ids else 0}, choices[0].token_ids={len(response.choices[0].token_ids) if response.choices and response.choices[0].token_ids else 0}")
 
             return response
 
         # Apply patches
-        print("🔨 [VLLM_INSTRUMENT] Applying patches to vLLM...")
-        logger.info("🔨 Applying patches to vLLM...")
+        logger.info("🔨 [VLLM_INSTRUMENT] Applying patches to vLLM...")
         vllm.entrypoints.openai.protocol.ChatCompletionResponse = ChatCompletionResponsePatched
         OpenAIServingChat.chat_completion_full_generator = chat_completion_full_generator
         _is_instrumented = True
 
-        print("✅ [VLLM_INSTRUMENT] vLLM instrumented successfully to return token IDs")
-        print(f"📊 [VLLM_INSTRUMENT] Patched ChatCompletionResponse: {ChatCompletionResponsePatched}")
-        print(f"📊 [VLLM_INSTRUMENT] Patched generator: {chat_completion_full_generator}")
-        logger.info("✅ vLLM instrumented successfully to return token IDs")
-        logger.info(f"📊 Patched ChatCompletionResponse: {ChatCompletionResponsePatched}")
-        logger.info(f"📊 Patched generator: {chat_completion_full_generator}")
+        logger.info("✅ [VLLM_INSTRUMENT] vLLM instrumented successfully to return token IDs")
+        logger.info(f"📊 [VLLM_INSTRUMENT] Patched ChatCompletionResponse: {ChatCompletionResponsePatched}")
+
+        logger.info(f"📊 [VLLM_INSTRUMENT] Patched generator: {chat_completion_full_generator}")
         return True
 
     except Exception as e:
-        print(f"❌ [VLLM_INSTRUMENT] Failed to instrument vLLM: {e}")
-        logger.error(f"Failed to instrument vLLM: {e}")
+        logger.error(f"❌ [VLLM_INSTRUMENT] Failed to instrument vLLM: {e}")
         import traceback
 
         traceback.print_exc()
@@ -365,5 +346,5 @@ def check_vllm_instrumentation_status() -> dict:
     except Exception as e:
         status["error"] = str(e)
 
-    print(f"[VLLM_INSTRUMENT] Instrumentation status check: {status}")
+    logger.info(f"[VLLM_INSTRUMENT] Instrumentation status check: {status}")
     return status

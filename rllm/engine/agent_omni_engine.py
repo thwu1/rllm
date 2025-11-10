@@ -294,6 +294,7 @@ class AgentOmniEngine:
 
     async def start_collect_traces(self, batch_end_token: str):
         traces_queue = asyncio.Queue()
+        reward_queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
         self._batch_end_future: asyncio.Future | None = loop.create_future()
 
@@ -304,19 +305,19 @@ class AgentOmniEngine:
                 if update.context.id == batch_end_token and self._batch_end_future:
                     print(f"Received batch end signal for token {batch_end_token}")
                     self._batch_end_future.set_result(True)
-
-                return
-
-            event = {
-                "id": update.context.id,
-                "type": update.context.type,
-                "data": update.context.data,
-            }
-            traces_queue.put_nowait(event)
+            elif update.context.type == "reward":
+                reward_queue.put_nowait(update.context.data)
+            else:
+                event = {
+                    "id": update.context.id,
+                    "type": update.context.type,
+                    "data": update.context.data,
+                }
+                traces_queue.put_nowait(event)
 
         await self.context_subscriber.start()
 
-        return traces_queue, self._batch_end_future
+        return traces_queue, reward_queue, self._batch_end_future
 
     async def execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
         """Run asynchronous workflow execution with retry logic for multiple tasks.
@@ -338,7 +339,7 @@ class AgentOmniEngine:
         task_states = defaultdict(lambda: {"idx": None, "task": None, "episodes": [], "completed": 0, "total_rollouts": 0, "is_complete": False})
 
         batch_end_token = f"trace-batch-end-{uuid.uuid4().hex}"
-        traces_queue, end_future = await self.start_collect_traces(batch_end_token)
+        traces_queue, reward_queue, end_future = await self.start_collect_traces(batch_end_token)
 
         futures = []
         idx_counter = 0
@@ -387,11 +388,17 @@ class AgentOmniEngine:
 
         while not traces_queue.empty():
             event = traces_queue.get_nowait()
+            response_id = event.get("id", None)
             trace = event.get("data", {})
             session_id = trace.get("session_id", None)
             if not session_id or session_id not in uids_to_collect:
                 continue
-            traces_by_session_id[session_id].append(trace)
+            traces_by_session_id[session_id].append((response_id, trace))
+
+        response_id_to_reward = dict()
+        while not reward_queue.empty():
+            reward = reward_queue.get_nowait()
+            response_id_to_reward[reward["response_context_id"]] = reward["reward"]
 
         await self.context_subscriber.stop()
 
@@ -402,7 +409,13 @@ class AgentOmniEngine:
             groupby = None
 
         for session_id, traces in traces_by_session_id.items():
-            steps = [trace_to_step(trace) for trace in traces]
+            steps = [trace_to_step(trace[1]) for trace in traces]
+            response_ids = [trace[0] for trace in traces]
+            for step, response_id in zip(steps, response_ids, strict=False):
+                step.reward = response_id_to_reward.get(response_id, 0.0)
+
+            step_rewards = [step.reward for step in steps]
+            print(f"Session {session_id} rewards: {step_rewards}")
             # Parse session_id (format: "task_id:rollout_idx:retry_attempt")
             task_id = session_id.split(":")[0]
             rollout_idx = int(session_id.split(":")[1])
