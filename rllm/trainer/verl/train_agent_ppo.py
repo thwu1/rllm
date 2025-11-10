@@ -156,7 +156,6 @@ class TaskRunner:
         val_reward_fn = load_reward_manager(config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {}))
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
-        # if config.rllm.workflow.use_workflow:
         if agent_run_func is not None:
             print("IMPORTANT: Using AgentOmniTrainer")
             trainer = AgentOmniTrainer(
@@ -169,8 +168,6 @@ class TaskRunner:
             )
         elif workflow_class is not None:
             # Should provide workflow_class if want to use workflow trainer
-            if config.rllm.workflow.use_workflow and workflow_class is None:
-                workflow_class = WORKFLOW_CLASS_MAPPING[config.rllm.workflow.name]
             workflow_args = workflow_args or {}
             if config.rllm.workflow.get("workflow_args") is not None:
                 for key, value in config.rllm.workflow.get("workflow_args").items():

@@ -59,7 +59,7 @@ class AgentTrainer:
             if agent_args is not None or env_args is not None:
                 raise ValueError("The 'fireworks' backend does not support agent_args or env_args. Use workflow_args to configure the workflow.")
 
-        if workflow_class is not None and config is not None and hasattr(config, "rllm") and hasattr(config.rllm, "workflow") and config.rllm.workflow.use_workflow:
+        if workflow_class is not None:
             if agent_class is not None:
                 raise ValueError("agent_class is not supported when using workflow, instead use workflow_args['agent_cls']")
             if agent_args is not None:
