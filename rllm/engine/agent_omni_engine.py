@@ -414,8 +414,8 @@ class AgentOmniEngine:
             for step, response_id in zip(steps, response_ids, strict=False):
                 step.reward = response_id_to_reward.get(response_id, 0.0)
 
-            step_rewards = [step.reward for step in steps]
-            print(f"Session {session_id} rewards: {step_rewards}")
+            # step_rewards = [step.reward for step in steps]
+            # print(f"Session {session_id} rewards: {step_rewards}")
             # Parse session_id (format: "task_id:rollout_idx:retry_attempt")
             task_id = session_id.split(":")[0]
             rollout_idx = int(session_id.split(":")[1])
@@ -427,8 +427,10 @@ class AgentOmniEngine:
             trajecoties = group_steps(steps, by=groupby)
             for trajectory in trajecoties:
                 trajectory.reward = rewards[session_id]
+            # heuristic for is_correct, only for logging purpose
+            is_correct = rewards[session_id] >= 1.0
             # episode.id is the full session_id including retry_attempt
-            episode = Episode(id=session_id, trajectories=trajecoties, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "received_batch_end": int(received_batch_end), "emit_success": int(emit_success), "num_trajectories": len(trajecoties)})
+            episode = Episode(id=session_id, trajectories=trajecoties, is_correct=is_correct, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "received_batch_end": int(received_batch_end), "emit_success": int(emit_success), "num_trajectories": len(trajecoties)})
             task_states[task_id]["episodes"].append(episode)
 
         results = []
