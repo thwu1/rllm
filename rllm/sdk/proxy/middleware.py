@@ -32,7 +32,7 @@ class MetadataRoutingMiddleware(BaseHTTPMiddleware):
         extracted = extract_metadata_from_path(request.url.path)
         if extracted is not None:
             clean_path, metadata = extracted
-            logger.info("MetadataRoutingMiddleware: decoded slug path=%s clean=%s metadata=%s", request.url.path, clean_path, metadata)
+            logger.debug("MetadataRoutingMiddleware: decoded slug path=%s clean=%s metadata=%s", request.url.path, clean_path, metadata)
             request.scope["path"] = clean_path
             request.scope["raw_path"] = clean_path.encode("utf-8")
 
@@ -51,7 +51,7 @@ class MetadataRoutingMiddleware(BaseHTTPMiddleware):
                 if isinstance(payload, dict):
                     payload["metadata"] = {**(payload.get("metadata") or {}), **metadata}
                     mutated_body = json.dumps(payload).encode("utf-8")
-                    logger.info("MetadataRoutingMiddleware: injected metadata into body keys=%s", list(metadata.keys()))
+                    logger.debug("MetadataRoutingMiddleware: injected metadata into body keys=%s", list(metadata.keys()))
 
                     # Update cached body so request.json()/body() observes the mutation
                     request._body = mutated_body  # type: ignore[attr-defined]
