@@ -1,7 +1,5 @@
 """Session context manager for automatic trace tracking."""
 
-import uuid
-
 from .context import _metadata, _session_id
 
 
@@ -31,10 +29,10 @@ class SessionContext:
         """Initialize session context.
 
         Args:
-            session_id: Session ID (auto-generated if None)
+            session_id: Session ID (if None, context variables won't be set)
             **metadata: Arbitrary metadata to attach to all traces in this session
         """
-        self.session_id = session_id or f"session-{uuid.uuid4()}"
+        self.session_id = session_id
         self.metadata = metadata
         self.s_token = None
         self.m_token = None
@@ -49,17 +47,22 @@ class SessionContext:
         # Merge: parent metadata + current metadata (current wins)
         merged = {**parent_meta, **self.metadata}
 
-        # Set context variables
-        self.s_token = _session_id.set(self.session_id)
+        # Set session_id context only if provided
+        if self.session_id is not None:
+            self.s_token = _session_id.set(self.session_id)
+
+        # Always set metadata context (even if empty, to maintain nesting)
         self.m_token = _metadata.set(merged)
 
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit session context - restore previous context."""
-        # Reset to parent context
-        _session_id.reset(self.s_token)
-        _metadata.reset(self.m_token)
+        # Only reset if we actually set the context variables
+        if self.s_token is not None:
+            _session_id.reset(self.s_token)
+        if self.m_token is not None:
+            _metadata.reset(self.m_token)
         return False
 
     def __repr__(self):
