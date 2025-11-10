@@ -10,9 +10,9 @@ from pprint import pprint
 
 import numpy as np
 import torch
+from episodic import ContextStore
 from omegaconf import OmegaConf
 
-from episodic import ContextStore
 from rllm.engine.agent_omni_engine import AgentOmniEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.sdk import LLMTracer
@@ -145,15 +145,15 @@ class AgentOmniTrainer(RayPPOTrainer):
         )
         tracer = LLMTracer(
             context_store=self.context_store,
-            project="rllm-agent-omni-trainer",
+            project=self.config.rllm.run_name,
         )
 
         # Setup proxy config for VERL engine
         proxy_config = {
             "model_name": self.config.actor_rollout_ref.model.path,
-            "proxy_host": "127.0.0.1",
-            "proxy_port": 4000,
-            "auto_start": False,  # Auto-start the proxy server
+            "proxy_host": self.config.rllm.proxy.host,
+            "proxy_port": self.config.rllm.proxy.port,
+            "auto_start": self.config.rllm.proxy.auto_start,  # Auto-start the proxy server
         }
 
         self.agent_execution_engine = AgentOmniEngine(
