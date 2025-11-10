@@ -191,7 +191,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         import time
 
         start_time = time.time()
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        if self.config.trainer.get("val_before_train", True):
             val_metrics = self._validate_agent()
             pprint(f"Initial validation metrics: {val_metrics}")
             logger.log(data=val_metrics, step=self.global_steps)
@@ -470,7 +470,7 @@ class AgentOmniTrainer(RayPPOTrainer):
                         metrics.update(actor_output_metrics)
 
                     # validate
-                    if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0:
+                    if self.config.trainer.test_freq > 0 and self.global_steps % self.config.trainer.test_freq == 0:
                         with marked_timer("testing", timing_raw, color="green"):
                             val_metrics: dict = self._validate_agent()
                         metrics.update(val_metrics)
