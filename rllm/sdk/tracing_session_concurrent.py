@@ -1,4 +1,8 @@
-"""LLM Tracing utilities for the rLLM SDK."""
+"""Session-concurrent tracer module (copy of tracing.py to evolve separately).
+
+This module is initially identical to rllm.rllm.sdk.tracing, kept separate
+to allow iterative changes for session-concurrency without impacting existing users.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import queue
 import threading
 import time
 import uuid
+from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from rllm.sdk.context import get_current_metadata, get_current_session
@@ -65,7 +70,12 @@ class LLMTracer:
         from rllm.sdk import LLMTracer
 
         store = ContextStore(endpoint="http://localhost:8000", api_key="your-key")
-        tracer = LLMTracer(store, project="my-app", max_concurrent_stores=100)
+        tracer = LLMTracer(
+            store,
+            project="my-app",
+            max_active_sessions=32,  # Control concurrency
+            max_batch_size=16,       # Larger batches for efficiency
+        )
 
         # Log call is now synchronous and non-blocking
         tracer.log_llm_call(
@@ -79,13 +89,26 @@ class LLMTracer:
         )
 
         # Use as async context manager for automatic cleanup
-        async with LLMTracer(store) as tracer:
+        async with LLMTracer(store, project="my-app") as tracer:
             tracer.log_llm_call(...)
         # All pending traces are flushed on exit
         ```
     """
 
-    def __init__(self, context_store: ContextStoreProtocol, project: str, default_tags: list[str] | None = None, max_queue_size: int = 10000, max_concurrent_stores: int = 100, max_batch_size: int = 8):
+    # Sentinel used to unblock the worker on shutdown
+    _STOP = object()
+
+    def __init__(
+        self,
+        context_store: ContextStoreProtocol,
+        project: str,
+        default_tags: list[str] | None = None,
+        max_queue_size: int = 10000,
+        max_batch_size: int = 8,
+        max_active_sessions: int = 32,
+        max_queue_size_per_session: int = 2048,
+        drop_policy: str = "drop_newest",
+    ):
         """
         Initialize the LLM tracer.
 
@@ -93,11 +116,12 @@ class LLMTracer:
             context_store: The context store backend to use for storing traces
             project: Project name to organize traces (recommended). Maps to namespace automatically.
                     Example: project="my-app" → namespace="my-app"
-            namespace: Direct namespace specification (legacy, for backward compatibility).
-                      If both project and namespace are provided, namespace takes precedence.
             default_tags: Default tags to apply to all traces
             max_queue_size: Maximum number of traces to buffer in memory (default: 10,000)
-            max_concurrent_stores: Maximum number of concurrent store operations (default: 100)
+            max_batch_size: Maximum traces per batch when storing (default: 8)
+            max_active_sessions: Maximum sessions processing concurrently (default: 32)
+            max_queue_size_per_session: Maximum traces queued per session (default: 2,048)
+            drop_policy: Policy when session queue is full - 'drop_newest' or 'drop_oldest' (default: 'drop_newest')
         """
         self.context_store = context_store
 
@@ -108,15 +132,25 @@ class LLMTracer:
         # Queue for non-blocking trace storage (thread-safe queue)
         self._trace_queue = queue.Queue(maxsize=max_queue_size)
         self._max_queue_size = max_queue_size
-        self._shutdown = False
-        self._max_concurrent_stores = max_concurrent_stores
         self._max_batch_size = max(1, max_batch_size)
+        self._max_active_sessions = max(1, max_active_sessions)
+        self._max_queue_size_per_session = max(1, max_queue_size_per_session)
+        self._drop_policy = drop_policy  # 'drop_newest' or 'drop_oldest'
 
         # Thread and event loop for background worker
         self._worker_thread: threading.Thread | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._worker_started = threading.Event()
-        self._all_tasks_done: asyncio.Event | None = None  # Created in worker loop
+        self._shutdown = False
+
+        # State for session-concurrent scheduling
+        self._session_queues: dict[str | None, deque] = defaultdict(deque)
+        self._sessions_busy: set[str | None] = set()
+        self._session_in_flight: dict[str | None, int] = defaultdict(int)  # Track items being stored per session
+        self._state_lock = threading.Lock()
+
+        # Created inside worker loop
+        self._store_semaphore: asyncio.Semaphore | None = None
 
         # Start background worker
         self._start_background_worker()
@@ -138,10 +172,6 @@ class LLMTracer:
         self._worker_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._worker_loop)
 
-        # Create event for task coordination
-        self._all_tasks_done = asyncio.Event()
-        self._all_tasks_done.set()  # Initially set (no tasks)
-
         # Signal that the worker has started
         self._worker_started.set()
 
@@ -158,65 +188,149 @@ class LLMTracer:
             self._worker_loop = None
 
     async def _async_worker(self):
-        """
-        Async worker that processes traces from the queue with parallel execution.
-        Runs continuously until shutdown is requested.
-        """
-        # Create semaphore for limiting concurrent operations
-        semaphore = asyncio.Semaphore(self._max_concurrent_stores // (self._max_batch_size / 2))
-        active_tasks = set()
+        """Session-concurrent router/dispatcher running in the worker loop."""
+        # Semaphore limits concurrent store operations to match max active sessions
+        # Since each session processes one batch at a time, this prevents overwhelming the context store
+        self._store_semaphore = asyncio.Semaphore(self._max_active_sessions)
 
+        router_done = False
+
+        async def schedule_if_possible(session_id: str | None):
+            if session_id in self._sessions_busy:
+                return
+            if len(self._sessions_busy) >= self._max_active_sessions:
+                return
+            dq = self._session_queues.get(session_id)
+            if not dq:
+                return
+            # Mark busy and start processing
+            self._sessions_busy.add(session_id)
+            asyncio.create_task(process_session(session_id))
+
+        async def process_session(session_id: str | None):
+            batch: list[dict[str, Any]] = []
+            try:
+                dq = self._session_queues.get(session_id)
+                if not dq:
+                    return
+                while dq and len(dq) > 0 and len(batch) < self._max_batch_size:
+                    batch.append(dq.popleft())
+
+                # Track in-flight items
+                with self._state_lock:
+                    self._session_in_flight[session_id] += len(batch)
+
+                async with self._store_semaphore:  # type: ignore[arg-type]
+                    if len(batch) == 1:
+                        await self._store_trace_with_retry(batch[0])
+                    elif batch:
+                        await self._store_batch_with_retry(batch)
+            finally:
+                # Mark items as done in main queue (even if storing failed)
+                for _ in batch:
+                    self._trace_queue.task_done()
+
+                # Decrement in-flight count
+                if batch:
+                    with self._state_lock:
+                        self._session_in_flight[session_id] = max(0, self._session_in_flight[session_id] - len(batch))
+
+                # Session no longer busy
+                self._sessions_busy.discard(session_id)
+                # If more items arrived in the meantime, schedule again
+                dq2 = self._session_queues.get(session_id)
+                if dq2 and len(dq2) > 0 and not self._shutdown:
+                    await schedule_if_possible(session_id)
+
+        # Main loop: route inbound items and dispatch sessions
         try:
             while True:
-                # Exit only when shutdown is requested AND queue is empty AND no active tasks
-                if self._shutdown and self._trace_queue.empty() and not active_tasks:
-                    break
+                # Exit condition: on shutdown request AND no pending work
+                if self._shutdown and router_done:
+                    # No more inbound; drain session queues first
+                    if all(len(q) == 0 for q in self._session_queues.values()) and len(self._sessions_busy) == 0:
+                        break
 
+                # Route inbound items - use blocking get with short timeout to reduce lock contention
                 try:
-                    trace_data = self._trace_queue.get_nowait()
-                    batch = [trace_data]
-                    while len(batch) < self._max_batch_size:
-                        try:
-                            batch.append(self._trace_queue.get_nowait())
-                        except queue.Empty:
-                            break
-                    task = asyncio.create_task(self._store_batch_and_mark_done(semaphore, batch))
-                    active_tasks.add(task)
-                    # Clear event when first task added
-                    if len(active_tasks) == 1 and self._all_tasks_done:
-                        self._all_tasks_done.clear()
-                except queue.Empty:
-                    # No items, wait briefly for new items or tasks to complete
-                    if active_tasks:
-                        done, pending = await asyncio.wait(active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
-                        # Update active set with only pending tasks
-                        active_tasks = pending
-                        # Update event state after every check
-                        if not active_tasks and self._all_tasks_done:
-                            self._all_tasks_done.set()
-                        elif active_tasks and self._all_tasks_done and self._all_tasks_done.is_set():
-                            self._all_tasks_done.clear()
+                    # Check shutdown before blocking call to avoid executor errors
+                    if self._shutdown:
+                        # Don't block if shutting down, just check for items
+                        item = self._trace_queue.get_nowait()
                     else:
-                        await asyncio.sleep(0.1)
-                        # Set event when truly idle
-                        if self._all_tasks_done and not self._all_tasks_done.is_set():
-                            self._all_tasks_done.set()
+                        # Blocking get with timeout (releases lock while waiting)
+                        try:
+                            item = await asyncio.to_thread(self._trace_queue.get, timeout=0.01)
+                        except RuntimeError:
+                            # Event loop executor shut down - exit gracefully
+                            break
 
-            # Wait for remaining tasks before exiting
-            if active_tasks:
-                await asyncio.gather(*active_tasks, return_exceptions=True)
-            # Signal all tasks are done
-            if self._all_tasks_done:
-                self._all_tasks_done.set()
+                    if item is not self._STOP:
+                        # Determine session id (None bucket allowed)
+                        data = item.get("data", {}) if isinstance(item, dict) else {}
+                        session_id = data.get("session_id")
 
-        except Exception as e:
-            logger.exception("Error in async worker: %s", e)
-            # Wait for any remaining tasks
-            if active_tasks:
-                await asyncio.gather(*active_tasks, return_exceptions=True)
-            # Signal all tasks are done
-            if self._all_tasks_done:
-                self._all_tasks_done.set()
+                        # Enqueue into per-session queue with capacity check
+                        dq = self._session_queues[session_id]
+                        if len(dq) >= self._max_queue_size_per_session:
+                            # Overflow: apply policy (drop_newest by default)
+                            if self._drop_policy == "drop_oldest" and dq:
+                                dq.popleft()  # free one slot (and drop it)
+                                # Mark the dropped item as done
+                                self._trace_queue.task_done()
+                                dq.append(item)
+                            else:
+                                # drop_newest: drop current item
+                                logger.warning("Per-session queue full for session %s; dropping newest trace", session_id)
+                                # Mark the dropped item as done since we won't store it
+                                self._trace_queue.task_done()
+                        else:
+                            dq.append(item)
+
+                        # Try to schedule this session if possible
+                        await schedule_if_possible(session_id)
+
+                        # Now try to get more items (non-blocking) for batching
+                        for _ in range(self._max_batch_size - 1):
+                            try:
+                                item = self._trace_queue.get_nowait()
+
+                                if item is self._STOP:
+                                    router_done = True
+                                    break
+
+                                data = item.get("data", {}) if isinstance(item, dict) else {}
+                                session_id = data.get("session_id")
+                                dq = self._session_queues[session_id]
+
+                                if len(dq) >= self._max_queue_size_per_session:
+                                    if self._drop_policy == "drop_oldest" and dq:
+                                        dq.popleft()
+                                        self._trace_queue.task_done()
+                                        dq.append(item)
+                                    else:
+                                        logger.warning("Per-session queue full for session %s; dropping newest trace", session_id)
+                                        self._trace_queue.task_done()
+                                        continue
+                                else:
+                                    dq.append(item)
+
+                                await schedule_if_possible(session_id)
+                            except queue.Empty:
+                                break
+                    else:
+                        router_done = True
+
+                except queue.Empty:
+                    # Timeout - no items available
+                    pass
+
+                # Schedule any sessions with queued work
+                for sid, dq in list(self._session_queues.items()):
+                    if dq and len(dq) > 0 and sid not in self._sessions_busy:
+                        logger.debug(f"[LLMTracer] Scheduling session {sid} with {len(dq)} items")
+                        await schedule_if_possible(sid)
+
         finally:
             # Stop the loop when worker exits (schedule stop callback)
             if self._worker_loop and not self._worker_loop.is_closed():
@@ -242,24 +356,6 @@ class LLMTracer:
             logger.exception("Error stopping worker loop: %s", e)
         finally:
             self._worker_loop = None
-
-    async def _store_with_semaphore(self, semaphore: asyncio.Semaphore, trace_data: dict[str, Any]):
-        async with semaphore:
-            await self._store_trace_with_retry(trace_data)
-
-    async def _store_batch_with_semaphore(self, semaphore: asyncio.Semaphore, batch: list[dict[str, Any]]):
-        async with semaphore:
-            await self._store_batch_with_retry(batch)
-
-    async def _store_batch_and_mark_done(self, semaphore: asyncio.Semaphore, batch: list[dict[str, Any]]):
-        try:
-            if len(batch) == 1:
-                await self._store_with_semaphore(semaphore, batch[0])
-            else:
-                await self._store_batch_with_semaphore(semaphore, batch)
-        finally:
-            for _ in batch:
-                self._trace_queue.task_done()
 
     async def _store_batch_with_retry(self, batch: list[dict[str, Any]]):
         max_retries = 3
@@ -295,8 +391,7 @@ class LLMTracer:
                     logger.warning(f"Failed to store trace (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delays[attempt]}s...")
                     await asyncio.sleep(retry_delays[attempt])
                 else:
-                    logger.exception("Failed to store trace after %d attempts: %s", max_retries, e)
-                    raise
+                    logger.exception("Dropping trace due to failed to store trace after %d attempts: %s", max_retries, e)
 
     async def _store_trace(self, trace_data: dict[str, Any]):
         """
@@ -472,66 +567,23 @@ class LLMTracer:
 
         return f"[{name}] Model: {model}\nInput: {input_preview}\nOutput: {output_preview}"
 
-    def _wait_for_idle(self, timeout: float) -> None:
-        """Wait for queue and all active tasks to complete."""
-        loop = self._worker_loop
-        if loop is None or loop.is_closed():
-            return
-
-        start = time.time()
-
-        # Wait for queue with timeout
-        remaining = timeout
-        while not self._trace_queue.empty() and remaining > 0:
-            time.sleep(0.1)
-            remaining = timeout - (time.time() - start)
-
-        if not self._trace_queue.empty():
-            logger.warning(f"Queue not empty: {self._trace_queue.qsize()} traces")
-            return
-
-        # Now wait for active tasks via event
-        if self._all_tasks_done and remaining > 0:
-            # If event is already set, give worker a moment to update state
-            if self._all_tasks_done.is_set():
-                time.sleep(0.2)
-
-            # Schedule wait on worker loop
-            async def _wait():
-                try:
-                    await asyncio.wait_for(self._all_tasks_done.wait(), timeout=remaining)
-                    logger.info("All traces completed")
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout waiting for active tasks")
-
-            try:
-                fut = asyncio.run_coroutine_threadsafe(_wait(), loop)
-                fut.result()
-            except Exception as e:
-                logger.exception("Error waiting: %s", e)
-
-    async def flush(self, timeout: float = 30.0) -> None:
-        """Flush all pending traces without shutting down the tracer."""
-        logger.info("Flushing pending traces...")
-        await asyncio.to_thread(self._wait_for_idle, timeout)
-
     async def close(self, timeout: float = 30.0) -> None:
-        """Gracefully shutdown the tracer and flush all pending traces."""
-        logger.info("Shutting down LLMTracer...")
+        """Stop the background worker without waiting for queue drain."""
         self._shutdown = True
-        await asyncio.to_thread(self._wait_for_idle, timeout)
+        # Unblock the worker if it's waiting for new items
+        try:
+            self._trace_queue.put_nowait(self._STOP)
+        except Exception:
+            pass
         self._stop_worker_loop()
 
-    def flush_sync(self, timeout: float = 30.0) -> None:
-        """Synchronous version of flush()."""
-        logger.info("Flushing pending traces...")
-        self._wait_for_idle(timeout)
-
     def close_sync(self, timeout: float = 30.0) -> None:
-        """Synchronous version of close()."""
-        logger.info("Shutting down LLMTracer...")
+        """Synchronous close without waiting."""
         self._shutdown = True
-        self._wait_for_idle(timeout)
+        try:
+            self._trace_queue.put_nowait(self._STOP)
+        except Exception:
+            pass
         self._stop_worker_loop()
 
     async def __aenter__(self):
@@ -581,6 +633,54 @@ class LLMTracer:
         filter_obj = ContextFilter(**filter_kwargs)
 
         return await self.context_store.query(filter_obj)
+
+    # ---- Helper methods ----
+
+    # ---- Flush APIs ----
+
+    async def flush(self, timeout: float = 30.0) -> None:
+        """Wait until all queued traces are persisted (best-effort)."""
+        try:
+            await asyncio.wait_for(asyncio.to_thread(self._trace_queue.join), timeout=timeout)
+        except Exception:
+            # Best-effort: do not raise to callers
+            pass
+
+    def flush_sync(self, timeout: float = 30.0) -> None:
+        """Synchronous wrapper for flush()."""
+        try:
+            asyncio.run(self.flush(timeout=timeout))
+        except RuntimeError:
+            # If already in an event loop, block on thread join idiom
+            start = time.time()
+            while time.time() - start < timeout:
+                if self._trace_queue.unfinished_tasks == 0:
+                    break
+                time.sleep(0.01)
+
+    async def flush_session(self, session_id: str | None, timeout: float = 30.0) -> None:
+        """Wait until a specific session queue is fully persisted (best-effort)."""
+        end = time.time() + timeout
+        while time.time() < end:
+            with self._state_lock:
+                queued = len(self._session_queues.get(session_id, []))
+                in_flight = self._session_in_flight.get(session_id, 0)
+                pending = queued + in_flight
+            if pending == 0:
+                return
+            await asyncio.sleep(0.01)
+
+    def flush_session_sync(self, session_id: str | None, timeout: float = 30.0) -> None:
+        """Synchronous wrapper for flush_session (best-effort)."""
+        end = time.time() + timeout
+        while time.time() < end:
+            with self._state_lock:
+                queued = len(self._session_queues.get(session_id, []))
+                in_flight = self._session_in_flight.get(session_id, 0)
+                pending = queued + in_flight
+            if pending == 0:
+                return
+            time.sleep(0.01)
 
 
 _TRACER: LLMTracer | None = None
