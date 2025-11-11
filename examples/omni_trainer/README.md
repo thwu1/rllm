@@ -4,12 +4,40 @@ This example demonstrates how to use the Omni Trainer for reinforcement learning
 
 ## Prerequisites
 
-1. Download and install [episodic](https://github.com/agentica-org/episodic):
-   ```bash
-   git clone https://github.com/agentica-org/episodic
-   cd episodic/episodic-sdk
-   pip install -e .
-   ```
+### 1. Install Verl
+
+Run the installation script:
+```bash
+bash scripts/install_verl.sh
+```
+
+**Important:** Make sure to install `torch==2.6.0` when installing Verl. After `install_verl.sh` finishes, install `vllm==0.10.0`. You should see your torch version bumped to 2.7.1 after this - this is expected behavior.
+
+**Troubleshooting:**
+- If you encounter issues with `flash_attn`, reinstall it with:
+  ```bash
+  pip install flash-attn --no-build-isolation
+  ```
+
+- If you encounter errors with Ray, try:
+  ```bash
+  pip install ray==2.48.0
+  ```
+
+### 2. Install Episodic
+
+Download and install [episodic](https://github.com/agentica-org/episodic):
+```bash
+git clone https://github.com/agentica-org/episodic
+cd episodic/episodic-sdk
+pip install -e .
+```
+
+**Important:** Make sure you install from [episodic](https://github.com/agentica-org/episodic), not [episodic-sdk](https://github.com/agentica-org/episodic-sdk).
+
+### 3. Verify Dependencies
+
+Check that your websocket version is >= 15.0 (version 13.x will not work).
 
 ## Setup
 
@@ -58,14 +86,18 @@ python scripts/litellm_proxy_server.py \
 
 Once both the context store and LiteLLM proxy are running, you can execute one of the training examples:
 
-### Solver-Judge Flow Training
-
-```bash
-./train_solver_judge_flow.sh
-```
-
 ### Hendrycks Math Training
+
+This is the simplest example with a single agent and single turn.
 
 ```bash
 ./train_hendrycks_math.sh
+```
+
+### Solver-Judge Flow Training
+
+This is a more complex example with 2 agents and more complex grouping logic.
+
+```bash
+./train_solver_judge_flow.sh
 ```
