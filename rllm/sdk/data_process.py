@@ -232,7 +232,14 @@ def trace_to_step(trace: dict) -> Step:
     )
 
 
-def group_steps(steps: list[Step], by: str | None = None) -> list[Trajectory]:
+def get_trajectory_name(steps: list[Step], name_key: str | None = None) -> str:
+    if name_key is None:
+        return "agent"
+    else:
+        return steps[0].info.get(name_key, "agent")
+
+
+def group_steps(steps: list[Step], by: str | None = None, name_key: str | None = None) -> list[Trajectory]:
     # if some step doesnt have the group key, we assign a random key to avoid grouping them together
     # in this case, the grpo reduce to reinforce
     if by is None:
@@ -241,7 +248,7 @@ def group_steps(steps: list[Step], by: str | None = None) -> list[Trajectory]:
         step_groups = defaultdict(list)
         for step in steps:
             step_groups[step.info.get(by, str(uuid.uuid4()))].append(step)
-        return [Trajectory(name=str(group_key), steps=group_steps) for group_key, group_steps in step_groups.items()]
+        return [Trajectory(name=get_trajectory_name(group_steps, name_key), steps=group_steps) for group_key, group_steps in step_groups.items()]
 
 
 class SequenceAccumulator:

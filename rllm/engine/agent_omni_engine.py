@@ -203,7 +203,7 @@ class AgentOmniEngine:
 
         self.rollout_engine_endpoint = self.proxy_manager.get_proxy_url()
 
-        logger.info(f"Initialized VerlProxyManager with {len(self.proxy_manager.get_server_addresses())} vLLM replicas. Proxy endpoint: {self.rollout_engine_endpoint}")
+        print(f"Initialized VerlProxyManager with {len(self.proxy_manager.get_server_addresses())} vLLM replicas. Proxy endpoint: {self.rollout_engine_endpoint}")
 
         if auto_start:
             self.proxy_manager.start_proxy_server()
@@ -212,14 +212,6 @@ class AgentOmniEngine:
             self.proxy_manager.reload_external_proxy(
                 inline_payload=True,
             )
-
-    def get_openai_endpoint(self) -> str | None:
-        """Get the OpenAI-compatible endpoint URL.
-
-        Returns:
-            URL string if proxy is configured, None otherwise.
-        """
-        return self.rollout_engine_endpoint
 
     def get_server_addresses(self) -> list[str] | None:
         """Get all vLLM server addresses (for VERL engines).
@@ -319,7 +311,7 @@ class AgentOmniEngine:
 
         return traces_queue, reward_queue, self._batch_end_future
 
-    async def execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
+    async def _execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
         """Run asynchronous workflow execution with retry logic for multiple tasks.
 
         Args:
@@ -403,10 +395,16 @@ class AgentOmniEngine:
         await self.context_subscriber.stop()
 
         try:
-            groupby = self.config.rllm.processing.groupby
+            groupby = self.config.rllm.processing.groupby_key
         except Exception:
             print("No groupby specified in config, will not group steps into trajectories")
             groupby = None
+
+        try:
+            traj_name_key = self.config.rllm.processing.traj_name_key
+        except Exception:
+            print("No traj_name_key specified in config, will not group steps into trajectories")
+            traj_name_key = None
 
         for session_id, traces in traces_by_session_id.items():
             steps = [trace_to_step(trace[1]) for trace in traces]
@@ -424,7 +422,7 @@ class AgentOmniEngine:
             # Note: trajectory.uid is set to "task_id:rollout_idx" (without retry_attempt)
             # This is different from episode.id which includes retry_attempt
             # trajectory.uid is used for deduplication purposes
-            trajecoties = group_steps(steps, by=groupby)
+            trajecoties = group_steps(steps, by=groupby, name_key=traj_name_key)
             for trajectory in trajecoties:
                 trajectory.reward = rewards[session_id]
             # heuristic for is_correct, only for logging purpose
@@ -438,6 +436,33 @@ class AgentOmniEngine:
         for task_id in sorted_tasks:
             results.extend(task_states[task_id]["episodes"])
         return results
+
+    async def execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
+        for _ in range(3):
+            results = [None] * len(tasks)
+            try:
+                results = await self._execute_tasks(tasks, task_ids, **kwargs)
+            except Exception as e:
+                print(f"Error in execute_tasks: {e}, retrying...")
+            finally:
+                try:
+                    await self.context_subscriber.stop()
+                except Exception as e:
+                    print(f"Error in force stopping context subscriber: {e}")
+
+            error_count = 0
+            for episode in results:
+                if episode is None:
+                    error_count += 1
+                    continue
+                if episode.trajectories is None or len(episode.trajectories) == 0:
+                    error_count += 1
+            if error_count / len(results) > 0.01:
+                print(f"Too many errors in execute_tasks: {error_count} / {len(results)} > 0.01, sleeping for 120s before retrying...")
+                asyncio.sleep(120.0)
+            else:
+                return results
+        raise Exception("Failed to execute tasks after 3 retries")
 
     async def emit_batch_end_signal(self, token: str) -> bool:
         return await self.proxy_manager.emit_batch_end_signal(token)
@@ -468,8 +493,6 @@ class AgentOmniEngine:
         self.rollout_engine.validate = False
 
         # ADD PRINT 4: Show what's passed to transform_results_for_verl
-        print(f"Number of episodes: {len(results)}")
-        print(f"Number of task_ids: {len(task_ids)}")
         # for i in range(min(10, len(results))):
         #     episode = results[i]
         #     session_id = episode.id
@@ -554,7 +577,7 @@ class AgentOmniEngine:
                 trajectory_id = f"{task_ids[i]}_{name}"  # e.g., "1234567890_solver"
 
                 if len(trajectory.steps) == 0:
-                    logger.info(f"Trajectory {trajectory_id} has no steps, skipping")
+                    print(f"Trajectory {trajectory_id} has no steps, skipping")
                     continue
 
                 # if not self.config.rllm.stepwise_advantage.enable:
