@@ -1,5 +1,6 @@
 import asyncio
 import re
+import uuid
 
 from rllm.agents.agent import Episode, Trajectory
 from rllm.engine import RolloutEngine
@@ -13,13 +14,14 @@ class Solver:
         self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="vllm/Qwen/Qwen3-4B-Instruct-2507")
 
     async def generate_solution(self, problem: str) -> Trajectory:
-        with session(agent="solver"):
+        with session(agent="solver", groupby_key=str(uuid.uuid4())):
             messages = [{"role": "user", "content": f"{problem}. Output the final answer within <answer>...</answer>"}]
             response = await self.client.chat.completions.create(
                 messages=messages,
                 temperature=1,
                 max_tokens=1000,
             )
+
         content = response.choices[0].message.content
         return response.id, self._parse_solver_response(content)
 

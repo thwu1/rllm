@@ -52,8 +52,8 @@ python3 -m examples.omni_trainer.solver_judge_workflow.train_solver_judge_flow \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='solver-judge-workflow' \
-    trainer.experiment_name='omni-solver-judge' \
-    trainer.val_before_train=True \
+    trainer.experiment_name='omni-solver-judge-groupby-key' \
+    trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=200 \
@@ -68,7 +68,8 @@ python3 -m examples.omni_trainer.solver_judge_workflow.train_solver_judge_flow \
     +rllm.run_name=rllm-agent-omni-engine \
     +context_store.endpoint=http://localhost:8000 \
     +context_store.api_key=your-api-key-here \
-    +rllm.processing.groupby=agent
+    +rllm.processing.groupby_key=groupby_key \
+    +rllm.processing.traj_name_key=agent
 
 
 pkill -9 -f 'ray::WorkerDict' 

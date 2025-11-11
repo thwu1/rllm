@@ -9,7 +9,7 @@ from rllm.trainer.agent_trainer import AgentTrainer
 async def run_workflow(**kwargs) -> float:
     task = kwargs
     workflow = SolverJudgeWorkflow(rollout_engine=None, executor=None, n_solutions=2, reward_function=countdown_reward_fn)
-    return await workflow.run(task, "random_uid")
+    return await workflow.run(task, "")
 
 
 @hydra.main(config_path="pkg://rllm.trainer.config", config_name="agent_ppo_trainer", version_base=None)
