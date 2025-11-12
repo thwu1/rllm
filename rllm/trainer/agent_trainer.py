@@ -3,8 +3,6 @@ from typing import Any
 import ray
 
 from rllm.data import Dataset
-from rllm.trainer.verl.ray_runtime_env import get_ppo_ray_runtime_env
-from rllm.trainer.verl.train_agent_ppo import TaskRunner
 
 
 class AgentTrainer:
@@ -101,6 +99,9 @@ class AgentTrainer:
         trainer.fit_agent()
 
     def _train_verl(self):
+        from rllm.trainer.verl.ray_runtime_env import get_ppo_ray_runtime_env
+        from rllm.trainer.verl.train_agent_ppo import TaskRunner
+
         # Check if Ray is not initialized
         if not ray.is_initialized():
             # read off all the `ray_init` settings from the config
