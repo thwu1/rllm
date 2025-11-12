@@ -4,7 +4,6 @@ from rllm.data.dataset import DatasetRegistry
 from rllm.rewards.reward_fn import math_reward_fn
 from rllm.sdk.shortcuts import get_chat_client
 from rllm.trainer.agent_trainer import AgentTrainer
-from rllm.workflows.simple_workflow import SimpleWorkflow
 
 
 @hydra.main(config_path="pkg://rllm.trainer.config", config_name="agent_ppo_trainer", version_base=None)
