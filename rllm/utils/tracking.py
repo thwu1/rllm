@@ -214,10 +214,7 @@ class ClearMLLogger:
                     iteration=step,
                 )
             else:
-                logger.warning(
-                    f'Trainer is attempting to log a value of "{v}" of type {type(v)} for key "{k}". This '
-                    f"invocation of ClearML logger's function is incorrect so this attribute was dropped. "
-                )
+                logger.warning(f'Trainer is attempting to log a value of "{v}" of type {type(v)} for key "{k}". This invocation of ClearML logger\'s function is incorrect so this attribute was dropped. ')
 
     def finish(self):
         self._task.close()
@@ -274,9 +271,7 @@ class _MlflowLoggingAdapter:
         # https://github.com/mlflow/mlflow/blob/master/mlflow/utils/validation.py#L157C12-L157C44
         # Only characters allowed: slashes, alphanumerics, underscores, periods, dashes, colons,
         # and spaces.
-        self._invalid_chars_pattern = re.compile(
-            r"[^/\w.\- :]"
-        )  # Allowed: slashes, alphanumerics, underscores, periods, dashes, colons, and spaces.
+        self._invalid_chars_pattern = re.compile(r"[^/\w.\- :]")  # Allowed: slashes, alphanumerics, underscores, periods, dashes, colons, and spaces.
 
     def log(self, data, step):
         import mlflow
@@ -287,9 +282,7 @@ class _MlflowLoggingAdapter:
             # Then replace any other invalid characters with _
             sanitized = self._invalid_chars_pattern.sub("_", sanitized)
             if sanitized != key:
-                self.logger.warning(
-                    "[MLflow] Metric key '%s' sanitized to '%s' due to invalid characters.", key, sanitized
-                )
+                self.logger.warning("[MLflow] Metric key '%s' sanitized to '%s' due to invalid characters.", key, sanitized)
             return sanitized
 
         results = {sanitize_key(k): v for k, v in data.items()}
@@ -366,9 +359,7 @@ class ValidationGenerationsLogger:
         """Log samples to wandb as a table"""
 
         # Create column names for all samples
-        columns = ["step"] + sum(
-            [[f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"] for i in range(len(samples))], []
-        )
+        columns = ["step"] + sum([[f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"] for i in range(len(samples))], [])
 
         if not hasattr(self, "validation_table"):
             # Initialize the table on first call
