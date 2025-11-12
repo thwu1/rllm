@@ -1,7 +1,7 @@
 """Convenient shortcuts for common SDK operations.
 
-This module provides standalone functions that can be used without
-instantiating RLLMClient, making the SDK more ergonomic for simple use cases.
+This module provides standalone functions for common SDK operations,
+making the SDK more ergonomic for simple use cases.
 """
 
 from __future__ import annotations
@@ -34,15 +34,16 @@ def _session_with_id(session_id: str | None = None, **metadata: Any) -> SessionC
 def session(**metadata: Any) -> SessionContext:
     """Create a session context manager for automatic trace tracking.
 
-    This is a standalone convenience function that creates a SessionContext
-    without requiring an RLLMClient instance. The session_id is automatically
-    generated and cannot be overridden to ensure proper session management.
+    This is a standalone convenience function that creates a SessionContext.
+    The session_id is automatically generated and cannot be overridden to
+    ensure proper session management.
 
-    This is equivalent to:
-        client = RLLMClient()
-        with client.session(...):
+    When nested inside a `_session_with_id()` context, the SessionContext
+    will automatically inherit the parent session_id instead of generating
+    a new one, allowing internal code to control the session_id while keeping
+    it hidden from users.
 
-    But more concise:
+    Usage:
         from rllm.sdk import session
         with session(...):
 
@@ -61,6 +62,12 @@ def session(**metadata: Any) -> SessionContext:
         >>> with session(experiment="v1"):
         ...     with session(task="math"):
         ...         # Inherits experiment="v1", adds task="math"
+
+        Nested with _session_with_id (internal use):
+        >>> from rllm.sdk.shortcuts import _session_with_id
+        >>> with _session_with_id(session_id="internal-id"):
+        ...     with session(experiment="v1"):
+        ...         # Uses "internal-id" as session_id, adds experiment="v1"
 
     Args:
         **metadata: Arbitrary metadata to attach to all traces in this session.
@@ -87,14 +94,10 @@ def get_chat_client(
     max_retries: int | None = None,
     **kwargs: Any,
 ):
-    """Get a chat client without instantiating RLLMClient.
+    """Get a chat client.
 
     This is a standalone convenience function that creates a chat client
-    directly. It's equivalent to:
-        client = RLLMClient(api_key=api_key, base_url=base_url, ...)
-        llm = client.get_chat_client(provider=provider, model=model)
-
-    But more concise:
+    directly. Usage:
         from rllm.sdk import get_chat_client
         llm = get_chat_client(api_key=api_key, model=model)
 
@@ -190,7 +193,7 @@ def get_chat_client_async(
     max_retries: int | None = None,
     **kwargs: Any,
 ):
-    """Get an async chat client without instantiating RLLMClient.
+    """Get an async chat client.
 
     This is the async version of get_chat_client(). See get_chat_client()
     for detailed documentation.

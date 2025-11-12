@@ -28,9 +28,9 @@ from litellm.proxy.proxy_server import app as litellm_app
 from litellm.proxy.proxy_server import initialize
 from pydantic import BaseModel, Field, root_validator
 
-from rllm.sdk import LLMTracer
 from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback, TracingCallback
 from rllm.sdk.proxy.middleware import MetadataRoutingMiddleware
+from rllm.sdk.tracers import EpisodicTracer
 
 
 class ReloadPayload(BaseModel):
@@ -72,7 +72,7 @@ class RewardPayload(BaseModel):
 class LiteLLMProxyRuntime:
     """Owns LiteLLM initialization and reload logic."""
 
-    def __init__(self, initial_config: Path, state_dir: Path, tracer: LLMTracer | None):
+    def __init__(self, initial_config: Path, state_dir: Path, tracer: EpisodicTracer | None):
         self._current_config = initial_config
         self._state_dir = state_dir
         self._tracer = tracer
@@ -191,12 +191,12 @@ class LiteLLMProxyRuntime:
         return str(self._current_config)
 
 
-def _build_tracer(endpoint: str | None, api_key: str | None, project: str | None) -> LLMTracer | None:
+def _build_tracer(endpoint: str | None, api_key: str | None, project: str | None) -> EpisodicTracer | None:
     if not endpoint or not api_key:
         logging.warning("Tracer disabled (missing context store endpoint or API key).")
         return None
     store = ContextStore(endpoint=endpoint, api_key=api_key)
-    return LLMTracer(store, project=project)
+    return EpisodicTracer(context_store=store, project=project)
 
 
 def _parse_args() -> argparse.Namespace:

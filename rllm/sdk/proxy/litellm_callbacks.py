@@ -7,7 +7,7 @@ from typing import Any
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import ModelResponse, ModelResponseStream
 
-from rllm.sdk.tracing import LLMTracer
+from rllm.sdk.tracers import EpisodicTracer
 
 
 class SamplingParametersCallback(CustomLogger):
@@ -76,7 +76,7 @@ class TracingCallback(CustomLogger):
     pre-send, and avoids duplicate logging from nested deployment calls.
     """
 
-    def __init__(self, tracer: LLMTracer):
+    def __init__(self, tracer: EpisodicTracer):
         super().__init__()
         self.tracer = tracer
         # Track logged call IDs to prevent duplicates

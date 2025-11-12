@@ -22,7 +22,7 @@ from rllm.engine.rollout import RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 
 if TYPE_CHECKING:
-    from rllm.sdk.tracing import LLMTracer
+    from rllm.sdk.tracers import EpisodicTracer
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class VerlProxyManager:
         proxy_host: str = "127.0.0.1",
         proxy_port: int = 4000,
         admin_token: str | None = None,
-        tracer: LLMTracer | None = None,
+        tracer: EpisodicTracer | None = None,
         auto_instrument_vllm: bool = True,
         proxy_access_log: bool = False,
     ):
@@ -74,7 +74,7 @@ class VerlProxyManager:
             model_name: Model name to expose via the proxy
             proxy_host: Host to bind the proxy server
             proxy_port: Port to bind the proxy server
-            tracer: Optional LLMTracer for logging
+            tracer: Optional EpisodicTracer for logging
             auto_instrument_vllm: Whether to automatically instrument vLLM for token IDs (default: True)
             proxy_access_log: Whether to emit uvicorn access logs for each request (default: False)
         """

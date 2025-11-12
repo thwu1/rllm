@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 
 from rllm.engine.agent_omni_engine import AgentOmniEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
-from rllm.sdk import LLMTracer
+from rllm.sdk.tracers import EpisodicTracer
 from rllm.workflows.workflow import TerminationReason
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor
@@ -143,7 +143,7 @@ class AgentOmniTrainer(RayPPOTrainer):
             rollout_manager=self.async_rollout_manager,
             tokenizer=self.tokenizer,
         )
-        tracer = LLMTracer(
+        tracer = EpisodicTracer(
             context_store=self.context_store,
             project=self.config.rllm.run_name,
         )
