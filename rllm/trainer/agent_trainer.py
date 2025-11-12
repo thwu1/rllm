@@ -4,8 +4,6 @@ from typing import Any
 import ray
 
 from rllm.data import Dataset
-from rllm.trainer.verl.ray_runtime_env import get_ppo_ray_runtime_env
-from rllm.trainer.verl.train_agent_ppo import TaskRunner
 
 
 class AgentTrainer:
@@ -25,6 +23,7 @@ class AgentTrainer:
         config: dict[str, Any] | list[str] | None = None,
         train_dataset: Dataset | None = None,
         val_dataset: Dataset | None = None,
+        backend: str = "verl",
         agent_run_func: Callable | None = None,
     ):
         """
@@ -41,8 +40,7 @@ class AgentTrainer:
             agent_args: Optional arguments to pass to the agent class
             env_args: Optional arguments to pass to the environment class
         """
-
-        if workflow_class is not None and config.rllm.workflow.use_workflow:
+        if workflow_class is not None:
             if agent_class is not None:
                 raise ValueError("agent_class is not supported when using workflow, instead use workflow_args['agent_cls']")
             if agent_args is not None:
@@ -63,6 +61,11 @@ class AgentTrainer:
         self.agent_run_func = agent_run_func
 
         self.config = config
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.backend = backend
+
+        assert self.backend in ["verl", "tinker"], f"Unsupported backend: {self.backend}, must be one of ['verl', 'tinker']"
 
         if train_dataset is not None and self.config is not None and hasattr(self.config, "data"):
             self.config.data.train_files = train_dataset.get_verl_data_path()
@@ -70,6 +73,39 @@ class AgentTrainer:
             self.config.data.val_files = val_dataset.get_verl_data_path()
 
     def train(self):
+        if self.backend == "verl":
+            self._train_verl()
+        elif self.backend == "tinker":
+            self._train_tinker()
+
+    def _train_tinker(self):
+        from rllm.trainer.tinker.tinker_agent_trainer import TinkerAgentTrainer
+        from rllm.trainer.tinker.tinker_workflow_trainer import TinkerWorkflowTrainer
+
+        if self.workflow_class is not None:
+            trainer = TinkerWorkflowTrainer(
+                config=self.config,
+                workflow_class=self.workflow_class,
+                workflow_args=self.workflow_args,
+                train_dataset=self.train_dataset,
+                val_dataset=self.val_dataset,
+            )
+        else:
+            trainer = TinkerAgentTrainer(
+                config=self.config,
+                agent_class=self.agent_class,
+                env_class=self.env_class,
+                agent_args=self.agent_args,
+                env_args=self.env_args,
+                train_dataset=self.train_dataset,
+                val_dataset=self.val_dataset,
+            )
+        trainer.fit_agent()
+
+    def _train_verl(self):
+        from rllm.trainer.verl.ray_runtime_env import get_ppo_ray_runtime_env
+        from rllm.trainer.verl.train_agent_ppo import TaskRunner
+
         # Check if Ray is not initialized
         if not ray.is_initialized():
             # read off all the `ray_init` settings from the config

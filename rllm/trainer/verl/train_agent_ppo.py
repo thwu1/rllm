@@ -1,5 +1,6 @@
-# Copyright under Agentica Project.
 """
+Copyright under Agentica Project.
+
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
 
@@ -10,7 +11,7 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
-from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPING, WORKFLOW_CLASS_MAPPING
+from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPING
 from rllm.trainer.verl.agent_omni_trainer import AgentOmniTrainer
 from rllm.trainer.verl.agent_ppo_trainer import AgentPPOTrainer
 
@@ -167,9 +168,7 @@ class TaskRunner:
                 ray_worker_group_cls=ray_worker_group_cls,
                 agent_run_func=agent_run_func,
             )
-        elif config.rllm.workflow.use_workflow:
-            if workflow_class is None:
-                workflow_class = WORKFLOW_CLASS_MAPPING[config.rllm.workflow.name]
+        elif workflow_class is not None:
             workflow_args = workflow_args or {}
             if config.rllm.workflow.get("workflow_args") is not None:
                 for key, value in config.rllm.workflow.get("workflow_args").items():

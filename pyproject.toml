@@ -99,6 +99,11 @@ strands = [
     "strands-agents",
 ]
 
+tinker = [
+    "tinker",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git#egg=tinker-cookbook",
+]
+
 [tool.ruff]
 line-length = 320 # Maximum allowed by ruff
 
