@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 import ray
@@ -23,6 +24,7 @@ class AgentTrainer:
         train_dataset: Dataset | None = None,
         val_dataset: Dataset | None = None,
         backend: str = "verl",
+        agent_run_func: Callable | None = None,
     ):
         """
         Initialize the AgentTrainer.
@@ -55,6 +57,8 @@ class AgentTrainer:
         self.env_class = env_class
         self.agent_args = agent_args or {}
         self.env_args = env_args or {}
+
+        self.agent_run_func = agent_run_func
 
         self.config = config
         self.train_dataset = train_dataset
@@ -122,5 +126,6 @@ class AgentTrainer:
                 env_class=self.env_class,
                 agent_args=self.agent_args,
                 env_args=self.env_args,
+                agent_run_func=self.agent_run_func,
             )
         )
