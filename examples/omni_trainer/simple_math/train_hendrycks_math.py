@@ -35,10 +35,6 @@ def main(config):
         return reward
 
     trainer = AgentTrainer(
-        workflow_class=SimpleWorkflow,
-        workflow_args={
-            "reward_function": math_reward_fn,
-        },
         config=config,
         train_dataset=train_dataset,
         val_dataset=test_dataset,

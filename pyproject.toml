@@ -100,7 +100,7 @@ strands = [
 ]
 
 [tool.ruff]
-line-length = 5000 # TODO: Reduce this to a more reasonable value
+line-length = 320 # Maximum allowed by ruff
 
 [tool.ruff.lint]
 isort = {known-first-party = ["rllm"]}

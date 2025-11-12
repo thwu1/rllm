@@ -295,7 +295,6 @@ class AgentOmniEngine:
             # Resolve future when the matching batch-end marker arrives
             if update.context.type == "trace_batch_end":
                 if update.context.id == batch_end_token and self._batch_end_future:
-                    print(f"Received batch end signal for token {batch_end_token}")
                     self._batch_end_future.set_result(True)
             elif update.context.type == "reward":
                 reward_queue.put_nowait(update.context.data)
@@ -444,7 +443,6 @@ class AgentOmniEngine:
                 results = await self._execute_tasks(tasks, task_ids, **kwargs)
             except Exception as e:
                 print(f"Error in execute_tasks: {e}, retrying...")
-            finally:
                 try:
                     await self.context_subscriber.stop()
                 except Exception as e:
