@@ -28,12 +28,9 @@ bash scripts/install_verl.sh
 
 Download and install [episodic](https://github.com/agentica-org/episodic):
 ```bash
-git clone https://github.com/agentica-org/episodic
-cd episodic/episodic-sdk
+cd rllm/sdk/episodic-sdk
 pip install -e .
 ```
-
-**Important:** Make sure you install from [episodic](https://github.com/agentica-org/episodic), not [episodic-sdk](https://github.com/agentica-org/episodic-sdk).
 
 ### 3. Verify Dependencies
 
