@@ -193,12 +193,6 @@ class VerlProxyManager:
                 }
             )
 
-        # model_list.append(
-        #     {
-        #         "model_name": f"gpt-4o-mini",
-        #     }
-        # )
-
         config = {
             "model_list": model_list,
             "litellm_settings": {
@@ -206,6 +200,9 @@ class VerlProxyManager:
                 "num_retries": 3,
                 # Enable load balancing across replicas
                 "routing_strategy": "simple-shuffle",
+                # # Cooldown policy - back    # for t
+                # "allowed_fails": 5,  # Allow 5 failures per minute before cooldown
+                # "cooldown_time": 10,  # Cooldown for 10 seconds, then auto-retry
             },
         }
 

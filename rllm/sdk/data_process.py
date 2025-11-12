@@ -223,11 +223,8 @@ def trace_to_step(trace: dict) -> Step:
     assert response_message, "Response message is required in trace output"
 
     return Step(
-        # Full conversation: input messages + response message
         chat_completions=messages + [response_message],
-        # Structured output with token IDs for training
         model_output=trace_to_model_output(trace),
-        # Preserve metadata (session_id, job, etc.) for downstream processing
         info=trace.get("metadata", {}),
     )
 
