@@ -905,16 +905,18 @@ def create_app(db_path: str | None = None, namespace: str = "default", enable_no
             subscriptions = []
             for sub_id, sub_data in server.websocket_manager.subscriptions.items():
                 if client_id is None or sub_data["client_id"] == client_id:
-                    subscriptions.append({
-                        "subscription_id": sub_id,
-                        "client_id": sub_data["client_id"],
-                        "delivery_method": sub_data["delivery_method"],
-                        "webhook_url": sub_data.get("webhook_config", {}).get("url") if sub_data.get("webhook_config") else None,
-                        "filters": sub_data["filters"],
-                        "created_at": datetime.utcnow().isoformat(),
-                        "last_delivery_at": None,
-                        "delivery_failures": 0,
-                    })
+                    subscriptions.append(
+                        {
+                            "subscription_id": sub_id,
+                            "client_id": sub_data["client_id"],
+                            "delivery_method": sub_data["delivery_method"],
+                            "webhook_url": sub_data.get("webhook_config", {}).get("url") if sub_data.get("webhook_config") else None,
+                            "filters": sub_data["filters"],
+                            "created_at": datetime.utcnow().isoformat(),
+                            "last_delivery_at": None,
+                            "delivery_failures": 0,
+                        }
+                    )
             return subscriptions
         except Exception as e:
             logger.error(f"Subscription listing error: {e}")
