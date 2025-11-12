@@ -16,7 +16,7 @@ import uuid
 from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from rllm.sdk.context import get_current_metadata, get_current_session
+from rllm.sdk.session import get_current_metadata, get_current_session_id
 
 if TYPE_CHECKING:
     from episodic.core import Context
@@ -67,7 +67,7 @@ class LLMTracer:
     Example:
         ```python
         from episodic import ContextStore
-        from rllm.sdk import LLMTracer
+        from rllm.sdk.tracing_session_concurrent import LLMTracer
 
         store = ContextStore(endpoint="http://localhost:8000", api_key="your-key")
         tracer = LLMTracer(
@@ -466,7 +466,7 @@ class LLMTracer:
 
         # Get session_id from context if not provided
         if session_id is None:
-            session_id = get_current_session()
+            session_id = get_current_session_id()
 
         # Merge context metadata with call-specific metadata
         context_meta = get_current_metadata()

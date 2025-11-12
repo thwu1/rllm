@@ -25,7 +25,7 @@ from rllm.workflows.workflow import TerminationReason
 
 # Avoid hard dependency on verl at import time; only for typing
 if TYPE_CHECKING:
-    from rllm.sdk.tracing import LLMTracer
+    from rllm.sdk.tracers import EpisodicTracer
     from verl import DataProto
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ Key Observations:
 
 
 class AgentOmniEngine:
-    def __init__(self, agent_run_func: Callable, rollout_engine: RolloutEngine, config=None, n_parallel_tasks: int = 128, retry_limit: int = 3, raise_on_error: bool = True, proxy_config: dict | None = None, tracer: Optional["LLMTracer"] = None, **kwargs):
+    def __init__(self, agent_run_func: Callable, rollout_engine: RolloutEngine, config=None, n_parallel_tasks: int = 128, retry_limit: int = 3, raise_on_error: bool = True, proxy_config: dict | None = None, tracer: Optional["EpisodicTracer"] = None, **kwargs):
         """Initialize the AgentOmniEngine.
 
         Args:
@@ -112,7 +112,7 @@ class AgentOmniEngine:
                 - proxy_port: Port to bind proxy (default: 4000)
                 - auto_start: Whether to auto-start proxy (default: False)
                 - proxy_access_log: Emit LiteLLM proxy access logs (default: False)
-            tracer: Optional LLMTracer for logging.
+            tracer: Optional EpisodicTracer for logging.
             **kwargs: Additional keyword arguments.
         """
         self.rollout_engine = rollout_engine
@@ -173,12 +173,12 @@ class AgentOmniEngine:
 
         return wrapped_func_sync
 
-    def _setup_verl_proxy(self, proxy_config: dict, tracer: Optional["LLMTracer"]) -> None:
+    def _setup_verl_proxy(self, proxy_config: dict, tracer: Optional["EpisodicTracer"]) -> None:
         """Setup LiteLLM proxy for VERL rollout engine.
 
         Args:
             proxy_config: Proxy configuration dict
-            tracer: Optional LLMTracer instance
+            tracer: Optional EpisodicTracer instance
         """
         model_name = proxy_config.get("model_name")
         if not model_name:

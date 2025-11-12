@@ -1,22 +1,49 @@
 """RLLM SDK for automatic LLM trace collection and RL training."""
 
-from rllm.sdk.client import RLLMClient
-from rllm.sdk.context import get_current_metadata, get_current_session
 from rllm.sdk.reward import set_reward, set_reward_async
-from rllm.sdk.session import SessionContext
+from rllm.sdk.session import (
+    ContextVarSession,
+    SessionContext,
+    get_current_metadata,
+    get_current_session,
+    get_current_session_id,
+)
 from rllm.sdk.shortcuts import get_chat_client, get_chat_client_async, session
-from rllm.sdk.tracing import LLMTracer, get_tracer
+from rllm.sdk.tracers import (
+    CompositeTracer,
+    ContextStoreProtocol,
+    EpisodicTracer,
+    InMemorySessionTracer,
+    TracerProtocol,
+)
 
 __all__ = [
-    "RLLMClient",
-    "get_current_session",
-    "get_current_metadata",
-    "SessionContext",
+    # Sessions
+    "SessionContext",  # Default (alias for ContextVarSession)
+    "ContextVarSession",  # Explicit contextvars-based session
+    "get_current_session",  # Get current session instance
+    "get_current_session_id",  # Get current session ID
+    "get_current_metadata",  # Get current metadata
+    # Shortcuts
     "session",
     "get_chat_client",
     "get_chat_client_async",
-    "LLMTracer",
-    "get_tracer",
+    # Tracers
+    "TracerProtocol",  # Tracer interface
+    "InMemorySessionTracer",  # In-memory tracer for immediate access
+    "EpisodicTracer",  # Persistent tracer with Episodic backend
+    "CompositeTracer",  # Combine multiple tracers
+    "ContextStoreProtocol",  # Context store protocol for episodic tracer
+    # Rewards
     "set_reward",
     "set_reward_async",
 ]
+
+
+# Lazy import for OpenTelemetry session (optional dependency)
+def __getattr__(name):
+    if name == "OTelSession":
+        from rllm.sdk.session import OTelSession
+
+        return OTelSession
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

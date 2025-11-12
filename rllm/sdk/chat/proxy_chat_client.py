@@ -13,9 +13,13 @@ from openai.types.completion import Completion
 
 from rllm.sdk.chat.simple_chat_client import _SimpleTrackedChatClientBase
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
+from rllm.sdk.tracers import InMemorySessionTracer
 
 
 class _ScopedClientMixin:
+    # Shared in-memory session tracer instance for all proxy clients
+    _memory_tracer = InMemorySessionTracer()
+
     def _scoped_client(self, metadata: Mapping[str, Any]):
         base_url = getattr(self, "_proxy_base_url", None)
         if not base_url or not metadata:
@@ -33,8 +37,39 @@ class _ScopedClientMixin:
         metadata_overrides: Mapping[str, Any],
         latency_ms: float,
     ) -> None:
-        # Proxy mode logs inside the proxy middleware; disable SDK-side logging.
-        return None
+        """
+        Log trace to in-memory session (if active).
+
+        In proxy mode, the proxy handles persistent tracing to the backend.
+        However, we still log to in-memory session for immediate access via
+        session.llm_calls without any I/O.
+
+        Uses the shared InMemorySessionTracer to avoid code duplication.
+        """
+        # Get context metadata and merge with call-specific metadata
+        from rllm.sdk.session import get_current_metadata
+
+        context_metadata = get_current_metadata()
+        merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
+
+        # Extract token usage for the tracer
+        usage = response_payload.get("usage") or {}
+        tokens = {
+            "prompt": int(usage.get("prompt_tokens") or 0),
+            "completion": int(usage.get("completion_tokens") or 0),
+            "total": int(usage.get("total_tokens") or 0),
+        }
+
+        # Use the shared memory tracer - it handles all the session logic
+        self._memory_tracer.log_llm_call(
+            name="proxy.chat.completions.create",
+            input={"messages": messages},
+            output=response_payload,
+            model=model,
+            latency_ms=latency_ms,
+            tokens=tokens,
+            metadata=merged_metadata,
+        )
 
 
 @dataclass
@@ -116,7 +151,7 @@ class _ProxyCompletions:
         return response
 
 
-class ProxyTrackedChatClient(_SimpleTrackedChatClientBase, _ScopedClientMixin):
+class ProxyTrackedChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
     """OpenAI client wrapper that injects metadata slugs into the proxy base URL."""
 
     def __init__(
@@ -226,7 +261,7 @@ class _ProxyAsyncCompletions:
         return response
 
 
-class ProxyTrackedAsyncChatClient(_SimpleTrackedChatClientBase, _ScopedClientMixin):
+class ProxyTrackedAsyncChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
     """Async variant of the proxy-aware chat client."""
 
     def __init__(
