@@ -14,13 +14,15 @@ import torch
 from episodic import ContextStore, ContextSubscriber
 from tqdm import tqdm
 
-from rllm.agents.agent import Episode
+from rllm.agents.agent import Episode, Trajectory
 from rllm.engine.proxy_manager import VerlProxyManager
 from rllm.engine.rollout import ModelOutput, RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
-from rllm.sdk.data_process import group_steps, trace_to_step
+from rllm.sdk.data_process import trace_to_step
+from rllm.sdk.protocol import TrajectoryProto
 from rllm.sdk.shortcuts import _session_with_id
+from rllm.sdk.store.sqlite_store import SqliteTraceStore
 from rllm.workflows.workflow import TerminationReason
 
 # Avoid hard dependency on verl at import time; only for typing
@@ -148,6 +150,7 @@ class AgentOmniEngine:
         )
         self.wrapped_agent_run_func = self.prepare_agent_run_func_with_tracing(self.agent_run_func)
         self.run_name = self.config.rllm.run_name
+        self.store = SqliteTraceStore(db_path="~/.rllm/research-common-27.db")
 
     def prepare_agent_run_func_with_tracing(self, func):
         """Wrap agent function with session context for tracing.
@@ -158,18 +161,18 @@ class AgentOmniEngine:
 
             async def wrapped_func_async(metadata, *args, **kwargs):
                 session_id = metadata.pop("session_id", None)
-                with _session_with_id(session_id=session_id, **metadata):
+                with _session_with_id(session_id=session_id, **metadata) as session:
                     reward = await func(*args, **kwargs)
-                return reward
+                return reward, session._uid
 
             return wrapped_func_async
         else:
 
             def wrapped_func_sync(metadata, *args, **kwargs):
                 session_id = metadata.pop("session_id", None)
-                with _session_with_id(session_id=session_id, **metadata):
+                with _session_with_id(session_id=session_id, **metadata) as session:
                     reward = func(*args, **kwargs)
-                return reward
+                return reward, session._uid
 
         return wrapped_func_sync
 
@@ -244,17 +247,17 @@ class AgentOmniEngine:
         metadata = {"session_id": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
         try:
             if inspect.iscoroutinefunction(self.wrapped_agent_run_func):
-                output = await func(metadata, **task, **kwargs)
-                return True, output
+                reward, session_uid = await func(metadata, **task, **kwargs)
+                return True, reward, session_uid
             else:
                 loop = asyncio.get_event_loop()
                 bound_func = functools.partial(func, metadata, **task, **kwargs)
-                output = await loop.run_in_executor(self.executor, bound_func)
-                return True, output
+                reward, session_uid = await loop.run_in_executor(self.executor, bound_func)
+                return True, reward, session_uid
         except Exception as e:
-            return False, e
+            return False, e, None
 
-    async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, int, float]:
+    async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, int, float, str]:
         """Process a single task rollout with retry logic on exceptions.
 
         Args:
@@ -273,42 +276,46 @@ class AgentOmniEngine:
         try:
             for retry_attempt in range(1, self.retry_limit + 1):
                 uid = f"{task_id}:{rollout_idx}:{retry_attempt}"
-                success, reward_or_error = await self._execute_agent_func_with_exception_handling(agent_run_func, task=task, task_id=task_id, rollout_idx=rollout_idx, attempt_idx=retry_attempt, **kwargs)
-                if success:
-                    colorful_print(f"[{uid}] Rollout completed with reward: {reward_or_error}", fg="green" if reward_or_error > 0 else "yellow")
-                    return task_id, rollout_idx, retry_attempt, reward_or_error
+                success, reward, session_uid = await self._execute_agent_func_with_exception_handling(agent_run_func, task=task, task_id=task_id, rollout_idx=rollout_idx, attempt_idx=retry_attempt, **kwargs)
+                if success and isinstance(reward, float):
+                    colorful_print(f"[{uid}] Rollout completed with reward: {reward}", fg="green" if reward > 0 else "yellow")
+                    return task_id, rollout_idx, retry_attempt, reward, session_uid
+                elif success and isinstance(reward, list):
+                    assert all(isinstance(t, TrajectoryProto) for t in reward), "Must be a list of TrajectoryProto"
+                    list_trajectories = reward
+                    return task_id, rollout_idx, retry_attempt, list_trajectories, session_uid
                 if retry_attempt < self.retry_limit:
                     print(f"[{uid}] Rollout failed on attempt {retry_attempt}/{self.retry_limit}, retrying...")
                     continue
-                raise Exception(f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts: {reward_or_error}")
+                raise Exception(f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts: {reward}")
         finally:
             await self.agent_queue.put(agent_run_func)
 
-    async def start_collect_traces(self, batch_end_token: str):
-        traces_queue = asyncio.Queue()
-        reward_queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-        self._batch_end_future: asyncio.Future | None = loop.create_future()
+    # async def start_collect_traces(self, batch_end_token: str):
+    #     traces_queue = asyncio.Queue()
+    #     reward_queue = asyncio.Queue()
+    #     loop = asyncio.get_running_loop()
+    #     self._batch_end_future: asyncio.Future | None = loop.create_future()
 
-        @self.context_subscriber.on_context_update(namespaces=[self.run_name])
-        async def add_to_queue(update):
-            # Resolve future when the matching batch-end marker arrives
-            if update.context.type == "trace_batch_end":
-                if update.context.id == batch_end_token and self._batch_end_future:
-                    self._batch_end_future.set_result(True)
-            elif update.context.type == "reward":
-                reward_queue.put_nowait(update.context.data)
-            else:
-                event = {
-                    "id": update.context.id,
-                    "type": update.context.type,
-                    "data": update.context.data,
-                }
-                traces_queue.put_nowait(event)
+    #     @self.context_subscriber.on_context_update(namespaces=[self.run_name])
+    #     async def add_to_queue(update):
+    #         # Resolve future when the matching batch-end marker arrives
+    #         if update.context.type == "trace_batch_end":
+    #             if update.context.id == batch_end_token and self._batch_end_future:
+    #                 self._batch_end_future.set_result(True)
+    #         elif update.context.type == "reward":
+    #             reward_queue.put_nowait(update.context.data)
+    #         else:
+    #             event = {
+    #                 "id": update.context.id,
+    #                 "type": update.context.type,
+    #                 "data": update.context.data,
+    #             }
+    #             traces_queue.put_nowait(event)
 
-        await self.context_subscriber.start()
+    #     await self.context_subscriber.start()
 
-        return traces_queue, reward_queue, self._batch_end_future
+    #     return traces_queue, reward_queue, self._batch_end_future
 
     async def _execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
         """Run asynchronous workflow execution with retry logic for multiple tasks.
@@ -329,8 +336,11 @@ class AgentOmniEngine:
 
         task_states = defaultdict(lambda: {"idx": None, "task": None, "episodes": [], "completed": 0, "total_rollouts": 0, "is_complete": False})
 
-        batch_end_token = f"trace-batch-end-{uuid.uuid4().hex}"
-        traces_queue, reward_queue, end_future = await self.start_collect_traces(batch_end_token)
+        # batch_end_token = f"trace-batch-end-{uuid.uuid4().hex}"
+        # traces_queue, reward_queue, end_future = await self.start_collect_traces(batch_end_token)
+
+        # Capture rollout start time BEFORE launching tasks to ensure all traces are included
+        rollout_start_time = time.time()
 
         futures = []
         idx_counter = 0
@@ -345,11 +355,16 @@ class AgentOmniEngine:
             state["total_rollouts"] += 1
 
         uids_to_collect = set()
+        session_uids = set()
         rewards = dict()
+        session_id_to_trajectories = dict()
         start_time = time.time()
         with tqdm(total=len(tasks), desc="Generating trajectories") as pbar:
             for future in asyncio.as_completed(futures):
-                task_id, rollout_idx, retry_attempt, reward = await future
+                task_id, rollout_idx, retry_attempt, reward, session_uid = await future
+                list_trajectories = reward if isinstance(reward, list) else None
+                session_id_to_trajectories[f"{task_id}:{rollout_idx}:{retry_attempt}"] = list_trajectories
+                session_uids.add(session_uid)
                 uids_to_collect.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
                 rewards[f"{task_id}:{rollout_idx}:{retry_attempt}"] = reward
                 state = task_states[task_id]
@@ -359,57 +374,80 @@ class AgentOmniEngine:
         print(f"Total time for generating trajectories: {time.time() - start_time:.2f} seconds")
 
         # Emit batch-end marker via proxy and await it
+        # start_time = time.time()
+        # emit_success = await self.emit_batch_end_signal(batch_end_token)
+        # print(f"Batch end signal emitted in {time.time() - start_time:.2f} seconds")
         start_time = time.time()
-        emit_success = await self.emit_batch_end_signal(batch_end_token)
-        print(f"Batch end signal emitted in {time.time() - start_time:.2f} seconds")
-        start_time = time.time()
+        flush_success = await self.flush_traces(timeout=60.0)
+        flush_time = time.time() - start_time
 
-        received_batch_end = False
-        try:
-            await asyncio.wait_for(end_future, timeout=60.0)
-            received_batch_end = True
-            print(f"Batch end future resolved in {time.time() - start_time:.2f} seconds")
-        except asyncio.TimeoutError:
-            print("⚠️ WARNING: Batch end signal timeout after 60s, collecting available traces")
+        # received_batch_end = False
+        # try:
+        #     await asyncio.wait_for(end_future, timeout=60.0)
+        #     received_batch_end = True
+        #     print(f"Batch end future resolved in {time.time() - start_time:.2f} seconds")
+        # except asyncio.TimeoutError:
+        #     print("⚠️ WARNING: Batch end signal timeout after 60s, collecting available traces")
 
         # Drain remaining trace events without exceptions
+        # traces_by_session_id_epi = {}
+        # for uid in uids_to_collect:
+        #     traces_by_session_id_epi[uid] = []
+
+        # while not traces_queue.empty():
+        #     event = traces_queue.get_nowait()
+        #     response_id = event.get("id", None)
+        #     trace = event.get("data", {})
+        #     session_id = trace.get("session_id", None)
+        #     if not session_id or session_id not in uids_to_collect:
+        #         continue
+        #     traces_by_session_id_epi[session_id].append((response_id, trace))
+
+        all_traces = []
+        collect_sqlite_start = time.time()
+        for session_uid in session_uids:
+            traces = await self.store.get_by_session_uid(session_uid, since=rollout_start_time)
+            all_traces.extend(traces)
+        collect_sqlite_time = time.time() - collect_sqlite_start
+
         traces_by_session_id = {}
         for uid in uids_to_collect:
             traces_by_session_id[uid] = []
 
-        while not traces_queue.empty():
-            event = traces_queue.get_nowait()
-            response_id = event.get("id", None)
-            trace = event.get("data", {})
-            session_id = trace.get("session_id", None)
+        for trace in all_traces:
+            session_id = trace.data.get("session_id", None)
             if not session_id or session_id not in uids_to_collect:
                 continue
-            traces_by_session_id[session_id].append((response_id, trace))
+            traces_by_session_id[session_id].append((trace.id, trace.data))
 
-        response_id_to_reward = dict()
-        while not reward_queue.empty():
-            reward = reward_queue.get_nowait()
-            response_id_to_reward[reward["response_context_id"]] = reward["reward"]
+        # traces_by_episodic = sum([len(v) for v in traces_by_session_id_epi.values()])
+        traces_by_store = sum([len(v) for v in traces_by_session_id.values()])
+
+        # response_id_to_reward = dict()
+        # while not reward_queue.empty():
+        #     reward = reward_queue.get_nowait()
+        #     response_id_to_reward[reward["response_context_id"]] = reward["reward"]
 
         await self.context_subscriber.stop()
 
-        try:
-            groupby = self.config.rllm.processing.groupby_key
-        except Exception:
-            print("No groupby specified in config, will not group steps into trajectories")
-            groupby = None
+        # try:
+        #     groupby = self.config.rllm.processing.groupby_key
+        # except Exception:
+        #     print("No groupby specified in config, will not group steps into trajectories")
+        #     groupby = None
 
-        try:
-            traj_name_key = self.config.rllm.processing.traj_name_key
-        except Exception:
-            print("No traj_name_key specified in config, will not group steps into trajectories")
-            traj_name_key = None
+        # try:
+        #     traj_name_key = self.config.rllm.processing.traj_name_key
+        # except Exception:
+        #     print("No traj_name_key specified in config, will not group steps into trajectories")
+        #     traj_name_key = None
 
         for session_id, traces in traces_by_session_id.items():
             steps = [trace_to_step(trace[1]) for trace in traces]
-            response_ids = [trace[0] for trace in traces]
-            for step, response_id in zip(steps, response_ids, strict=False):
-                step.reward = response_id_to_reward.get(response_id, 0.0)
+            step_id_to_step = {trace[0]: step for trace, step in zip(traces, steps, strict=False)}
+            # response_ids = [trace[0] for trace in traces]
+            # for step, response_id in zip(steps, response_ids, strict=False):
+            #     step.reward = response_id_to_reward.get(response_id, 0.0)
 
             # step_rewards = [step.reward for step in steps]
             # print(f"Session {session_id} rewards: {step_rewards}")
@@ -421,13 +459,29 @@ class AgentOmniEngine:
             # Note: trajectory.uid is set to "task_id:rollout_idx" (without retry_attempt)
             # This is different from episode.id which includes retry_attempt
             # trajectory.uid is used for deduplication purposes
-            trajecoties = group_steps(steps, by=groupby, name_key=traj_name_key)
-            for trajectory in trajecoties:
-                trajectory.reward = rewards[session_id]
+            # trajecoties = group_steps(steps, by=groupby, name_key=traj_name_key)
+            # for trajectory in trajecoties:
+            #     trajectory.reward = rewards[session_id]
+            user_assemble_trajectories = session_id_to_trajectories[session_id]
+            trajectories = []
+            for traj_proto in user_assemble_trajectories:
+                steps_no_rw = [step_id_to_step.get(step.id, None) for step in traj_proto.steps]
+                for step_proto, step in zip(traj_proto.steps, steps_no_rw, strict=False):
+                    if step is None:
+                        print(f"Step {step_proto.id} not found in step_id_to_step, persistant storage failed?")
+                        continue
+                    step.reward = step_proto.reward
+                traj = Trajectory(
+                    name=traj_proto.name,
+                    steps=steps_no_rw,
+                )
+                trajectories.append(traj)
+
+            print(f"Trajectorys has {sum(len(traj.steps) for traj in trajectories)} steps with reward {[traj.steps[-1].reward for traj in trajectories]}")
             # heuristic for is_correct, only for logging purpose
-            is_correct = rewards[session_id] >= 1.0
+            # is_correct = rewards[session_id] >= 1.0
             # episode.id is the full session_id including retry_attempt
-            episode = Episode(id=session_id, trajectories=trajecoties, is_correct=is_correct, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "received_batch_end": int(received_batch_end), "emit_success": int(emit_success), "num_trajectories": len(trajecoties)})
+            episode = Episode(id=session_id, trajectories=trajectories, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "flush_success": int(flush_success), "num_trajectories": len(trajectories), "traces_by_store": traces_by_store, "collect_sqlite_time": collect_sqlite_time, "flush_time": flush_time})
             task_states[task_id]["episodes"].append(episode)
 
         results = []
@@ -457,7 +511,7 @@ class AgentOmniEngine:
                     error_count += 1
             if error_count / len(results) > 0.01:
                 print(f"Too many errors in execute_tasks: {error_count} / {len(results)} > 0.01, sleeping for 120s before retrying...")
-                asyncio.sleep(120.0)
+                await asyncio.sleep(120.0)
             else:
                 return results
         raise Exception("Failed to execute tasks after 3 retries")

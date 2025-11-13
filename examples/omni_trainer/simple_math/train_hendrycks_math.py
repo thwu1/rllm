@@ -13,7 +13,7 @@ def main(config):
 
     # Define run function that recreates the client inside to avoid closure capture
     # This ensures the function is fully serializable for Ray
-    def run(
+    def rollout(
         question: str,
         ground_truth: str,
         base_url: str = "http://localhost:4000/v1",
@@ -37,7 +37,7 @@ def main(config):
         config=config,
         train_dataset=train_dataset,
         val_dataset=test_dataset,
-        agent_run_func=run,
+        agent_run_func=rollout,
     )
     trainer.train()
 

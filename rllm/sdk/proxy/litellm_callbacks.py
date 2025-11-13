@@ -95,17 +95,7 @@ class TracingCallback(CustomLogger):
 
         Uses litellm_call_id for deduplication to ensure we only log once per request.
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        # One-time debug print of tracer identity
-        # Check both data["metadata"] (injected by middleware) and litellm_params["metadata"]
-        # litellm_params = data.get("litellm_params", {}) if isinstance(data, dict) else {}
-        # raw_meta_from_params = litellm_params.get("metadata", {}) if isinstance(litellm_params, dict) else {}
         raw_meta_from_data = data.get("metadata", {}) if isinstance(data, dict) else {}
-        # Merge both sources (data metadata takes precedence as it comes from middleware)
-        # allowed = {"session_id", "job", "user_api_key_request_route"}
         metadata = raw_meta_from_data.get("requester_metadata", {})
 
         model = data.get("model", "unknown") if isinstance(data, dict) else "unknown"
@@ -136,11 +126,6 @@ class TracingCallback(CustomLogger):
         # Extract session_uids from metadata (sent from client via metadata routing)
         session_uids = metadata.get("session_uids")
 
-        logger.info(f"[TracingCallback] Logging LLM call: trace_id={response_id}, model={model}, session_id={metadata.get('session_id')}, metadata_keys={list(metadata.keys())}")
-        logger.info(f"[TracingCallback] session_uids from metadata: {session_uids}")
-        logger.info(f"[TracingCallback] raw_meta_from_data={raw_meta_from_data}")
-        logger.info(f"[TracingCallback] Tracer type: {type(self.tracer).__name__}, tracer_id={hex(id(self.tracer))}")
-
         self.tracer.log_llm_call(
             name=f"proxy/{model}",
             model=model,
@@ -153,8 +138,6 @@ class TracingCallback(CustomLogger):
             trace_id=response_id,  # Use the provider's response ID as the trace_id
             session_uids=session_uids,  # Pass session UIDs from client
         )
-
-        logger.info(f"[TracingCallback] log_llm_call completed for trace_id={response_id}")
 
         # Return response unchanged
         return response

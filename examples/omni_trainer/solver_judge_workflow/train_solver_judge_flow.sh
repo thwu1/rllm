@@ -52,7 +52,7 @@ python3 -m examples.omni_trainer.solver_judge_workflow.train_solver_judge_flow \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='solver-judge-workflow' \
-    trainer.experiment_name='omni-solver-judge-groupby-key-27' \
+    trainer.experiment_name='omni-solver-judge-27-sqlite' \
     trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

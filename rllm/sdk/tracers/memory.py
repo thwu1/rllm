@@ -7,6 +7,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from rllm.sdk.protocol import Trace
+
 
 class InMemorySessionTracer:
     """
@@ -151,7 +153,7 @@ class InMemorySessionTracer:
         actual_trace_id = trace_id or f"tr_{uuid.uuid4().hex[:16]}"
 
         # Build base trace data (session_id will be set per-session)
-        base_trace = {
+        trace_kwargs = {
             "trace_id": actual_trace_id,
             "name": name,
             "input": input,
@@ -161,28 +163,19 @@ class InMemorySessionTracer:
             "tokens": tokens,
             "metadata": metadata or {},
             "timestamp": time.time(),
+            "parent_trace_id": parent_trace_id,
+            "cost": cost,
+            "environment": environment,
+            "tools": tools,
+            "contexts": contexts,
+            "tags": tags,
         }
-
-        # Add optional fields if provided
-        if parent_trace_id is not None:
-            base_trace["parent_trace_id"] = parent_trace_id
-        if cost is not None:
-            base_trace["cost"] = cost
-        if environment is not None:
-            base_trace["environment"] = environment
-        if tools is not None:
-            base_trace["tools"] = tools
-        if contexts is not None:
-            base_trace["contexts"] = contexts
-        if tags is not None:
-            base_trace["tags"] = tags
 
         # Append to every active session with its own session_id
         for sess in sessions:
-            trace = dict(base_trace)
-            trace["session_id"] = sess.session_id
-            formatted = self.formatter(trace)
-            sess._calls.append(formatted)
+            trace_obj = Trace(session_id=sess.session_id, **trace_kwargs)
+            # formatted = self.formatter(trace_obj.model_dump())
+            sess._calls.append(trace_obj)
 
     def flush(self, timeout: float = 30.0) -> bool:
         """
