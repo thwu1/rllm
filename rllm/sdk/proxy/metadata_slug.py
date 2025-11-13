@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from rllm.sdk.session import get_current_metadata, get_current_session_id
+from rllm.sdk.session import get_active_sessions, get_current_metadata, get_current_session_id
 
 _SLUG_PREFIX = "rllm1:"
 
@@ -19,6 +19,12 @@ def assemble_routing_metadata(extra: Mapping[str, Any] | None = None) -> dict[st
     session_id = get_current_session_id()
     if session_id and "session_id" not in payload:
         payload["session_id"] = session_id
+
+    # Add session UIDs from active sessions for trace association
+    active_sessions = get_active_sessions()
+    if active_sessions:
+        payload["session_uids"] = [s._uid for s in active_sessions]
+
     if extra:
         payload.update(dict(extra))
     return payload
