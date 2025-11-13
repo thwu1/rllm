@@ -176,10 +176,15 @@ class LiteLLMProxyRuntime:
         except Exception:
             pass
         # Run synchronous flush in thread pool to avoid blocking the event loop
-        success = await asyncio.to_thread(self._tracer.flush, timeout=timeout)
+        result = await asyncio.to_thread(self._tracer.flush, timeout=timeout)
+
+        # Treat None as success for backward compatibility with tracers that don't return bool
+        # Only False explicitly indicates failure
+        success = result is not False
+
         try:
             if success:
-                logging.info("Tracer flush succeeded tracer_id=%s", hex(id(self._tracer)))
+                logging.info("Tracer flush succeeded tracer_id=%s (result=%s)", hex(id(self._tracer)), result)
             else:
                 logging.warning("Tracer flush failed or timed out tracer_id=%s", hex(id(self._tracer)))
         except Exception:
