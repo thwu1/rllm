@@ -277,7 +277,7 @@ class AgentOmniEngine:
             for retry_attempt in range(1, self.retry_limit + 1):
                 uid = f"{task_id}:{rollout_idx}:{retry_attempt}"
                 success, reward, session_uid = await self._execute_agent_func_with_exception_handling(agent_run_func, task=task, task_id=task_id, rollout_idx=rollout_idx, attempt_idx=retry_attempt, **kwargs)
-                if success and isinstance(reward, float):
+                if success and isinstance(reward, (float, int)):
                     colorful_print(f"[{uid}] Rollout completed with reward: {reward}", fg="green" if reward > 0 else "yellow")
                     return task_id, rollout_idx, retry_attempt, reward, session_uid
                 elif success and isinstance(reward, list):
@@ -480,6 +480,7 @@ class AgentOmniEngine:
                     traj = Trajectory(
                         name=traj_proto.name,
                         steps=steps_no_rw,
+                        reward=traj_proto.reward,  # Preserve trajectory-level reward
                     )
                     trajectories.append(traj)
             elif isinstance(user_return_value, (float, int)):
@@ -498,7 +499,7 @@ class AgentOmniEngine:
                 raise ValueError(f"Invalid return type from agent function: {type(user_return_value)}. "
                                  f"Expected either float (automated mode) or list[TrajectoryProto] (manual mode)")
 
-            print(f"Trajectorys has {sum(len(traj.steps) for traj in trajectories)} steps with reward {[traj.steps[-1].reward for traj in trajectories]}")
+            print(f"Trajectorys has {sum(len(traj.steps) for traj in trajectories)} steps with reward {[traj.steps[-1].reward for traj in trajectories if traj.steps]}")
             # heuristic for is_correct, only for logging purpose
             # is_correct = rewards[session_id] >= 1.0
             # episode.id is the full session_id including retry_attempt
