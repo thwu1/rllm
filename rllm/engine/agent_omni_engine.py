@@ -465,6 +465,45 @@ class AgentOmniEngine:
     async def emit_batch_end_signal(self, token: str) -> bool:
         return await self.proxy_manager.emit_batch_end_signal(token)
 
+    async def flush_traces(self, timeout: float = 30.0) -> bool:
+        """Flush all traces to ensure they are persisted to storage.
+
+        This method sends a signal to the LiteLLM proxy, which then flushes
+        the tracer queue. All queued traces will be persisted before this
+        method returns.
+
+        This is useful for synchronization to ensure all traces are available
+        in storage before collecting them from the database.
+
+        Args:
+            timeout: Maximum time to wait for flush operation (default: 30.0 seconds)
+
+        Returns:
+            True if flush succeeds, False otherwise
+
+        Example:
+            ```python
+            # After generating trajectories, flush traces before collecting
+            success = await engine.flush_traces(timeout=60.0)
+            if success:
+                # All traces are now persisted to storage
+                traces = await collect_traces_from_database()
+            ```
+        """
+        if not self.proxy_manager:
+            logger.warning("No proxy manager available, cannot flush traces")
+            return False
+
+        logger.info("Flushing traces via proxy manager (timeout=%s)", timeout)
+        success = await self.proxy_manager.flush_tracer(timeout=timeout)
+
+        if success:
+            logger.info("Successfully flushed all traces")
+        else:
+            logger.warning("Failed to flush traces")
+
+        return success
+
     async def execute_tasks_verl(self, batch: "DataProto", **kwargs) -> "DataProto":
         """Execute tasks from a Verl DataProto batch and return results.
 

@@ -125,6 +125,34 @@ class VerlProxyManager:
             logger.warning("Failed to emit batch end signal via proxy: %s", exc)
             return False
 
+    async def flush_tracer(self, timeout: float = 30.0) -> bool:
+        """Ask LiteLLM proxy to flush the tracer queue.
+
+        This ensures all queued traces are persisted to storage before returning.
+        Useful for synchronization before collecting traces from the database.
+
+        Args:
+            timeout: Maximum time to wait for flush operation (default: 30.0 seconds)
+
+        Returns:
+            True if flush succeeds, False otherwise
+        """
+        url = f"http://{self.proxy_host}:{self.proxy_port}/admin/flush-tracer"
+        headers = {"Content-Type": "application/json"}
+        headers["Authorization"] = f"Bearer {self.admin_token}"
+
+        try:
+            request_timeout = aiohttp.ClientTimeout(total=timeout + 5.0)  # Add buffer for network overhead
+            async with aiohttp.ClientSession(timeout=request_timeout) as session:
+                async with session.post(url, json={"timeout": timeout}, headers=headers) as resp:
+                    resp.raise_for_status()
+                    result = await resp.json()
+                    logger.info("Tracer flush succeeded: %s", result)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to flush tracer via proxy: %s", exc)
+            return False
+
     def _instrument_vllm_servers(self) -> None:
         """Instrument vLLM servers to return token IDs.
 

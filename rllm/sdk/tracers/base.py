@@ -70,7 +70,7 @@ class TracerProtocol(Protocol):
         """
         ...
 
-    def flush(self, timeout: float = 30.0) -> None:
+    def flush(self, timeout: float = 30.0) -> bool | None:
         """
         Flush all pending traces (blocking).
 
@@ -79,6 +79,10 @@ class TracerProtocol(Protocol):
 
         Args:
             timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if flush succeeded, False if it failed/timed out,
+            or None for backward compatibility (treated as success)
         """
         ...
 
@@ -175,18 +179,28 @@ class CompositeTracer:
             except Exception as e:
                 logger.exception(f"Tracer {tracer.__class__.__name__} failed to log trace: {e}")
 
-    def flush(self, timeout: float = 30.0) -> None:
+    def flush(self, timeout: float = 30.0) -> bool:
         """
         Flush all child tracers.
 
         Args:
             timeout: Maximum time to wait in seconds (applied per tracer)
+
+        Returns:
+            True if all tracers flushed successfully, False if any failed
         """
+        all_succeeded = True
         for tracer in self.tracers:
             try:
-                tracer.flush(timeout=timeout)
+                result = tracer.flush(timeout=timeout)
+                # Treat None as success for backward compatibility
+                if result is False:
+                    all_succeeded = False
+                    logger.warning(f"Tracer {tracer.__class__.__name__} flush returned False")
             except Exception as e:
+                all_succeeded = False
                 logger.exception(f"Tracer {tracer.__class__.__name__} failed to flush: {e}")
+        return all_succeeded
 
     async def close(self, timeout: float = 30.0) -> None:
         """

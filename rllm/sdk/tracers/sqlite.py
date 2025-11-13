@@ -335,12 +335,15 @@ class SqliteTracer:
             session_uids=session_uids if session_uids else None,
         )
 
-    def flush(self, timeout: float = 30.0) -> None:
+    def flush(self, timeout: float = 30.0) -> bool:
         """
         Block until all queued traces are persisted (synchronous version).
 
         Args:
             timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if all traces were flushed successfully, False otherwise
         """
         try:
             # Create a new event loop for this thread if needed
@@ -352,9 +355,13 @@ class SqliteTracer:
 
             # Run the async flush - wait for queue to be processed
             loop.run_until_complete(asyncio.wait_for(asyncio.to_thread(self._store_queue.join), timeout=timeout))
-        except Exception:
-            # Best-effort: do not raise to callers
-            pass
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f"Flush timeout after {timeout}s, queue still has {self._store_queue.qsize()} items")
+            return False
+        except Exception as e:
+            logger.exception(f"Flush failed with error: {e}")
+            return False
 
     async def store_signal(
         self,

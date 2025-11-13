@@ -184,7 +184,7 @@ class InMemorySessionTracer:
             formatted = self.formatter(trace)
             sess._calls.append(formatted)
 
-    def flush(self, timeout: float = 30.0) -> None:
+    def flush(self, timeout: float = 30.0) -> bool:
         """
         No-op for in-memory tracer.
 
@@ -193,8 +193,11 @@ class InMemorySessionTracer:
 
         Args:
             timeout: Ignored (kept for protocol compatibility)
+
+        Returns:
+            True (always succeeds since it's a no-op)
         """
-        pass
+        return True
 
     async def close(self, timeout: float = 30.0) -> None:
         """
