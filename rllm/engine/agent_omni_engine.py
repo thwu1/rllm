@@ -19,7 +19,7 @@ from rllm.engine.proxy_manager import VerlProxyManager
 from rllm.engine.rollout import ModelOutput, RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
-from rllm.sdk.data_process import trace_to_step
+from rllm.sdk.data_process import group_steps, trace_to_step
 from rllm.sdk.protocol import TrajectoryProto
 from rllm.sdk.shortcuts import _session_with_id
 from rllm.sdk.store.sqlite_store import SqliteTraceStore
@@ -362,8 +362,9 @@ class AgentOmniEngine:
         with tqdm(total=len(tasks), desc="Generating trajectories") as pbar:
             for future in asyncio.as_completed(futures):
                 task_id, rollout_idx, retry_attempt, reward, session_uid = await future
-                list_trajectories = reward if isinstance(reward, list) else None
-                session_id_to_trajectories[f"{task_id}:{rollout_idx}:{retry_attempt}"] = list_trajectories
+                # Store the reward value regardless of type (list[TrajectoryProto] or float)
+                # This supports both manual and automated modes
+                session_id_to_trajectories[f"{task_id}:{rollout_idx}:{retry_attempt}"] = reward
                 session_uids.add(session_uid)
                 uids_to_collect.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
                 rewards[f"{task_id}:{rollout_idx}:{retry_attempt}"] = reward
@@ -430,17 +431,18 @@ class AgentOmniEngine:
 
         await self.context_subscriber.stop()
 
-        # try:
-        #     groupby = self.config.rllm.processing.groupby_key
-        # except Exception:
-        #     print("No groupby specified in config, will not group steps into trajectories")
-        #     groupby = None
+        # Read config for automated trajectory assembly mode
+        try:
+            groupby = self.config.rllm.processing.groupby_key
+        except Exception:
+            print("No groupby specified in config, will use default grouping for automated mode")
+            groupby = None
 
-        # try:
-        #     traj_name_key = self.config.rllm.processing.traj_name_key
-        # except Exception:
-        #     print("No traj_name_key specified in config, will not group steps into trajectories")
-        #     traj_name_key = None
+        try:
+            traj_name_key = self.config.rllm.processing.traj_name_key
+        except Exception:
+            print("No traj_name_key specified in config, will use default naming for automated mode")
+            traj_name_key = None
 
         for session_id, traces in traces_by_session_id.items():
             steps = [trace_to_step(trace[1]) for trace in traces]
@@ -459,23 +461,42 @@ class AgentOmniEngine:
             # Note: trajectory.uid is set to "task_id:rollout_idx" (without retry_attempt)
             # This is different from episode.id which includes retry_attempt
             # trajectory.uid is used for deduplication purposes
-            # trajecoties = group_steps(steps, by=groupby, name_key=traj_name_key)
-            # for trajectory in trajecoties:
-            #     trajectory.reward = rewards[session_id]
-            user_assemble_trajectories = session_id_to_trajectories[session_id]
+
+            # Dual-mode support: check if user returned a list of TrajectoryProto or just a reward (float)
+            user_return_value = session_id_to_trajectories[session_id]
             trajectories = []
-            for traj_proto in user_assemble_trajectories:
-                steps_no_rw = [step_id_to_step.get(step.id, None) for step in traj_proto.steps]
-                for step_proto, step in zip(traj_proto.steps, steps_no_rw, strict=False):
-                    if step is None:
-                        print(f"Step {step_proto.id} not found in step_id_to_step, persistant storage failed?")
-                        continue
-                    step.reward = step_proto.reward
-                traj = Trajectory(
-                    name=traj_proto.name,
-                    steps=steps_no_rw,
-                )
-                trajectories.append(traj)
+
+            if isinstance(user_return_value, list):
+                # MANUAL MODE: User manually assembled trajectories
+                # User returned a list of TrajectoryProto objects
+                colorful_print(f"[{session_id}] Using MANUAL trajectory assembly mode", fg="blue")
+                for traj_proto in user_return_value:
+                    steps_no_rw = [step_id_to_step.get(step.id, None) for step in traj_proto.steps]
+                    for step_proto, step in zip(traj_proto.steps, steps_no_rw, strict=False):
+                        if step is None:
+                            print(f"Step {step_proto.id} not found in step_id_to_step, persistent storage failed?")
+                            continue
+                        step.reward = step_proto.reward
+                    traj = Trajectory(
+                        name=traj_proto.name,
+                        steps=steps_no_rw,
+                    )
+                    trajectories.append(traj)
+            elif isinstance(user_return_value, (float, int)):
+                # AUTOMATED MODE: User only returned a reward, auto-assemble trajectories
+                # Use group_steps to automatically group steps into trajectories
+                colorful_print(f"[{session_id}] Using AUTOMATED trajectory assembly mode", fg="cyan")
+                final_reward = float(user_return_value)
+                trajectories = group_steps(steps, by=groupby, name_key=traj_name_key)
+                # Assign the final reward to all trajectories
+                for trajectory in trajectories:
+                    trajectory.reward = final_reward
+                    # Also assign the reward to the last step of each trajectory
+                    if trajectory.steps:
+                        trajectory.steps[-1].reward = final_reward
+            else:
+                raise ValueError(f"Invalid return type from agent function: {type(user_return_value)}. "
+                                 f"Expected either float (automated mode) or list[TrajectoryProto] (manual mode)")
 
             print(f"Trajectorys has {sum(len(traj.steps) for traj in trajectories)} steps with reward {[traj.steps[-1].reward for traj in trajectories]}")
             # heuristic for is_correct, only for logging purpose
