@@ -280,9 +280,9 @@ class SqliteTraceStore:
             # Insert or replace trace
             await conn.execute(
                 """
-                INSERT OR REPLACE INTO traces 
+                INSERT OR REPLACE INTO traces
                 (id, context_type, namespace, data, metadata, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 
+                VALUES (?, ?, ?, ?, ?,
                     COALESCE((SELECT created_at FROM traces WHERE id = ?), ?),
                     ?)
                 """,
@@ -298,6 +298,11 @@ class SqliteTraceStore:
                 ),
             )
 
+            # Read back the actual created_at that was persisted (may differ from 'now' if updated)
+            async with conn.execute("SELECT created_at FROM traces WHERE id = ?", (trace_id,)) as cursor:
+                row = await cursor.fetchone()
+                actual_created_at = row[0] if row else now
+
             # Delete existing junction entries for this trace
             await conn.execute("DELETE FROM trace_sessions WHERE trace_id = ?", (trace_id,))
 
@@ -307,6 +312,7 @@ class SqliteTraceStore:
             #   - trace_id="tr_123" → session_uid="ctx_outer" (row 1)
             #   - trace_id="tr_123" → session_uid="ctx_inner" (row 2)
             # The composite index on (session_uid, created_at) enables fast time-bounded queries
+            # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
             if session_uids:
                 import logging
 
@@ -314,7 +320,7 @@ class SqliteTraceStore:
                 logger.info(f"[SqliteStore.store] Inserting junction entries for trace_id={trace_id}, session_uids={session_uids}")
                 await conn.executemany(
                     "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
-                    [(trace_id, uid, now) for uid in session_uids],
+                    [(trace_id, uid, actual_created_at) for uid in session_uids],
                 )
 
             await conn.commit()
@@ -358,9 +364,9 @@ class SqliteTraceStore:
                 # Insert or replace trace
                 await conn.execute(
                     """
-                    INSERT OR REPLACE INTO traces 
+                    INSERT OR REPLACE INTO traces
                     (id, context_type, namespace, data, metadata, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 
+                    VALUES (?, ?, ?, ?, ?,
                         COALESCE((SELECT created_at FROM traces WHERE id = ?), ?),
                         ?)
                     """,
@@ -376,14 +382,20 @@ class SqliteTraceStore:
                     ),
                 )
 
+                # Read back the actual created_at that was persisted (may differ from 'now' if updated)
+                async with conn.execute("SELECT created_at FROM traces WHERE id = ?", (trace_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    actual_created_at = row[0] if row else now
+
                 # Delete existing junction entries
                 await conn.execute("DELETE FROM trace_sessions WHERE trace_id = ?", (trace_id,))
 
                 # Insert new junction entries
+                # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
                 if session_uids:
                     await conn.executemany(
                         "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
-                        [(trace_id, uid, now) for uid in session_uids],
+                        [(trace_id, uid, actual_created_at) for uid in session_uids],
                     )
 
                 # Create TraceContext for return
@@ -394,7 +406,7 @@ class SqliteTraceStore:
                         namespace=namespace,
                         type=context_type,
                         metadata=metadata,
-                        created_at=now,
+                        created_at=actual_created_at,
                         updated_at=now,
                     )
                 )
