@@ -335,6 +335,7 @@ class EpisodicTracer:
         environment: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         session_id: str | None = None,
+        session_uids: list[str] | None = None,
     ) -> None:
         """
         Log an LLM call to the context store (non-blocking).
@@ -363,7 +364,13 @@ class EpisodicTracer:
         Returns:
             None (trace is queued for asynchronous storage)
         """
-        # Generate trace ID if not provided
+        # Extract trace ID: prefer provided trace_id, then check output for id, otherwise generate
+        if trace_id is None:
+            # Check if output contains an id field (common in LLM provider responses)
+            if isinstance(output, dict):
+                trace_id = output.get("id")
+
+        # Generate trace ID if still not available
         if trace_id is None:
             trace_id = f"tr_{uuid.uuid4().hex[:16]}"
 

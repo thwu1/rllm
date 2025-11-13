@@ -82,6 +82,9 @@ class ContextVarSession:
 
         # Generate new session_id only if none was provided and none exists in context
         self.session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+        # Internal unique ID for this session context instance (different from session_id which can be inherited)
+        # This allows tracking each unique session context even when session_id is shared
+        self._uid = f"ctx_{uuid.uuid4().hex[:16]}"
         self.metadata = metadata
         self.formatter = formatter or (lambda x: x)
 

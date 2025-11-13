@@ -113,9 +113,9 @@ class InMemorySessionTracer:
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_id: Session ID (optional, inferred from context if None)
+            session_id: Session ID (ignored - session IDs come from active sessions in context)
             metadata: Additional metadata dict
-            trace_id: Unique trace ID (auto-generated if None)
+            trace_id: Unique trace ID (auto-generated if None, or extracted from output.id)
             parent_trace_id: Parent trace ID for nested calls
             cost: Cost in USD (optional)
             environment: Environment name (e.g., "production", "dev")
@@ -124,9 +124,12 @@ class InMemorySessionTracer:
             tags: List of tags for categorization
 
         Note:
-            If not within a session context (no active sessions found),
-            the trace is silently dropped. This is intentional - in-memory tracer
-            only works within sessions.
+            - The `session_id` parameter is ignored. Session IDs are automatically
+              extracted from active sessions in context via `get_active_sessions()`.
+              Each active session gets its own trace with its own session_id.
+            - If not within a session context (no active sessions found),
+              the trace is silently dropped. This is intentional - in-memory tracer
+              only works within sessions.
         """
         # Get all active sessions (outer → inner)
         from rllm.sdk.session import get_active_sessions
@@ -137,6 +140,12 @@ class InMemorySessionTracer:
             # Not in a session context - nothing to do
             # In-memory tracer only works within sessions
             return
+
+        # Extract trace_id: prefer provided trace_id, then check output for id, otherwise generate
+        if trace_id is None:
+            # Check if output contains an id field (common in LLM provider responses)
+            if isinstance(output, dict):
+                trace_id = output.get("id")
 
         # Use single trace_id for the same logical call across sessions
         actual_trace_id = trace_id or f"tr_{uuid.uuid4().hex[:16]}"

@@ -7,7 +7,7 @@ from typing import Any
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import ModelResponse, ModelResponseStream
 
-from rllm.sdk.tracers import EpisodicTracer
+from rllm.sdk.tracers import EpisodicTracer, SqliteTracer
 
 
 class SamplingParametersCallback(CustomLogger):
@@ -76,7 +76,7 @@ class TracingCallback(CustomLogger):
     pre-send, and avoids duplicate logging from nested deployment calls.
     """
 
-    def __init__(self, tracer: EpisodicTracer):
+    def __init__(self, tracer: EpisodicTracer | SqliteTracer):
         super().__init__()
         self.tracer = tracer
         # Track logged call IDs to prevent duplicates
@@ -95,6 +95,10 @@ class TracingCallback(CustomLogger):
 
         Uses litellm_call_id for deduplication to ensure we only log once per request.
         """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # One-time debug print of tracer identity
         # Check both data["metadata"] (injected by middleware) and litellm_params["metadata"]
         # litellm_params = data.get("litellm_params", {}) if isinstance(data, dict) else {}
@@ -129,6 +133,14 @@ class TracingCallback(CustomLogger):
         # This ensures the context_id matches the actual completion ID from the provider
         response_id = response_payload.get("id", None)
 
+        # Extract session_uids from metadata (sent from client via metadata routing)
+        session_uids = metadata.get("session_uids")
+
+        logger.info(f"[TracingCallback] Logging LLM call: trace_id={response_id}, model={model}, session_id={metadata.get('session_id')}, metadata_keys={list(metadata.keys())}")
+        logger.info(f"[TracingCallback] session_uids from metadata: {session_uids}")
+        logger.info(f"[TracingCallback] raw_meta_from_data={raw_meta_from_data}")
+        logger.info(f"[TracingCallback] Tracer type: {type(self.tracer).__name__}, tracer_id={hex(id(self.tracer))}")
+
         self.tracer.log_llm_call(
             name=f"proxy/{model}",
             model=model,
@@ -139,7 +151,10 @@ class TracingCallback(CustomLogger):
             latency_ms=latency_ms,
             tokens=tokens,
             trace_id=response_id,  # Use the provider's response ID as the trace_id
+            session_uids=session_uids,  # Pass session UIDs from client
         )
+
+        logger.info(f"[TracingCallback] log_llm_call completed for trace_id={response_id}")
 
         # Return response unchanged
         return response
