@@ -511,11 +511,10 @@ class SqliteTraceStore:
                 query_parts.append("WHERE " + " AND ".join(where_conditions))
 
             # Order by created_at descending
-            # Use junction table's created_at when filtering by session to leverage index
-            if session_uids:
-                query_parts.append("ORDER BY ts.created_at DESC")
-            else:
-                query_parts.append("ORDER BY t.created_at DESC")
+            # Note: We filter by ts.created_at (to use composite index) but order by t.created_at
+            # (to satisfy DISTINCT requirement). Since ts.created_at is denormalized from
+            # t.created_at, they are equal and the ordering is semantically equivalent.
+            query_parts.append("ORDER BY t.created_at DESC")
 
             # Limit
             if limit:
