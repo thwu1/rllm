@@ -157,15 +157,34 @@ class LiteLLMProxyRuntime:
             pass
         await self._tracer.store_signal(token, context_type="trace_batch_end")
 
-    async def flush_tracer(self, timeout: float = 30.0) -> None:
+    async def flush_tracer(self, timeout: float = 30.0) -> bool:
+        """Flush the tracer queue and return success status.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if flush succeeded, False if it timed out or failed
+
+        Raises:
+            RuntimeError: If tracer is not configured
+        """
         if not self._tracer:
             raise RuntimeError("Tracer is not configured on this proxy")
         try:
-            logging.info("Flushing tracer queue tracer_id=%s", hex(id(self._tracer)))
+            logging.info("Flushing tracer queue tracer_id=%s timeout=%s", hex(id(self._tracer)), timeout)
         except Exception:
             pass
         # Run synchronous flush in thread pool to avoid blocking the event loop
-        await asyncio.to_thread(self._tracer.flush, timeout=timeout)
+        success = await asyncio.to_thread(self._tracer.flush, timeout=timeout)
+        try:
+            if success:
+                logging.info("Tracer flush succeeded tracer_id=%s", hex(id(self._tracer)))
+            else:
+                logging.warning("Tracer flush failed or timed out tracer_id=%s", hex(id(self._tracer)))
+        except Exception:
+            pass
+        return success
 
     async def publish_reward(self, context_id: str, reward: float, metadata: dict | None = None) -> None:
         """Publish a reward score to the context store.
@@ -281,10 +300,24 @@ def main() -> None:
 
         Returns:
             {"status": "flushed", "timeout": <timeout_used>} on success
+
+        Raises:
+            HTTPException 408: If flush times out
+            HTTPException 503: If tracer is not configured
+            HTTPException 500: If flush fails for other reasons
         """
         try:
-            await runtime.flush_tracer(timeout=payload.timeout)
+            success = await runtime.flush_tracer(timeout=payload.timeout)
+            if not success:
+                # Flush failed or timed out
+                raise HTTPException(
+                    status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                    detail=f"Tracer flush timed out or failed after {payload.timeout}s. Some traces may not be persisted.",
+                )
             return {"status": "flushed", "timeout": payload.timeout}
+        except HTTPException:
+            # Re-raise HTTPExceptions as-is
+            raise
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         except Exception as exc:
