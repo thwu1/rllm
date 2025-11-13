@@ -61,6 +61,12 @@ class TracerSignalPayload(BaseModel):
     token: str = Field(..., description="Unique identifier for the batch completion marker.")
 
 
+class FlushTracerPayload(BaseModel):
+    """Request body for flushing tracer queue."""
+
+    timeout: float = Field(default=30.0, description="Maximum time to wait for flush operation in seconds.")
+
+
 class RewardPayload(BaseModel):
     """Request body for publishing reward scores."""
 
@@ -158,7 +164,8 @@ class LiteLLMProxyRuntime:
             logging.info("Flushing tracer queue tracer_id=%s", hex(id(self._tracer)))
         except Exception:
             pass
-        await self._tracer.flush(timeout=timeout)
+        # Run synchronous flush in thread pool to avoid blocking the event loop
+        await asyncio.to_thread(self._tracer.flush, timeout=timeout)
 
     async def publish_reward(self, context_id: str, reward: float, metadata: dict | None = None) -> None:
         """Publish a reward score to the context store.
@@ -260,6 +267,28 @@ def main() -> None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         except Exception as exc:
             logging.exception("Tracer signal failed")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    @litellm_app.post("/admin/flush-tracer", dependencies=[Depends(_require_token)])
+    async def flush_tracer(payload: FlushTracerPayload = FlushTracerPayload()):
+        """Flush the tracer queue to ensure all traces are persisted.
+
+        This endpoint blocks until all queued traces are written to storage,
+        ensuring synchronization between the tracer and storage.
+
+        Args:
+            payload: Request payload containing timeout parameter
+
+        Returns:
+            {"status": "flushed", "timeout": <timeout_used>} on success
+        """
+        try:
+            await runtime.flush_tracer(timeout=payload.timeout)
+            return {"status": "flushed", "timeout": payload.timeout}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        except Exception as exc:
+            logging.exception("Flush tracer failed")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
     @litellm_app.post("/admin/publish-reward", dependencies=[Depends(_require_token)])
