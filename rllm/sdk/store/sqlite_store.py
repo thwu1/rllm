@@ -134,18 +134,25 @@ class SqliteTraceStore:
             """)
 
             # Create junction table for session context mapping
+            # Note: created_at is denormalized here for query performance
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS trace_sessions (
                     trace_id TEXT NOT NULL,
                     session_uid TEXT NOT NULL,
+                    created_at REAL NOT NULL,
                     PRIMARY KEY (trace_id, session_uid),
                     FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
                 )
             """)
 
+            # Check if migration is needed (existing databases without created_at in junction table)
+            await self._migrate_if_needed(conn)
+
             # Create indexes for performance
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_uid ON trace_sessions(session_uid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_trace ON trace_sessions(trace_id)")
+            # Composite index for efficient time-bounded session queries (created after migration)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_uid_time ON trace_sessions(session_uid, created_at DESC)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_type ON traces(context_type)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_namespace ON traces(namespace)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at)")
@@ -153,6 +160,74 @@ class SqliteTraceStore:
             await conn.commit()
         finally:
             await conn.close()
+
+    async def _migrate_if_needed(self, conn: aiosqlite.Connection) -> None:
+        """Migrate existing databases to add created_at column to trace_sessions."""
+        try:
+            # Check if created_at column exists in trace_sessions
+            async with conn.execute("PRAGMA table_info(trace_sessions)") as cursor:
+                columns = await cursor.fetchall()
+                column_names = [col[1] for col in columns]
+
+                if "created_at" not in column_names:
+                    logger.info("[SqliteStore] Migrating trace_sessions table to add created_at column")
+                    await self._add_created_at_to_junction_table(conn)
+                    logger.info("[SqliteStore] Migration completed successfully")
+        except Exception as e:
+            logger.warning(f"[SqliteStore] Migration check failed: {e}")
+
+    async def _add_created_at_to_junction_table(self, conn: aiosqlite.Connection) -> None:
+        """
+        Add created_at column to existing trace_sessions table and backfill data.
+
+        Uses a batched approach for large tables to avoid locking issues.
+        """
+        try:
+            # Step 1: Add the column (allows NULL initially for existing rows)
+            await conn.execute("ALTER TABLE trace_sessions ADD COLUMN created_at REAL")
+            logger.info("[SqliteStore] Added created_at column to trace_sessions")
+
+            # Step 2: Backfill created_at from traces table in batches
+            batch_size = 10000
+            offset = 0
+            total_updated = 0
+
+            while True:
+                # Update a batch of rows
+                async with conn.execute(
+                    """
+                    UPDATE trace_sessions
+                    SET created_at = (
+                        SELECT t.created_at
+                        FROM traces t
+                        WHERE t.id = trace_sessions.trace_id
+                    )
+                    WHERE trace_sessions.rowid IN (
+                        SELECT rowid FROM trace_sessions
+                        WHERE created_at IS NULL
+                        LIMIT ?
+                    )
+                    """,
+                    (batch_size,),
+                ) as cursor:
+                    rows_updated = cursor.rowcount
+
+                if rows_updated == 0:
+                    break
+
+                total_updated += rows_updated
+                await conn.commit()
+                logger.info(f"[SqliteStore] Migration progress: {total_updated} rows updated")
+
+                offset += batch_size
+
+            logger.info(f"[SqliteStore] Backfilled created_at for {total_updated} junction table rows")
+
+            # Note: Composite index will be created by _init_database after migration completes
+
+        except Exception as e:
+            logger.exception(f"[SqliteStore] Failed to migrate trace_sessions table: {e}")
+            raise
 
     def _get_active_session_uids(self) -> list[str]:
         """
@@ -231,15 +306,15 @@ class SqliteTraceStore:
             # Example: If trace is logged in outer + inner session:
             #   - trace_id="tr_123" → session_uid="ctx_outer" (row 1)
             #   - trace_id="tr_123" → session_uid="ctx_inner" (row 2)
-            # The index on session_uid makes queries by session_uid very fast
+            # The composite index on (session_uid, created_at) enables fast time-bounded queries
             if session_uids:
                 import logging
 
                 logger = logging.getLogger(__name__)
                 logger.info(f"[SqliteStore.store] Inserting junction entries for trace_id={trace_id}, session_uids={session_uids}")
                 await conn.executemany(
-                    "INSERT INTO trace_sessions (trace_id, session_uid) VALUES (?, ?)",
-                    [(trace_id, uid) for uid in session_uids],
+                    "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
+                    [(trace_id, uid, now) for uid in session_uids],
                 )
 
             await conn.commit()
@@ -307,8 +382,8 @@ class SqliteTraceStore:
                 # Insert new junction entries
                 if session_uids:
                     await conn.executemany(
-                        "INSERT INTO trace_sessions (trace_id, session_uid) VALUES (?, ?)",
-                        [(trace_id, uid) for uid in session_uids],
+                        "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
+                        [(trace_id, uid, now) for uid in session_uids],
                     )
 
                 # Create TraceContext for return
@@ -405,8 +480,13 @@ class SqliteTraceStore:
             where_conditions = []
 
             # Apply since filter early for performance
+            # Key optimization: When filtering by session_uids, use ts.created_at
+            # to leverage the composite index (session_uid, created_at)
             if since is not None:
-                where_conditions.append("t.created_at >= ?")
+                if session_uids:
+                    where_conditions.append("ts.created_at >= ?")
+                else:
+                    where_conditions.append("t.created_at >= ?")
                 params.append(since)
 
             # Add session_uid filter
@@ -431,7 +511,11 @@ class SqliteTraceStore:
                 query_parts.append("WHERE " + " AND ".join(where_conditions))
 
             # Order by created_at descending
-            query_parts.append("ORDER BY t.created_at DESC")
+            # Use junction table's created_at when filtering by session to leverage index
+            if session_uids:
+                query_parts.append("ORDER BY ts.created_at DESC")
+            else:
+                query_parts.append("ORDER BY t.created_at DESC")
 
             # Limit
             if limit:
@@ -493,15 +577,17 @@ class SqliteTraceStore:
         self,
         session_uid: str,
         since: float | None = None,
+        limit: int | None = None,
     ) -> list[TraceContext]:
         """
         Fast lookup of all traces for a session context.
 
-        Uses the indexed junction table for optimal performance.
+        Uses the composite indexed junction table for optimal performance.
 
         Args:
             session_uid: Session UID to query
             since: Filter by created_at >= since (Unix timestamp). Early filter for performance.
+            limit: Maximum number of results to return (most recent first)
 
         Returns:
             List of TraceContext objects for this session context
@@ -511,41 +597,43 @@ class SqliteTraceStore:
         try:
             conn.row_factory = aiosqlite.Row
 
-            # Fast query using indexed junction table:
-            # 1. Index on session_uid (idx_trace_sessions_uid) → O(log n) lookup
-            # 2. Index on created_at (idx_traces_created_at) → O(log n) time filter
-            # 3. Join on trace_id (indexed) → O(m log k) where m = matching rows
+            # Optimized query using composite index (session_uid, created_at):
+            # 1. Composite index (idx_trace_sessions_uid_time) → O(log n) lookup + range scan
+            # 2. Filter on junction table's created_at (no need to join first)
+            # 3. Join to traces only for matching rows → O(k) where k = result set size
             #
-            # For nested sessions: One trace can belong to multiple session contexts.
-            # Querying by session_uid uses the junction table index to find
-            # all traces associated with that unique session UID.
+            # Key optimization: Filter by time on the junction table (ts.created_at)
+            # instead of the main table (t.created_at), allowing the composite index
+            # to be fully utilized without joining first.
             if since is not None:
-                # SQLite query planner will use both indexes:
-                # - idx_trace_sessions_uid for session_uid lookup
-                # - idx_traces_created_at for time filtering
-                async with conn.execute(
-                    """
+                # Use composite index for both session_uid and time filtering
+                query = """
                     SELECT t.* FROM traces t
                     INNER JOIN trace_sessions ts ON t.id = ts.trace_id
-                    WHERE ts.session_uid = ? AND t.created_at >= ?
-                    ORDER BY t.created_at DESC
-                    """,
-                    (session_uid, since),
-                ) as cursor:
+                    WHERE ts.session_uid = ? AND ts.created_at >= ?
+                    ORDER BY ts.created_at DESC
+                """
+                params = [session_uid, since]
+                if limit is not None:
+                    query += " LIMIT ?"
+                    params.append(limit)
+
+                async with conn.execute(query, params) as cursor:
                     rows = await cursor.fetchall()
             else:
-                # Fast lookup using indexed junction table
-                # Index: idx_trace_sessions_uid on session_uid
-                # Performance: O(log n) to find matching session_uid rows
-                async with conn.execute(
-                    """
+                # Fast lookup using session_uid index
+                query = """
                     SELECT t.* FROM traces t
                     INNER JOIN trace_sessions ts ON t.id = ts.trace_id
                     WHERE ts.session_uid = ?
-                    ORDER BY t.created_at DESC
-                    """,
-                    (session_uid,),
-                ) as cursor:
+                    ORDER BY ts.created_at DESC
+                """
+                params = [session_uid]
+                if limit is not None:
+                    query += " LIMIT ?"
+                    params.append(limit)
+
+                async with conn.execute(query, params) as cursor:
                     rows = await cursor.fetchall()
 
             results = []
