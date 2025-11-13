@@ -114,7 +114,6 @@ class SqliteTracer:
 
     async def _worker_coroutine(self) -> None:
         """Main worker coroutine that processes the store queue."""
-        logger.info("[SqliteTracer._worker_coroutine] Worker started")
         while True:
             # Blocking get for the next item
             item = self._store_queue.get()
@@ -125,19 +124,17 @@ class SqliteTracer:
                 break
 
             trace_id = item.get("trace_id", "unknown")
-            logger.info(f"[SqliteTracer._worker_coroutine] Processing trace_id={trace_id}")
 
             try:
                 # Store the trace with retry logic
                 await self._store_trace_with_retry(item)
-                logger.info(f"[SqliteTracer._worker_coroutine] Successfully stored trace_id={trace_id}")
+                # logger.info(f"[SqliteTracer._worker_coroutine] Successfully stored trace_id={trace_id}")
             except Exception as e:
-                logger.exception(f"Worker error processing trace {trace_id}: {e}")
+                logger.exception(f"[SqliteTracer._worker_coroutine] Worker error processing trace {trace_id}: {e}")
             finally:
                 # Mark task as done
                 self._store_queue.task_done()
 
-        # Stop the loop when worker exits
         if self._worker_loop and not self._worker_loop.is_closed():
             self._worker_loop.call_soon(self._worker_loop.stop)
 
@@ -147,8 +144,6 @@ class SqliteTracer:
         retry_delays = [1, 2, 4]  # seconds
         trace_id = item.get("trace_id", "unknown")
         session_uids = item.get("session_uids")
-
-        logger.info(f"[SqliteTracer._store_trace_with_retry] Starting storage for trace_id={trace_id}, session_uids={session_uids}")
 
         for attempt in range(max_retries):
             try:
@@ -160,14 +155,13 @@ class SqliteTracer:
                     metadata=item.get("metadata"),
                     session_uids=session_uids,
                 )
-                logger.info(f"[SqliteTracer._store_trace_with_retry] Successfully stored trace_id={trace_id} with session_uids={session_uids} on attempt {attempt + 1}")
                 return  # Success, exit
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.warning(f"Failed to store trace {trace_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delays[attempt]}s...")
+                    logger.warning(f"[SqliteTracer._store_trace_with_retry] Failed to store trace {trace_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delays[attempt]}s...")
                     await asyncio.sleep(retry_delays[attempt])
                 else:
-                    logger.exception(f"Dropping trace {trace_id} after {max_retries} failed attempts: {e}")
+                    logger.exception(f"[SqliteTracer._store_trace_with_retry] Dropping trace {trace_id} after {max_retries} failed attempts: {e}")
 
     def _stop_worker_loop(self) -> None:
         """Stop the worker event loop gracefully."""
@@ -200,7 +194,6 @@ class SqliteTracer:
         """Queue trace for storage (non-blocking, will be awaited by worker)."""
         # Ensure background worker is running
         if self._worker_thread is None or not self._worker_thread.is_alive():
-            logger.info(f"[SqliteTracer._queue_trace] Starting background worker for trace_id={trace_id}")
             self._start_background_worker()
 
         try:
@@ -213,7 +206,6 @@ class SqliteTracer:
                 "session_uids": session_uids,
             }
             self._store_queue.put_nowait(queue_item)
-            logger.info(f"[SqliteTracer._queue_trace] Queued trace_id={trace_id}, session_uids={session_uids}, queue_size={self._store_queue.qsize()}")
         except queue.Full:
             logger.warning(f"Store queue full (max size: {self._max_queue_size}), dropping trace {trace_id}")
 
@@ -286,14 +278,7 @@ class SqliteTracer:
         if session_uids is None:
             active_sessions = get_active_sessions()
             session_uids = [s._uid for s in active_sessions]
-            logger.info(f"[SqliteTracer.log_llm_call] Auto-detected session_uids from {len(active_sessions)} active sessions: {session_uids}")
-        else:
-            logger.info(f"[SqliteTracer.log_llm_call] Using provided session_uids: {session_uids}")
 
-        logger.info(f"[SqliteTracer.log_llm_call] trace_id={trace_id}, model={model}, session_id={session_id}")
-        logger.info(f"[SqliteTracer.log_llm_call] metadata={metadata}, context_meta={context_meta}")
-
-        # Build trace data
         trace_data = {
             "name": name,
             "input": input,
@@ -324,8 +309,6 @@ class SqliteTracer:
         store_metadata = {}
         if final_metadata:
             store_metadata = final_metadata
-
-        logger.info(f"[SqliteTracer.log_llm_call] Queueing trace for storage: trace_id={trace_id}, session_uids={session_uids}")
 
         # Queue trace for storage (non-blocking, worker will await it)
         self._queue_trace(

@@ -5,6 +5,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from rllm.sdk.protocol import StepProto, Trace, trace_to_step_proto
+
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
 _session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("session_id", default=None)
@@ -89,7 +91,7 @@ class ContextVarSession:
         self.formatter = formatter or (lambda x: x)
 
         # In-memory storage for THIS session's calls
-        self._calls: list[dict[str, Any]] = []
+        self._calls: list[Trace] = []
 
         # Optional persistent tracers
         self._persistent_tracers = persistent_tracers or []
@@ -101,9 +103,14 @@ class ContextVarSession:
         self._stack_token = None
 
     @property
-    def llm_calls(self) -> list[dict[str, Any]]:
+    def llm_calls(self) -> list[Trace]:
         """Get all LLM calls made within this session."""
         return self._calls.copy()
+
+    @property
+    def steps(self) -> list[StepProto]:
+        """Get all steps within this session."""
+        return [trace_to_step_proto(trace) for trace in self._calls]
 
     def clear_calls(self) -> None:
         """Clear all stored calls for this session."""

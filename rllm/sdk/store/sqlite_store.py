@@ -185,7 +185,7 @@ class SqliteTraceStore:
         try:
             # Step 1: Add the column (allows NULL initially for existing rows)
             await conn.execute("ALTER TABLE trace_sessions ADD COLUMN created_at REAL")
-            logger.info("[SqliteStore] Added created_at column to trace_sessions")
+            # logger.info("[SqliteStore] Added created_at column to trace_sessions")
 
             # Step 2: Backfill created_at from traces table in batches
             batch_size = 10000
@@ -217,11 +217,11 @@ class SqliteTraceStore:
 
                 total_updated += rows_updated
                 await conn.commit()
-                logger.info(f"[SqliteStore] Migration progress: {total_updated} rows updated")
+                # logger.info(f"[SqliteStore] Migration progress: {total_updated} rows updated")
 
                 offset += batch_size
 
-            logger.info(f"[SqliteStore] Backfilled created_at for {total_updated} junction table rows")
+            # logger.info(f"[SqliteStore] Backfilled created_at for {total_updated} junction table rows")
 
             # Note: Composite index will be created by _init_database after migration completes
 
@@ -314,10 +314,10 @@ class SqliteTraceStore:
             # The composite index on (session_uid, created_at) enables fast time-bounded queries
             # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
             if session_uids:
-                import logging
+                # import logging
 
-                logger = logging.getLogger(__name__)
-                logger.info(f"[SqliteStore.store] Inserting junction entries for trace_id={trace_id}, session_uids={session_uids}")
+                # logger = logging.getLogger(__name__)
+                # logger.info(f"[SqliteStore.store] Inserting junction entries for trace_id={trace_id}, session_uids={session_uids}")
                 await conn.executemany(
                     "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
                     [(trace_id, uid, actual_created_at) for uid in session_uids],
@@ -470,10 +470,9 @@ class SqliteTraceStore:
         Returns:
             List of TraceContext objects matching the filters
         """
-        import logging
 
-        logger = logging.getLogger(__name__)
-        logger.info(f"[SqliteStore.query] Querying with session_uids={session_uids}, context_types={context_types}, namespaces={namespaces}, since={since}, limit={limit}")
+        # logger = logging.getLogger(__name__)
+        # logger.info(f"[SqliteStore.query] Querying with session_uids={session_uids}, context_types={context_types}, namespaces={namespaces}, since={since}, limit={limit}")
 
         await self._ensure_initialized()
         conn = await self._connect()
@@ -534,12 +533,12 @@ class SqliteTraceStore:
                 params.append(limit)
 
             query = " ".join(query_parts)
-            logger.info(f"[SqliteStore.query] Executing SQL: {query}")
-            logger.info(f"[SqliteStore.query] With params: {params}")
+            # logger.info(f"[SqliteStore.query] Executing SQL: {query}")
+            # logger.info(f"[SqliteStore.query] With params: {params}")
 
             async with conn.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
-                logger.info(f"[SqliteStore.query] Found {len(rows)} rows")
+                # logger.info(f"[SqliteStore.query] Found {len(rows)} rows")
 
                 results = []
                 for row in rows:

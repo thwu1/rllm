@@ -5,7 +5,7 @@ Example:
     python scripts/litellm_proxy_server.py \
         --config /tmp/litellm_proxy_config_autogen.yaml \
         --host 127.0.0.1 --port 4000 \
-        --cs-endpoint http://localhost:8000 --cs-api-key "$EPISODIC_API_KEY" \
+        --db-path ~/.rllm/traces.db --project my-app \
         --admin-token my-shared-secret
 """
 
@@ -22,7 +22,6 @@ from pathlib import Path
 import litellm
 import uvicorn
 import yaml
-from episodic import ContextStore
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from litellm.proxy.proxy_server import app as litellm_app
 from litellm.proxy.proxy_server import initialize
@@ -30,7 +29,7 @@ from pydantic import BaseModel, Field, root_validator
 
 from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback, TracingCallback
 from rllm.sdk.proxy.middleware import MetadataRoutingMiddleware
-from rllm.sdk.tracers import EpisodicTracer
+from rllm.sdk.tracers import SqliteTracer
 
 
 class ReloadPayload(BaseModel):
@@ -78,7 +77,7 @@ class RewardPayload(BaseModel):
 class LiteLLMProxyRuntime:
     """Owns LiteLLM initialization and reload logic."""
 
-    def __init__(self, initial_config: Path, state_dir: Path, tracer: EpisodicTracer | None):
+    def __init__(self, initial_config: Path, state_dir: Path, tracer: SqliteTracer | None):
         self._current_config = initial_config
         self._state_dir = state_dir
         self._tracer = tracer
@@ -222,12 +221,11 @@ class LiteLLMProxyRuntime:
         return str(self._current_config)
 
 
-def _build_tracer(endpoint: str | None, api_key: str | None, project: str | None) -> EpisodicTracer | None:
-    if not endpoint or not api_key:
-        logging.warning("Tracer disabled (missing context store endpoint or API key).")
+def _build_tracer(db_path: str | None, project: str | None) -> SqliteTracer | None:
+    if not db_path:
+        logging.warning("Tracer disabled (missing database path).")
         return None
-    store = ContextStore(endpoint=endpoint, api_key=api_key)
-    return EpisodicTracer(context_store=store, project=project)
+    return SqliteTracer(db_path=db_path, namespace=project or "default")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -237,9 +235,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.getenv("LITELLM_PROXY_PORT", "4000")))
     parser.add_argument("--state-dir", default=os.getenv("LITELLM_PROXY_STATE_DIR", "./.litellm_proxy"))
     parser.add_argument("--admin-token", default=os.getenv("LITELLM_PROXY_ADMIN_TOKEN"))
-    parser.add_argument("--cs-endpoint", default=os.getenv("EPISODIC_ENDPOINT"))
-    parser.add_argument("--cs-api-key", default=os.getenv("EPISODIC_API_KEY"))
-    parser.add_argument("--project", required=True, help="Project name for the tracer.")
+    parser.add_argument("--db-path", default=os.getenv("SQLITE_DB_PATH", "~/.rllm/traces.db"), help="Path to SQLite database file.")
+    parser.add_argument("--project", default=os.getenv("PROJECT_NAME", "default"), help="Project name/namespace for the tracer.")
     parser.add_argument("--log-level", default=os.getenv("LITELLM_PROXY_LOG_LEVEL", "INFO"))
     return parser.parse_args()
 
@@ -254,7 +251,7 @@ def main() -> None:
     runtime = LiteLLMProxyRuntime(
         initial_config=Path(args.config).expanduser().resolve(),
         state_dir=Path(args.state_dir).expanduser().resolve(),
-        tracer=_build_tracer(args.cs_endpoint, args.cs_api_key, args.project),
+        tracer=_build_tracer(args.db_path, args.project),
     )
 
     @asynccontextmanager
@@ -294,7 +291,7 @@ def main() -> None:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
     @litellm_app.post("/admin/flush-tracer", dependencies=[Depends(_require_token)])
-    async def flush_tracer(payload: FlushTracerPayload = FlushTracerPayload()):
+    async def flush_tracer(payload: FlushTracerPayload | None = None):
         """Flush the tracer queue to ensure all traces are persisted.
 
         This endpoint blocks until all queued traces are written to storage,
@@ -311,6 +308,8 @@ def main() -> None:
             HTTPException 503: If tracer is not configured
             HTTPException 500: If flush fails for other reasons
         """
+        if payload is None:
+            payload = FlushTracerPayload()
         try:
             success = await runtime.flush_tracer(timeout=payload.timeout)
             if not success:

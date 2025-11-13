@@ -5,7 +5,8 @@ import uuid
 from rllm.agents.agent import Episode, Trajectory
 from rllm.engine import RolloutEngine
 from rllm.rewards.reward_fn import RewardFunction
-from rllm.sdk import get_chat_client_async, session, set_reward_async
+from rllm.sdk import get_chat_client_async, session
+from rllm.sdk.protocol import TrajectoryProto
 from rllm.workflows.workflow import Workflow
 
 
@@ -14,16 +15,18 @@ class Solver:
         self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="vllm/Qwen/Qwen3-4B-Instruct-2507")
 
     async def generate_solution(self, problem: str) -> Trajectory:
-        with session(agent="solver", groupby_key=str(uuid.uuid4())):
+        with session(agent="solver", groupby_key=str(uuid.uuid4())) as sess:
             messages = [{"role": "user", "content": f"{problem}. Output the final answer within <answer>...</answer>"}]
             response = await self.client.chat.completions.create(
                 messages=messages,
                 temperature=1,
                 max_tokens=1000,
             )
+            response_text = response.choices[0].message.content
 
-        content = response.choices[0].message.content
-        return response.id, self._parse_solver_response(content)
+        step = sess.steps[0]
+        step.action = self._parse_solver_response(response_text)
+        return step
 
     async def generate_solutions(self, problem: str, n_solutions: int = 2) -> list[Trajectory]:
         tasks = [asyncio.create_task(self.generate_solution(problem)) for _ in range(n_solutions)]
@@ -42,15 +45,19 @@ class Judge:
         self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="vllm/Qwen/Qwen3-4B-Instruct-2507")
 
     async def judge_solutions(self, problem: str, solutions: list[str]) -> Trajectory:
-        with session(agent="judge"):
+        with session(agent="judge") as sess:
             messages = [{"role": "user", "content": self._create_judge_prompt(problem, solutions)}]
             response = await self.client.chat.completions.create(
                 messages=messages,
                 temperature=1,
                 max_tokens=1000,
             )
-        content = response.choices[0].message.content
-        return response.id, self._parse_judge_response(content, solutions)
+            response_text = response.choices[0].message.content
+
+        step = sess.steps[0]
+        step.action = self._parse_judge_response(response_text, solutions)
+
+        return step
 
     def _parse_judge_response(self, response: str, solutions: list[str]) -> str:
         answer_match = re.search(r"<answer>(.*?)</answer>", response, re.IGNORECASE | re.DOTALL)
@@ -97,20 +104,19 @@ class SolverJudgeWorkflow(Workflow):
         problem = task["question"]
 
         # Step 1: Solver generates multiple solutions in parallel
-        solver_trajectories = await self.solver.generate_solutions(problem, self.n_solutions)
+        solver_steps = await self.solver.generate_solutions(problem, self.n_solutions)
 
         # Assign rewards to solver trajectories
         solutions = []
-        for response_id, solution in solver_trajectories:
-            solutions.append(solution)
-            reward = self.reward_function(task, solution).reward
-            await set_reward_async(response_id, reward=reward)
+        for step in solver_steps:
+            solutions.append(step.action)
+            step.reward = self.reward_function(task, step.action).reward
 
         # Step 2: Judge selects the best solution
-        response_id, selected_solution = await self.judge.judge_solutions(problem, solutions)
+        judge_step = await self.judge.judge_solutions(problem, solutions)
 
         # Evaluate the selected solution
-        reward_result = self.reward_function(task, selected_solution)
+        reward_result = self.reward_function(task, judge_step.action)
+        judge_step.reward = reward_result.reward
 
-        await set_reward_async(response_id, reward=reward_result.reward)
-        return reward_result.reward
+        return [TrajectoryProto(name="solver", steps=[solver_step]) for solver_step in solver_steps] + [TrajectoryProto(name="judge", steps=[judge_step])]
