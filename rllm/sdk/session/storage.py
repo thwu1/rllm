@@ -248,17 +248,17 @@ class SqliteSessionStorage:
         """
         Retrieve all traces for a session from SQLite.
 
-        Uses session_id for cross-process sharing. All sessions with the same
-        session_id will see the same traces, regardless of process boundaries.
+        Uses session_uid to query the junction table, returning all traces
+        stored under this UID (including descendant sessions in the tree).
 
         This method runs the async query synchronously using asyncio.run().
 
         Args:
-            session_uid: Unique instance ID (ignored, for protocol compatibility)
-            session_id: User-visible session ID (used as storage key)
+            session_uid: Unique session context UID (used as storage key)
+            session_id: User-visible session ID (for logging/debugging)
 
         Returns:
-            List of Trace objects for this session
+            List of Trace objects for this session and all descendants
         """
         try:
             # Check if we're already in an async context
@@ -268,23 +268,23 @@ class SqliteSessionStorage:
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self._async_get_traces(session_id))
+                future = executor.submit(asyncio.run, self._async_get_traces(session_uid))
                 return future.result()
         except RuntimeError:
             # No running loop, safe to use asyncio.run()
-            return asyncio.run(self._async_get_traces(session_id))
+            return asyncio.run(self._async_get_traces(session_uid))
 
-    async def _async_get_traces(self, session_id: str) -> list[Trace]:
+    async def _async_get_traces(self, session_uid: str) -> list[Trace]:
         """Async helper to retrieve traces from SQLite.
 
         Args:
-            session_id: User-visible session ID used as storage key
+            session_uid: Session context UID used as storage key
 
         Returns:
-            List of Trace objects for this session
+            List of Trace objects for this session and all descendants
         """
         try:
-            trace_contexts = await self.store.get_by_session_uid(session_id)
+            trace_contexts = await self.store.get_by_session_uid(session_uid)
 
             # Convert TraceContext objects to Trace protocol objects
             traces = []
