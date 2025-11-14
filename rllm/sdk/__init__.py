@@ -1,5 +1,7 @@
 """RLLM SDK for automatic LLM trace collection and RL training."""
 
+from rllm.sdk.protocol import StepView, Trace, TrajectoryView
+from rllm.sdk.reward import set_reward, set_reward_async
 from rllm.sdk.session import (
     ContextVarSession,
     InMemoryStorage,
@@ -18,6 +20,10 @@ from rllm.sdk.tracers import (
 )
 
 __all__ = [
+    # Protocol / Data Models
+    "Trace",  # Low-level LLM call trace
+    "StepView",  # High-level step view (semantic unit)
+    "TrajectoryView",  # Collection of steps forming a workflow
     # Sessions
     "SessionContext",  # Default (alias for ContextVarSession)
     "ContextVarSession",  # Explicit contextvars-based session
@@ -36,4 +42,7 @@ __all__ = [
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
     "SqliteTracer",  # SQLite-based persistent tracer
+    # Rewards
+    "set_reward",
+    "set_reward_async",
 ]

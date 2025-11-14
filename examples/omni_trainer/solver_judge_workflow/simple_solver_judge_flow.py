@@ -6,7 +6,7 @@ from rllm.agents.agent import Episode, Trajectory
 from rllm.engine import RolloutEngine
 from rllm.rewards.reward_fn import RewardFunction
 from rllm.sdk import get_chat_client_async, session
-from rllm.sdk.protocol import TrajectoryProto
+from rllm.sdk.protocol import TrajectoryView
 from rllm.workflows.workflow import Workflow
 
 
@@ -119,4 +119,4 @@ class SolverJudgeWorkflow(Workflow):
         reward_result = self.reward_function(task, judge_step.action)
         judge_step.reward = reward_result.reward
 
-        return [TrajectoryProto(name="solver", steps=[solver_step]) for solver_step in solver_steps] + [TrajectoryProto(name="judge", steps=[judge_step])]
+        return [TrajectoryView(name="solver", steps=[solver_step]) for solver_step in solver_steps] + [TrajectoryView(name="judge", steps=[judge_step])]

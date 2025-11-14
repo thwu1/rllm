@@ -20,7 +20,13 @@ class Trace(BaseModel):
     tags: list[str] | None = None
 
 
-class StepProto(BaseModel):
+class StepView(BaseModel):
+    """
+    A view of a single step execution.
+
+    Represents a semantic unit of work (which may contain multiple LLM traces).
+    Provides a high-level view for reward assignment and action extraction.
+    """
     id: str
     action: str | None = None
     output: dict | None = None
@@ -28,15 +34,32 @@ class StepProto(BaseModel):
     reward: float = 0.0
     metadata: dict | None = None
 
+    @property
+    def result(self):
+        """User-friendly alias for output - the actual return value of the step."""
+        return self.output
 
-class TrajectoryProto(BaseModel):
+
+class TrajectoryView(BaseModel):
+    """
+    A view of a trajectory execution.
+
+    Represents a collection of steps that form a complete workflow or episode.
+    Used for RL training and workflow composition.
+    """
     name: str = "agent"
-    steps: list[StepProto] = Field(default_factory=list)
+    steps: list[StepView] = Field(default_factory=list)
     reward: float = 0.0
 
+    @property
+    def result(self):
+        """Get the result from the last step, or None if no steps."""
+        return self.steps[-1].result if self.steps else None
 
-def trace_to_step_proto(trace: Trace) -> StepProto:
-    return StepProto(
+
+def trace_to_step_view(trace: Trace) -> StepView:
+    """Convert a low-level Trace to a high-level StepView."""
+    return StepView(
         id=trace.trace_id,
         input=trace.input,
         output=trace.output,
@@ -44,3 +67,9 @@ def trace_to_step_proto(trace: Trace) -> StepProto:
         reward=0.0,
         metadata=trace.metadata,
     )
+
+
+# Backward compatibility aliases
+StepProto = StepView
+TrajectoryProto = TrajectoryView
+trace_to_step_proto = trace_to_step_view
