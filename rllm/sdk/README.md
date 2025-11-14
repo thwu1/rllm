@@ -12,15 +12,15 @@ from rllm.sdk import RLLMClient
 
 ## Quick Start
 
-### Before: Manual session_id passing
+### Before: Manual session_name passing
 
 ```python
-def run_agent(test_set, session_id):
+def run_agent(test_set, session_name):
     for task in test_set:
-        result = solve_task(task, session_id)
+        result = solve_task(task, session_name)
 
-def solve_task(task, session_id):
-    tracer.log_llm_call(..., session_id=session_id)
+def solve_task(task, session_name):
+    tracer.log_llm_call(..., session_name=session_name)
 
 run_agent(test_set, "session-123")  # Must pass everywhere!
 ```
@@ -34,10 +34,10 @@ client = RLLMClient()
 
 def run_agent(test_set):
     for task in test_set:
-        result = solve_task(task)  # No session_id!
+        result = solve_task(task)  # No session_name!
 
 def solve_task(task):
-    tracer.log_llm_call(...)  # session_id auto-injected!
+    tracer.log_llm_call(...)  # session_name auto-injected!
 
 with client.session("session-123"):
     run_agent(test_set)  # Set once, propagates everywhere
@@ -49,21 +49,21 @@ with client.session("session-123"):
 ```python
 with client.session("my-session"):
     tracer.log_llm_call(...)
-    # All traces get session_id="my-session"
+    # All traces get session_name="my-session"
 ```
 
 ### Custom Metadata
 ```python
 with client.session("my-session", experiment="v1", user="alice"):
     tracer.log_llm_call(...)
-    # All traces get session_id + metadata
+    # All traces get session_name + metadata
 ```
 
-### Auto-Generated Session ID
+### Auto-Generated Session Name
 ```python
 with client.session(experiment="v1"):
     tracer.log_llm_call(...)
-    # session_id auto-generated
+    # session_name auto-generated
 ```
 
 ### Nested Contexts (Metadata Inheritance)
@@ -114,7 +114,7 @@ rllm/sdk/
 
 ```python
 class RLLMClient:
-    def session(self, session_id: Optional[str] = None, **metadata) -> SessionContext:
+    def session(self, session_name: Optional[str] = None, **metadata) -> SessionContext:
         """Create session context manager."""
 ```
 
@@ -122,7 +122,7 @@ class RLLMClient:
 
 ```python
 def get_current_session() -> Optional[str]:
-    """Get current session_id from context."""
+    """Get current session_name from context."""
 
 def get_current_metadata() -> Dict[str, Any]:
     """Get current metadata from context."""
@@ -146,7 +146,7 @@ python rllm/sdk/example_usage.py
 1. **Minimal code**: ~38 lines of new code total
 2. **Clean imports**: No try/except, direct imports only
 3. **Thread-safe**: Each thread gets isolated context
-4. **Backward compatible**: Explicit session_id still works
+4. **Backward compatible**: Explicit session_name still works
 5. **Flexible**: Support arbitrary metadata keys
 
 ## Benefits

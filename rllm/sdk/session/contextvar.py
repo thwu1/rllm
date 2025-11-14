@@ -45,7 +45,7 @@ class ContextVarSession:
     """
     Session implementation using Python contextvars with pluggable storage.
 
-    This session implementation separates context propagation (session_id, metadata)
+    This session implementation separates context propagation (session_name, metadata)
     from trace storage. The storage backend can be plugged in to support different
     deployment scenarios:
 

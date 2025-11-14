@@ -116,7 +116,7 @@ class Trajectory:
 
 @dataclass
 class Episode:
-    id: str = ""  # rollout id e.g., task_id:rollout_idx
+    id: str = ""  # session name e.g., task_id:rollout_idx:attempt_idx
     task: Any = None
     termination_reason: "TerminationReason" = None  # noqa: F821
     is_correct: bool = False
