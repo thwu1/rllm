@@ -31,7 +31,7 @@ class Solver:
             model="Qwen/Qwen3-4B-Instruct-2507"
         )
 
-    @step(name="solve")
+    @step(name="solver")
     async def generate_solution(self, problem: str):
         """
         Generate a solution using @step decorator.
@@ -54,8 +54,8 @@ class Solver:
         )
         response_text = response.choices[0].message.content
 
-        # Just return the response - no manual session management needed
-        return response_text
+        # Parse and return the answer (matches original behavior)
+        return self._parse_solver_response(response_text)
 
     async def generate_solutions(self, problem: str, n_solutions: int = 2):
         """Generate multiple solutions in parallel."""
@@ -103,8 +103,8 @@ class Judge:
         )
         response_text = response.choices[0].message.content
 
-        # Just return the response - decorator handles StepView creation
-        return response_text
+        # Parse and return the selected solution (matches original behavior)
+        return self._parse_judge_response(response_text, solutions)
 
     def _parse_judge_response(self, response: str, solutions: list[str]) -> str:
         """Parse judge response to get selected solution."""
@@ -183,23 +183,23 @@ class SolverJudgeWorkflowDecorated(Workflow):
         # Assign rewards to solver trajectories (delayed reward assignment)
         solutions = []
         for solver_step in solver_steps:
-            # Access the LLM response via .result field
-            response_text = solver_step.result
+            # The parsed answer is already in .result (from @step decorator)
+            parsed_answer = solver_step.result
 
-            # Parse and set action
-            solver_step.action = self.solver._parse_solver_response(response_text)
+            # Set action to the parsed answer
+            solver_step.action = parsed_answer
             solutions.append(solver_step.action)
 
             # Delayed reward assignment
             solver_step.reward = self.reward_function(task, solver_step.action).reward
 
         # Step 2: Judge selects the best solution
-        # Returns StepView with judge response in .result
+        # Returns StepView with selected solution in .result (already parsed)
         judge_step = await self.judge.judge_solutions(problem, solutions)
 
-        # Parse judge response and set action
-        judge_response = judge_step.result
-        judge_step.action = self.judge._parse_judge_response(judge_response, solutions)
+        # The selected solution is already in .result (from @step decorator)
+        selected_solution = judge_step.result
+        judge_step.action = selected_solution
 
         # Evaluate the selected solution and set reward
         reward_result = self.reward_function(task, judge_step.action)
@@ -256,13 +256,15 @@ class SolverJudgeWorkflowFullyDecorated(Workflow):
         # Process solutions
         solutions = []
         for solver_step in solver_steps:
-            solver_step.action = self.solver._parse_solver_response(solver_step.result)
+            # Result is already parsed by the @step decorator
+            solver_step.action = solver_step.result
             solver_step.reward = self.reward_function(task, solver_step.action).reward
             solutions.append(solver_step.action)
 
         # Judge solutions
         judge_step = await self.judge.judge_solutions(problem, solutions)
-        judge_step.action = self.judge._parse_judge_response(judge_step.result, solutions)
+        # Result is already parsed by the @step decorator
+        judge_step.action = judge_step.result
         judge_step.reward = self.reward_function(task, judge_step.action).reward
 
         # Return trajectory views
