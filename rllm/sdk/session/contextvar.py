@@ -92,6 +92,7 @@ class ContextVarSession:
         storage: "SessionStorage | None" = None,
         formatter: Callable[[dict], dict] | None = None,
         persistent_tracers: list | None = None,
+        _session_uid_chain: list[str] | None = None,
         **metadata,
     ):
         """
@@ -105,6 +106,7 @@ class ContextVarSession:
                     Pass SqliteSessionStorage for multi-process scenarios.
             formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
             persistent_tracers: Optional list of persistent tracers (deprecated, kept for compatibility)
+            _session_uid_chain: Internal parameter for context restoration (do not use directly)
             **metadata: Session metadata
         """
         # If session_id is not explicitly provided, check if there's one in the context
@@ -117,9 +119,25 @@ class ContextVarSession:
 
         # Generate new session_id only if none was provided and none exists in context
         self.session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+
         # Internal unique ID for this session context instance (different from session_id which can be inherited)
         # This allows tracking each unique session context even when session_id is shared
         self._uid = f"ctx_{uuid.uuid4().hex[:16]}"
+
+        # Build session UID chain for tree hierarchy support
+        if _session_uid_chain is not None:
+            # Restoring from serialized context (distributed case)
+            self._session_uid_chain = _session_uid_chain + [self._uid]
+        else:
+            # Check for parent session in current context (nested local case)
+            parent_session = get_current_session()
+            if parent_session is not None:
+                # Inherit parent's chain and append our UID
+                self._session_uid_chain = parent_session._session_uid_chain + [self._uid]
+            else:
+                # Root session - start new chain
+                self._session_uid_chain = [self._uid]
+
         self.metadata = metadata
         self.formatter = formatter or (lambda x: x)
 
@@ -210,5 +228,63 @@ class ContextVarSession:
         """Return number of calls in this session."""
         return len(self.llm_calls)
 
+    def to_context(self) -> dict:
+        """
+        Serialize session context for distributed propagation.
+
+        Returns a dictionary containing the session state needed to restore
+        the session in another process. This enables distributed tracing
+        across process boundaries.
+
+        Returns:
+            Dictionary with session_id, session_uid_chain (excluding current),
+            and metadata
+
+        Example:
+            >>> # Process 1
+            >>> with ContextVarSession(session_id="task-123") as session:
+            ...     context = session.to_context()
+            ...     send_to_remote_process(context)
+        """
+        return {
+            "session_id": self.session_id,
+            "session_uid_chain": self._session_uid_chain[:-1],  # Exclude current UID
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_context(
+        cls,
+        context: dict,
+        storage: "SessionStorage | None" = None,
+    ) -> "ContextVarSession":
+        """
+        Restore session from serialized context.
+
+        Creates a new session instance that continues the session hierarchy
+        from a parent process. The new session will inherit the parent's
+        session UID chain, enabling distributed tracing.
+
+        Args:
+            context: Dictionary from to_context() containing session state
+            storage: Storage backend to use (required for cross-process tracing)
+
+        Returns:
+            New ContextVarSession instance that continues the parent hierarchy
+
+        Example:
+            >>> # Process 2
+            >>> context = receive_from_process1()
+            >>> storage = SqliteSessionStorage("traces.db")
+            >>> with ContextVarSession.from_context(context, storage=storage) as session:
+            ...     llm.call()  # Traces visible to parent session in Process 1!
+        """
+        return cls(
+            session_id=context["session_id"],
+            _session_uid_chain=context["session_uid_chain"],
+            storage=storage,
+            **context.get("metadata", {}),
+        )
+
     def __repr__(self):
-        return f"ContextVarSession(session_id={self.session_id!r}, _uid={self._uid!r}, storage={self.storage!r})"
+        return f"ContextVarSession(session_id={self.session_id!r}, _uid={self._uid!r}, chain_depth={len(self._session_uid_chain)}, storage={self.storage!r})"
