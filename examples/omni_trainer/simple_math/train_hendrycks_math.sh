@@ -67,4 +67,4 @@ python3 -m examples.omni_trainer.simple_math.train_hendrycks_math \
     rllm.omni.proxy.host=127.0.0.1 \
     rllm.omni.proxy.port=4000 \
     rllm.omni.proxy.auto_start=False \
-    rllm.omni.proxy.admin_token=my-shared-secret \
+    rllm.omni.store.path=/home/tianhao/.rllm/research-common-27.db
