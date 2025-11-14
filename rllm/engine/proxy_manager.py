@@ -11,6 +11,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import resource
 import subprocess
 import sys
 import time
@@ -330,12 +331,29 @@ class VerlProxyManager:
         if project:
             cmd.extend(["--project", project])
 
+        # Prepare environment with aiohttp limits (same as launch_litellm.sh)
+        env = os.environ.copy()
+        env["AIOHTTP_CONNECTOR_LIMIT"] = "4096"
+        env["AIOHTTP_KEEPALIVE_TIMEOUT"] = "60"
+
+        # Function to set file descriptor limit in child process
+        def set_limits():
+            """Set resource limits for the proxy subprocess."""
+            try:
+                # Set file descriptor limit to 65536 (same as launch_litellm.sh)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (65536, 65536))
+            except (ValueError, OSError) as e:
+                # Log but don't fail - some systems may not allow this
+                logger.warning(f"Could not set file descriptor limit: {e}")
+
         # Start subprocess
         logger.info(f"Starting proxy subprocess: {' '.join(cmd)}")
         self._proxy_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,  # Suppress stdout
             stderr=subprocess.DEVNULL,  # Suppress stderr to avoid pipe blocking
+            env=env,  # Pass environment with aiohttp limits
+            preexec_fn=set_limits,  # Set resource limits in child process
         )
 
         # Wait for server to start, then send config via reload
