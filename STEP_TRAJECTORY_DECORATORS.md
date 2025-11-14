@@ -7,10 +7,11 @@ The SDK now provides `@step` and `@trajectory` decorators for building RL workfl
 ## Key Design Principles
 
 1. **Session-based**: Everything uses `session()` under the hood
-2. **Decorator changes return**: `@step` returns `StepView`, `@trajectory` returns `TrajectoryView`
-3. **Context manager preserves return**: Use `step_context()` or `trajectory_context()` when you need the original return value
-4. **Delayed rewards**: Rewards can be assigned after step/trajectory creation
-5. **Automatic collection**: Steps auto-register with parent trajectories via session metadata
+2. **Simple formatting**: Just wraps session and formats `sess.llm_calls` into StepView fields
+3. **Decorator changes return**: `@step` returns `StepView`, `@trajectory` returns `TrajectoryView`
+4. **Context manager preserves return**: Use `step_context()` or `trajectory_context()` when you need the original return value
+5. **Delayed rewards**: Rewards can be assigned after step/trajectory creation
+6. **Automatic collection**: Steps auto-register with parent trajectories via session metadata
 
 ## Architecture
 
@@ -27,8 +28,9 @@ High-level:   @trajectory → TrajectoryView (collection of steps)
 `StepView` has distinct fields for different purposes:
 
 - **`input` / `output`**: LLM-level data (input to model, response from model)
-  - Filled by tracers when converting `Trace` → `StepView`
-  - NOT set by `@step` decorator (will be `None`)
+  - Automatically formatted from `sess.llm_calls` by `@step` decorator
+  - `input` = first trace's input, `output` = last trace's output
+  - `None` if no LLM calls in the step
 
 - **`result`**: User's function return value
   - Set by `@step` decorator
@@ -44,8 +46,8 @@ High-level:   @trajectory → TrajectoryView (collection of steps)
 
 **Two ways to create StepView:**
 
-1. **From Trace** (via `trace_to_step_view`): `input`/`output` have LLM data, `result` is None
-2. **From Decorator** (via `@step`): `result` has function return, `input`/`output` are None
+1. **From Trace** (via `trace_to_step_view`): `input`/`output` have single trace LLM data, `result` is None
+2. **From Decorator** (via `@step`): `result` has function return, `input`/`output` formatted from `sess.llm_calls`
 
 ## Usage
 
@@ -67,9 +69,12 @@ step_view: StepView = await solve_problem("What is 2+2?")
 # Access result (user's function return value)
 print(step_view.result)  # "4"
 
-# input/output are for LLM-level data (filled by tracer, not decorator)
-print(step_view.input)   # None (not set by @step decorator)
-print(step_view.output)  # None (not set by @step decorator)
+# input/output are formatted from sess.llm_calls
+print(step_view.input)   # {"messages": [...]} - LLM request
+print(step_view.output)  # {"choices": [...]} - LLM response
+
+# Access all traces in metadata
+print(step_view.metadata['llm_traces'])  # All LLM calls
 
 # Delayed reward assignment
 step_view.reward = 1.0

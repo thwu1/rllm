@@ -9,7 +9,6 @@ from rllm.sdk.decorators import (
     trajectory_context,
 )
 from rllm.sdk.protocol import StepView, Trace, TrajectoryView
-from rllm.sdk.reward import set_reward, set_reward_async
 from rllm.sdk.session import (
     ContextVarSession,
     InMemoryStorage,
@@ -57,7 +56,4 @@ __all__ = [
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
     "SqliteTracer",  # SQLite-based persistent tracer
-    # Rewards
-    "set_reward",
-    "set_reward_async",
 ]

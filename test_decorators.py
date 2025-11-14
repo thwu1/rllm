@@ -74,15 +74,17 @@ async def solver_verifier_workflow(problem: str):
 
 async def main():
     print("=" * 60)
-    print("Test 1: Simple step decorator")
+    print("Test 1: Simple step decorator (no LLM calls)")
     print("=" * 60)
     step_view = add_numbers(3, 4)
     assert isinstance(step_view, StepView)
     assert step_view.result == 7
-    assert step_view.output == 7
+    assert step_view.input is None  # No LLM calls
+    assert step_view.output is None  # No LLM calls
     print(f"✓ Step result: {step_view.result}")
     print(f"✓ Step ID: {step_view.id}")
     print(f"✓ Step metadata: {step_view.metadata['step_name']}")
+    print(f"✓ LLM calls: {step_view.metadata['llm_calls_count']}")
     print()
 
     print("=" * 60)

@@ -30,7 +30,9 @@ class StepView(BaseModel):
     Provides a high-level view for reward assignment and action extraction.
 
     Fields:
-        - input/output: LLM-level data (input to model, response from model) - filled by tracer
+        - input/output: LLM-level data (input to model, response from model)
+          * Filled by tracer when converting Trace → StepView
+          * OR formatted from sess.llm_calls by @step decorator (first input, last output)
         - result: User-defined function return value (set by @step decorator)
         - action: Parsed action/answer (set manually after step creation)
         - reward: Step reward (set manually, supports delayed assignment)

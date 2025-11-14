@@ -22,10 +22,12 @@ def step(name: str | None = None, **step_metadata):
 
     The StepView captures:
     - result: User's function return value (accessible via .result)
-    - input/output: LLM-level data (filled by tracer, not decorator)
+    - input/output: LLM-level data (formatted from sess.llm_calls)
+      * input = first trace's input, output = last trace's output
+      * None if no LLM calls
     - action: Can be set later for parsed results
     - reward: Can be set later (supports delayed reward assignment)
-    - metadata: Execution info + function args + LLM trace count
+    - metadata: Execution info + function args + all LLM traces
 
     Steps automatically register with parent @trajectory if one exists.
 
@@ -69,11 +71,17 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
+                    # Format LLM calls into input/output
+                    # For single LLM call: input = trace input, output = trace output
+                    # For multiple calls: input = first trace input, output = last trace output
+                    step_input = sess.llm_calls[0].input if sess.llm_calls else None
+                    step_output = sess.llm_calls[-1].output if sess.llm_calls else None
+
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input=None,  # LLM input (filled by tracer, not decorator)
-                        output=None,  # LLM output (filled by tracer, not decorator)
+                        input=step_input,  # LLM input from first trace
+                        output=step_output,  # LLM output from last trace
                         result=result,  # User's function return value
                         action=None,  # Can be set later
                         reward=0.0,  # Can be set later (delayed)
@@ -84,6 +92,7 @@ def step(name: str | None = None, **step_metadata):
                             "function_kwargs": kwargs,
                             "execution_time_ms": execution_time_ms,
                             "llm_calls_count": len(sess.llm_calls),
+                            "llm_traces": [trace.model_dump() for trace in sess.llm_calls],  # Store all traces
                             "session_name": sess.name,
                             **step_metadata
                         }
@@ -114,11 +123,17 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
+                    # Format LLM calls into input/output
+                    # For single LLM call: input = trace input, output = trace output
+                    # For multiple calls: input = first trace input, output = last trace output
+                    step_input = sess.llm_calls[0].input if sess.llm_calls else None
+                    step_output = sess.llm_calls[-1].output if sess.llm_calls else None
+
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input=None,  # LLM input (filled by tracer, not decorator)
-                        output=None,  # LLM output (filled by tracer, not decorator)
+                        input=step_input,  # LLM input from first trace
+                        output=step_output,  # LLM output from last trace
                         result=result,  # User's function return value
                         action=None,  # Can be set later
                         reward=0.0,  # Can be set later (delayed)
@@ -129,6 +144,7 @@ def step(name: str | None = None, **step_metadata):
                             "function_kwargs": kwargs,
                             "execution_time_ms": execution_time_ms,
                             "llm_calls_count": len(sess.llm_calls),
+                            "llm_traces": [trace.model_dump() for trace in sess.llm_calls],  # Store all traces
                             "session_name": sess.name,
                             **step_metadata
                         }
@@ -283,11 +299,15 @@ class StepContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         execution_time_ms = (time.time() - self._start_time) * 1000
 
+        # Format LLM calls into input/output
+        step_input = self._session.llm_calls[0].input if self._session.llm_calls else None
+        step_output = self._session.llm_calls[-1].output if self._session.llm_calls else None
+
         # Create StepView
         self.step_view = StepView(
             id=self._step_id,
-            input=None,  # LLM input (not captured in context manager)
-            output=None,  # LLM output (not captured in context manager)
+            input=step_input,  # LLM input from first trace
+            output=step_output,  # LLM output from last trace
             result=self._result,  # User-set result via set_result()
             action=None,
             reward=0.0,
@@ -295,6 +315,7 @@ class StepContext:
                 "step_name": self.name,
                 "execution_time_ms": execution_time_ms,
                 "llm_calls_count": len(self._session.llm_calls),
+                "llm_traces": [trace.model_dump() for trace in self._session.llm_calls],
                 "session_name": self._session.name,
                 **self.metadata
             }
