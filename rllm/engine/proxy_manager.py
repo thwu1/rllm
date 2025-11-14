@@ -334,9 +334,12 @@ class VerlProxyManager:
             stderr=subprocess.PIPE,  # Capture stderr for error reporting
         )
 
-        # Wait for proxy to be ready
+        # Wait for server to start, then send config via reload
         try:
-            self._wait_for_proxy_ready(timeout=30.0)
+            self._wait_for_server_start(timeout=10.0)
+            logger.info("Proxy server started, sending configuration...")
+            self.reload_external_proxy(inline_payload=True)
+            logger.info("Proxy configuration loaded successfully")
         except Exception:
             # Cleanup on failure
             self.shutdown_proxy()
@@ -345,19 +348,21 @@ class VerlProxyManager:
         # Register cleanup handler
         atexit.register(self.shutdown_proxy)
 
-        logger.info(f"✅ Proxy subprocess started (PID: {self._proxy_process.pid})")
+        logger.info(f"✅ Proxy subprocess ready (PID: {self._proxy_process.pid})")
 
-    def _wait_for_proxy_ready(self, timeout: float = 30.0) -> None:
-        """Poll proxy health endpoint until it responds.
+    def _wait_for_server_start(self, timeout: float = 10.0) -> None:
+        """Wait for proxy server process to start accepting connections.
+
+        The server starts but doesn't initialize LiteLLM until we call reload.
+        We just need to wait for the basic server to be listening.
 
         Args:
             timeout: Maximum time to wait in seconds
 
         Raises:
             RuntimeError: If proxy process dies during startup
-            TimeoutError: If proxy doesn't become ready within timeout
+            TimeoutError: If server doesn't start within timeout
         """
-        health_url = f"http://{self.proxy_host}:{self.proxy_port}/health"
         start_time = time.time()
 
         while time.time() - start_time < timeout:
@@ -366,18 +371,18 @@ class VerlProxyManager:
                 stderr = self._proxy_process.stderr.read().decode() if self._proxy_process.stderr else ""
                 raise RuntimeError(f"Proxy process died during startup: {stderr}")
 
-            # Check if ready
+            # Try to connect to the server (any endpoint will do)
             try:
-                resp = requests.get(health_url, timeout=1.0)
-                if resp.ok:
-                    logger.info(f"Proxy ready at {self.get_proxy_url()}")
-                    return
+                resp = requests.get(f"http://{self.proxy_host}:{self.proxy_port}/", timeout=0.5)
+                # If we get any response, server is up (even 404 is fine)
+                logger.info(f"Proxy server accepting connections")
+                return
             except requests.RequestException:
                 pass
 
-            time.sleep(0.5)
+            time.sleep(0.3)
 
-        raise TimeoutError(f"Proxy did not become ready within {timeout}s")
+        raise TimeoutError(f"Proxy server did not start within {timeout}s")
 
     def shutdown_proxy(self) -> None:
         """Gracefully shutdown proxy subprocess."""

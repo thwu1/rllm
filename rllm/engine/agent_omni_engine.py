@@ -139,13 +139,13 @@ class AgentOmniEngine:
 
         # Start proxy based on mode
         if proxy_mode == "subprocess":
+            # Start subprocess, wait for server, then reload config
             db_path = proxy_config.get("db_path")
             project = proxy_config.get("project", "rllm-agent-omni")
             self.proxy_manager.start_proxy_subprocess(db_path=db_path, project=project)
-            logger.info(f"Started proxy in subprocess mode")
         elif proxy_mode == "external":
+            # Reload external proxy with the generated configuration
             self.proxy_manager.reload_external_proxy(inline_payload=True)
-            logger.info(f"Using external proxy mode")
         else:
             raise ValueError(f"Unknown proxy mode: {proxy_mode}. Must be 'external' or 'subprocess'")
 
