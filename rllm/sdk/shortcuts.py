@@ -15,32 +15,32 @@ from rllm.sdk.chat import ProxyTrackedAsyncChatClient, ProxyTrackedChatClient
 from rllm.sdk.session import SessionContext
 
 
-def _session_with_id(session_id: str | None = None, **metadata: Any) -> SessionContext:
-    """Create a session context manager with explicit session_id (INTERNAL USE ONLY).
+def _session_with_name(name: str | None = None, **metadata: Any) -> SessionContext:
+    """Create a session context manager with explicit name (INTERNAL USE ONLY).
 
-    This is an internal function that allows setting an explicit session_id.
-    For public use, use the `session()` function which auto-generates session_id.
+    This is an internal function that allows setting an explicit session name.
+    For public use, use the `session()` function which auto-generates the name.
 
     Args:
-        session_id: Explicit session ID (auto-generated if None)
+        name: Explicit session name (auto-generated if None)
         **metadata: Arbitrary metadata to attach to all traces in this session
 
     Returns:
-        SessionContext: A context manager that sets session_id and metadata
+        SessionContext: A context manager that sets session name and metadata
     """
-    return SessionContext(session_id=session_id, **metadata)
+    return SessionContext(name=name, **metadata)
 
 
 def session(**metadata: Any) -> SessionContext:
     """Create a session context manager for automatic trace tracking.
 
     This is a standalone convenience function that creates a SessionContext.
-    The session_id is automatically generated and cannot be overridden to
+    The session name is automatically generated and cannot be overridden to
     ensure proper session management.
 
-    When nested inside a `_session_with_id()` context, the SessionContext
-    will automatically inherit the parent session_id instead of generating
-    a new one, allowing internal code to control the session_id while keeping
+    When nested inside a `_session_with_name()` context, the SessionContext
+    will automatically inherit the parent session name instead of generating
+    a new one, allowing internal code to control the session name while keeping
     it hidden from users.
 
     Usage:
@@ -51,11 +51,11 @@ def session(**metadata: Any) -> SessionContext:
         Session with metadata:
         >>> from rllm.sdk import session
         >>> with session(experiment="v1", user="alice"):
-        ...     # All traces get auto-generated session_id + custom metadata
+        ...     # All traces get auto-generated session name + custom metadata
 
         Multiple sessions:
         >>> with session(experiment="v1"):
-        ...     # session_id auto-generated, metadata preserved
+        ...     # session name auto-generated, metadata preserved
         ...     pass
 
         Nested sessions (metadata inheritance):
@@ -63,23 +63,23 @@ def session(**metadata: Any) -> SessionContext:
         ...     with session(task="math"):
         ...         # Inherits experiment="v1", adds task="math"
 
-        Nested with _session_with_id (internal use):
-        >>> from rllm.sdk.shortcuts import _session_with_id
-        >>> with _session_with_id(session_id="internal-id"):
+        Nested with _session_with_name (internal use):
+        >>> from rllm.sdk.shortcuts import _session_with_name
+        >>> with _session_with_name(name="internal-id"):
         ...     with session(experiment="v1"):
-        ...         # Uses "internal-id" as session_id, adds experiment="v1"
+        ...         # Uses "internal-id" as session name, adds experiment="v1"
 
     Args:
         **metadata: Arbitrary metadata to attach to all traces in this session.
-                   Note: session_id is auto-generated and cannot be specified.
+                   Note: session name is auto-generated and cannot be specified.
 
     Returns:
-        SessionContext: A context manager that sets session_id and metadata
+        SessionContext: A context manager that sets session name and metadata
 
     Note:
-        For internal use with explicit session_id, use `_session_with_id()` instead.
+        For internal use with explicit session name, use `_session_with_name()` instead.
     """
-    assert "session_id" not in metadata, "session_id is auto-generated and cannot be specified"
+    assert "name" not in metadata, "name is auto-generated and cannot be specified"
     return SessionContext(**metadata)
 
 

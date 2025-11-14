@@ -11,7 +11,7 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
-from rllm.sdk.session import get_current_metadata, get_current_session_id
+from rllm.sdk.session import get_current_metadata, get_current_session_name
 
 
 class _SimpleTrackedChatClientBase:
@@ -57,7 +57,7 @@ class _SimpleTrackedChatClientBase:
         if not self.tracer:
             return
 
-        session_id = get_current_session_id()
+        session_name = get_current_session_name()
         context_metadata = dict(get_current_metadata() or {})
 
         metadata: dict[str, Any] = dict(context_metadata)
@@ -82,7 +82,7 @@ class _SimpleTrackedChatClientBase:
             model=model,
             input={"messages": messages},
             output=response_payload,
-            session_id=session_id,
+            session_name=session_name,
             metadata=metadata,
             latency_ms=latency_ms,
             tokens=tokens_summary,
