@@ -1,6 +1,5 @@
 """RLLM SDK for automatic LLM trace collection and RL training."""
 
-from rllm.sdk.reward import set_reward, set_reward_async
 from rllm.sdk.session import (
     ContextVarSession,
     InMemoryStorage,
@@ -37,7 +36,4 @@ __all__ = [
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
     "SqliteTracer",  # SQLite-based persistent tracer
-    # Rewards
-    "set_reward",
-    "set_reward_async",
 ]
