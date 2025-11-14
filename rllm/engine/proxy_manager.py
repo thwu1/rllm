@@ -242,7 +242,7 @@ class VerlProxyManager:
         inline_payload: bool = True,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Ask an external LiteLLM proxy (started via scripts/litellm_proxy_server.py) to reload config.
+        """Ask an external LiteLLM proxy (started via launch_litellm.sh or python -m rllm.sdk.proxy.litellm_server) to reload config.
 
         Args:
             reload_url: Full URL to the reload endpoint (default: http://{host}:{port}/admin/reload).
@@ -308,15 +308,11 @@ class VerlProxyManager:
         if not self._config_snapshot_path or not os.path.exists(self._config_snapshot_path):
             raise RuntimeError("Config snapshot not available. Cannot start proxy.")
 
-        # Locate proxy script relative to this module (works when installed as package)
-        proxy_script = Path(__file__).parent.parent.parent / "scripts" / "litellm_proxy_server.py"
-        if not proxy_script.exists():
-            raise RuntimeError(f"Proxy script not found at {proxy_script}")
-
-        # Build command
+        # Build command to run proxy server as module
         cmd = [
             sys.executable,
-            str(proxy_script),
+            "-m",
+            "rllm.sdk.proxy.litellm_server",
             "--config",
             self._config_snapshot_path,
             "--host",
