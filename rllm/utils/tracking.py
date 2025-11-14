@@ -19,11 +19,41 @@ A unified tracking interface that supports logging data to different backend
 
 import dataclasses
 import json
+import numbers
 import os
+import pprint
 from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any
+
+
+def concat_dict_to_str(dict: dict, step):
+    output = [f"step:{step}"]
+    for k, v in dict.items():
+        if isinstance(v, numbers.Number):
+            output.append(f"{k}:{pprint.pformat(v)}")
+    output_str = " - ".join(output)
+    return output_str
+
+
+class LocalLogger:
+    """
+    A local logger that logs messages to the console.
+
+    Args:
+        print_to_console (bool): Whether to print to the console.
+    """
+
+    def __init__(self, print_to_console=True):
+        self.print_to_console = print_to_console
+
+    def flush(self):
+        pass
+
+    def log(self, data, step):
+        if self.print_to_console:
+            print(concat_dict_to_str(data, step=step), flush=True)
 
 
 class Tracking:
@@ -138,8 +168,6 @@ class Tracking:
             self.logger["tensorboard"] = _TensorboardAdapter(project_name, experiment_name)
 
         if "console" in default_backend:
-            from verl.utils.logger import LocalLogger
-
             self.console_logger = LocalLogger(print_to_console=True)
             self.logger["console"] = self.console_logger
 
