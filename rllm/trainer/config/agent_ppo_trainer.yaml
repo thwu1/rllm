@@ -70,7 +70,7 @@ rllm:
     proxy:
       host: 127.0.0.1
       port: 4000
-      mode: external  # external | subprocess
+      mode: subprocess  # external | subprocess
       admin_token: my-shared-secret
 
 fireworks:
