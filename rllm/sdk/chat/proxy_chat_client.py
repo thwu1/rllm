@@ -21,7 +21,7 @@ class _ScopedClientMixin:
     _memory_tracer = InMemorySessionTracer()
 
     def _scoped_client(self, metadata: Mapping[str, Any]):
-        base_url = getattr(self, "_proxy_base_url", None)
+        base_url = getattr(self, "base_url", None)
         if not base_url or not metadata:
             return self._client
         proxied_base = build_proxied_base_url(base_url, metadata)
@@ -191,7 +191,7 @@ class ProxyTrackedChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
 
         self.tracer = tracer
         self.default_model = default_model
-        self._proxy_base_url = base_url if use_proxy else None
+        self.base_url = base_url
         self.use_proxy = use_proxy
 
         self.chat = _ProxyChatNamespace(self)
@@ -317,7 +317,7 @@ class ProxyTrackedAsyncChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBa
 
         self.tracer = tracer
         self.default_model = default_model
-        self._proxy_base_url = base_url if use_proxy else None
+        self.base_url = base_url
         self.use_proxy = use_proxy
 
         self.chat = _ProxyAsyncChatNamespace(self)
