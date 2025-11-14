@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -307,19 +308,26 @@ class VerlProxyManager:
         if not self._config_snapshot_path or not os.path.exists(self._config_snapshot_path):
             raise RuntimeError("Config snapshot not available. Cannot start proxy.")
 
+        # Locate proxy script relative to this module (works when installed as package)
+        proxy_script = Path(__file__).parent.parent.parent / "scripts" / "litellm_proxy_server.py"
+        if not proxy_script.exists():
+            raise RuntimeError(f"Proxy script not found at {proxy_script}")
+
         # Build command
         cmd = [
             sys.executable,
-            "scripts/litellm_proxy_server.py",
+            str(proxy_script),
             "--config",
             self._config_snapshot_path,
             "--host",
             self.proxy_host,
             "--port",
             str(self.proxy_port),
-            "--admin-token",
-            self.admin_token,
         ]
+
+        # Only add admin token if one is provided
+        if self.admin_token:
+            cmd.extend(["--admin-token", self.admin_token])
 
         if db_path:
             cmd.extend(["--db-path", db_path])
@@ -331,7 +339,7 @@ class VerlProxyManager:
         self._proxy_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,  # Suppress stdout
-            stderr=subprocess.PIPE,  # Capture stderr for error reporting
+            stderr=subprocess.DEVNULL,  # Suppress stderr to avoid pipe blocking
         )
 
         # Wait for server to start, then send config via reload
@@ -368,8 +376,8 @@ class VerlProxyManager:
         while time.time() - start_time < timeout:
             # Check if process died
             if self._proxy_process.poll() is not None:
-                stderr = self._proxy_process.stderr.read().decode() if self._proxy_process.stderr else ""
-                raise RuntimeError(f"Proxy process died during startup: {stderr}")
+                exit_code = self._proxy_process.returncode
+                raise RuntimeError(f"Proxy process died during startup with exit code {exit_code}")
 
             # Try to connect to the server (any endpoint will do)
             try:
