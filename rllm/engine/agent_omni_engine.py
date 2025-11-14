@@ -32,70 +32,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-"""
-Trajectory ID Structure Documentation
-======================================
-
-This module uses a hierarchical ID system to track tasks, episodes, trajectories, and steps:
-
-ID Hierarchy:
--------------
-1. task_id: Unique identifier for each task
-   - Format: UUID string or custom identifier
-   - Example: "abc123-def456-ghi789" or "task_001"
-   - Scope: Identifies a unique task across all rollouts
-
-2. episode.id (session_id): Unique identifier for each rollout attempt
-   - Format: "{task_id}:{rollout_idx}:{retry_attempt}"
-   - Example: "abc123:0:1" (task abc123, first rollout, first retry)
-   - Scope: Identifies a specific execution attempt of a task
-   - Note: In agent_workflow_engine, format is "{task_id}:{rollout_idx}" (no retry_attempt)
-
-3. trajectory_id: Identifier for trajectories within an episode
-   - Format: "{task_id}_{trajectory_name}"
-   - Example: "abc123_solver", "abc123_judge"
-   - Scope: Identifies a trajectory type for a task
-   - Important: Does NOT contain rollout_idx or retry_attempt
-   - Multiple trajectories can share the same trajectory_id across different rollouts
-   - Multiple trajectories within the same episode can have the same trajectory_id
-     (e.g., in solver-judge workflow, multiple solver trajectories all have "task_id_solver")
-
-4. step_id: Identifier for individual steps within a trajectory
-   - Format: "{trajectory_id}_step{step_idx}"
-   - Example: "abc123_solver_step0", "abc123_judge_step1"
-   - Scope: Identifies a specific step within a trajectory
-
-Example for Solver-Judge Workflow:
------------------------------------
-Given task_id="abc123" with 2 solver trajectories and 1 judge trajectory:
-
-Episode 1 (rollout_idx=0, retry_attempt=1):
-  - episode.id = "abc123:0:1"
-  - Trajectories:
-    * trajectory_id = "abc123_solver" (first solver, name="solver")
-    * trajectory_id = "abc123_solver" (second solver, name="solver") <- SAME ID!
-    * trajectory_id = "abc123_judge" (judge, name="judge")
-  - Steps (if stepwise mode enabled):
-    * "abc123_solver_step0", "abc123_solver_step1", ...
-    * "abc123_judge_step0", "abc123_judge_step1", ...
-
-Episode 2 (rollout_idx=1, retry_attempt=1):
-  - episode.id = "abc123:1:1"
-  - Trajectories:
-    * trajectory_id = "abc123_solver" <- SAME as Episode 1!
-    * trajectory_id = "abc123_solver" <- SAME as Episode 1!
-    * trajectory_id = "abc123_judge" <- SAME as Episode 1!
-
-Key Observations:
------------------
-- trajectory_id shares a common prefix (task_id) across all trajectories for a task
-- trajectory_id does NOT contain rollout information (rollout_idx or retry_attempt)
-- Multiple rollouts of the same task will produce trajectories with identical trajectory_ids
-- This design allows grouping trajectories by task and type across different rollouts
-- episode.id uniquely identifies each rollout attempt and contains rollout information
-"""
-
-
 class AgentOmniEngine:
     def __init__(self, agent_run_func: Callable, rollout_engine: RolloutEngine, config=None, n_parallel_tasks: int = 128, retry_limit: int = 3, raise_on_error: bool = True, proxy_config: dict | None = None, tracer: Optional["EpisodicTracer"] = None, **kwargs):
         """Initialize the AgentOmniEngine.
@@ -231,9 +167,7 @@ class AgentOmniEngine:
             self.agent_queue.put_nowait(self.wrapped_agent_run_func)
 
     async def _execute_with_exception_handling(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
-        # Construct session_id (which becomes episode.id)
         # Format: "{task_id}:{rollout_idx}:{attempt_idx}"
-        # Example: "abc123:0:1" (task abc123, first rollout, first retry attempt)
         # This uniquely identifies each rollout attempt
         metadata = {"session_id": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
         try:
@@ -387,7 +321,6 @@ class AgentOmniEngine:
                     )
                 is_correct = trajectories[-1].reward >= 1.0 if len(trajectories) > 0 else False
 
-            # episode.id is the full session_id including retry_attempt
             episode = Episode(id=session_id, is_correct=is_correct, trajectories=trajectories, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "flush_success": int(flush_success), "num_trajectories": len(trajectories), "traces_collected": num_traces_collected, "collect_sqlite_time": collect_sqlite_time, "flush_time": flush_time})
             task_states[task_id]["episodes"].append(episode)
 
@@ -404,10 +337,6 @@ class AgentOmniEngine:
                 results = await self._execute_tasks(tasks, task_ids, **kwargs)
             except Exception as e:
                 print(f"Error in execute_tasks: {e}, retrying...")
-                try:
-                    await self.context_subscriber.stop()
-                except Exception as e:
-                    print(f"Error in force stopping context subscriber: {e}")
 
             error_count = 0
             for episode in results:
@@ -438,15 +367,6 @@ class AgentOmniEngine:
 
         Returns:
             True if flush succeeds, False otherwise
-
-        Example:
-            ```python
-            # After generating trajectories, flush traces before collecting
-            success = await engine.flush_traces(timeout=60.0)
-            if success:
-                # All traces are now persisted to storage
-                traces = await collect_traces_from_database()
-            ```
         """
         if not self.proxy_manager:
             logger.warning("No proxy manager available, cannot flush traces")
@@ -702,14 +622,12 @@ class AgentOmniEngine:
             },
             non_tensors={
                 # episode_ids: Format "task_id:rollout_idx:retry_attempt" (e.g., "abc123:0:1")
-                # Uniquely identifies each rollout attempt
                 "episode_ids": np.array(episode_ids),
                 # trajectory_ids: Format "task_id_trajectory_name" (e.g., "abc123_solver")
                 # Does NOT contain rollout_idx - shared across rollouts of the same task
                 # Multiple trajectories can have the same trajectory_id
                 "trajectory_ids": np.array(trajectory_ids),
                 # step_ids: Format "task_id_trajectory_name_step{idx}" (e.g., "abc123_solver_step0")
-                # Does NOT contain rollout_idx - shared across rollouts of the same task
                 "step_ids": np.array(step_ids),
                 # batch_ids: Unique identifier for each training batch
                 "batch_ids": np.array([str(uuid.uuid4())] * len(episode_ids)),
