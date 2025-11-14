@@ -276,26 +276,26 @@ class AgentOmniEngine:
             all_traces.extend(traces)
         collect_sqlite_time = time.time() - collect_trajectory_start
 
-        traces_by_session_id = {}
+        traces_by_session_name = {}
         for uid in rollout_ids:
-            traces_by_session_id[uid] = []
+            traces_by_session_name[uid] = []
 
         for trace in all_traces:
-            session_id = trace.data.get("session_name", None)
-            if not session_id or session_id not in rollout_ids:
+            session_name = trace.data.get("session_name", None)
+            if not session_name or session_name not in rollout_ids:
                 continue
-            traces_by_session_id[session_id].append((trace.id, trace.data))
+            traces_by_session_name[session_name].append((trace.id, trace.data))
 
-        num_traces_collected = sum(len(traces) for traces in traces_by_session_id.values())
+        num_traces_collected = sum(len(traces) for traces in traces_by_session_name.values())
 
-        for session_id, traces in traces_by_session_id.items():
+        for session_name, traces in traces_by_session_name.items():
             steps = [trace_to_step(trace[1]) for trace in traces]
             step_id_to_step = {trace[0]: step for trace, step in zip(traces, steps, strict=False)}
 
-            task_id = session_id.split(":")[0]
-            retry_attempt = int(session_id.split(":")[2])
+            task_id = session_name.split(":")[0]
+            retry_attempt = int(session_name.split(":")[2])
 
-            output = outputs[session_id]
+            output = outputs[session_name]
             if isinstance(output, float):
                 trajectories = group_steps(steps, by=self.groupby_key, name_key=self.traj_name_key)
                 # fill reward for each trajectory using the final reward
@@ -321,7 +321,7 @@ class AgentOmniEngine:
                     )
                 is_correct = trajectories[-1].reward >= 1.0 if len(trajectories) > 0 else False
 
-            episode = Episode(id=session_id, is_correct=is_correct, trajectories=trajectories, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "flush_success": int(flush_success), "num_trajectories": len(trajectories), "traces_collected": num_traces_collected, "collect_sqlite_time": collect_sqlite_time, "flush_time": flush_time})
+            episode = Episode(id=session_name, is_correct=is_correct, trajectories=trajectories, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "flush_success": int(flush_success), "num_trajectories": len(trajectories), "traces_collected": num_traces_collected, "collect_sqlite_time": collect_sqlite_time, "flush_time": flush_time})
             task_states[task_id]["episodes"].append(episode)
 
         results = []
