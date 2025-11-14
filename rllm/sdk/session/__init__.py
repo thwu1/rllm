@@ -6,7 +6,7 @@ from rllm.sdk.session.contextvar import (
     get_active_sessions,
     get_current_metadata,
     get_current_session,
-    get_current_session_id,
+    get_current_session_name,
 )
 from rllm.sdk.session.storage import (
     InMemoryStorage,
@@ -25,7 +25,7 @@ __all__ = [
     "SessionContext",  # Default alias
     # Context helpers
     "get_current_session",
-    "get_current_session_id",
+    "get_current_session_name",
     "get_current_metadata",
     "get_active_sessions",
     # Storage

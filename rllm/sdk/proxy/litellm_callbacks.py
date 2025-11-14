@@ -127,7 +127,7 @@ class TracingCallback(CustomLogger):
         response_id = response_payload.get("id", None)
 
         # Extract session_uids from metadata (sent from client via metadata routing)
-        session_uids = metadata.get("session_uids")
+        session_uids = metadata.get("session_uids", None)
 
         self.tracer.log_llm_call(
             name=f"proxy/{model}",
@@ -135,7 +135,7 @@ class TracingCallback(CustomLogger):
             input={"messages": messages},
             output=response_payload,
             metadata=metadata,
-            session_id=metadata.get("session_id"),
+            session_name=metadata.get("session_name", None),
             latency_ms=latency_ms,
             tokens=tokens,
             trace_id=response_id,  # Use the provider's response ID as the trace_id
@@ -153,7 +153,7 @@ class TracingCallback(CustomLogger):
     #     litellm_params = kwargs.get("litellm_params", {})
     #     # Whitelist metadata keys to avoid noisy provider internals
     #     raw_meta = litellm_params.get("metadata", {})
-    #     allowed = {"session_id", "job", "user_api_key_request_route"}
+    #     allowed = {"session_name", "job", "user_api_key_request_route"}
     #     metadata = {k: v for k, v in raw_meta.items() if k in allowed}
 
     #     model = kwargs.get("model", "unknown")
@@ -177,7 +177,7 @@ class TracingCallback(CustomLogger):
     #         input={"messages": messages},
     #         output=error_info,
     #         metadata={**metadata, "error": True},
-    #         session_id=metadata.get("session_id"),
+    #         session_name=metadata.get("session_name"),
     #         latency_ms=latency_ms,
     #         tokens={"prompt": 0, "completion": 0, "total": 0},
     #     )

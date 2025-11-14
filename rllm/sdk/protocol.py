@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 class Trace(BaseModel):
     trace_id: str
-    session_id: str
+    session_name: str
     name: str
     input: str | list | dict
     output: str | dict

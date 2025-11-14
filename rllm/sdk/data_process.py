@@ -49,8 +49,8 @@ trace = {
 
     # Metadata
     "metadata": {
-        "session_id": str,  # Format: "task_id:rollout_idx:retry_attempt"
-        "job": str,         # Optional job identifier
+        "session_name": str,  # Format: "task_id:rollout_idx:retry_attempt"
+        "job": str,           # Optional job identifier
         # ... other custom metadata from middleware
     },
 
@@ -63,7 +63,7 @@ trace = {
     },
 
     # Optional fields
-    "session_id": str,      # Same as metadata.session_id
+    "session_name": str,    # Same as metadata.session_name
     "contexts": list,       # Context elements used
     "tools": list[dict],    # Available tools
     "cost": float,          # USD cost
@@ -75,7 +75,7 @@ trace = {
 
 | Field | Purpose | Required? |
 |-------|---------|-----------|
-| `session_id` | Groups traces into episodes | ✅ Yes |
+| `session_name` | Groups traces into episodes | ✅ Yes |
 | `output.prompt_token_ids` | Training data (prompt tokens) | ✅ Yes (vLLM) |
 | `output.choices[0].provider_specific_fields.token_ids` | Training data (completion tokens) | ✅ Yes (vLLM) |
 | `input.messages` | Conversation context | ✅ Yes |
@@ -87,7 +87,7 @@ trace = {
 1. **Token IDs are vLLM-specific**: The `prompt_token_ids` and `provider_specific_fields.token_ids`
    are only available when using vLLM backend. OpenAI/Anthropic don't provide these.
 
-2. **Session ID is critical**: The `session_id` (format: `"task_id:rollout_idx:retry_attempt"`)
+2. **Session name is critical**: The `session_name` (format: `"task_id:rollout_idx:retry_attempt"`)
    is used to group traces into episodes and must be injected via metadata.
 
 3. **Event wrapper**: Traces are wrapped in an event object with `{"type": "...", "data": trace}`
@@ -178,7 +178,7 @@ def trace_to_step(trace: dict) -> Step:
         Step object containing:
             - chat_completions: Full conversation history (input messages + response message)
             - model_output: ModelOutput with token IDs and other generation details
-            - info: Metadata dictionary from the trace (includes session_id, job, etc.)
+            - info: Metadata dictionary from the trace (includes session_name, job, etc.)
 
     Raises:
         AssertionError: If response_message is missing
@@ -195,7 +195,7 @@ def trace_to_step(trace: dict) -> Step:
                 }],
                 "prompt_token_ids": [1, 2, 3]
             },
-            "metadata": {"session_id": "task_123:0:0"}
+            "metadata": {"session_name": "task_123:0:0"}
         }
 
         # Convert to Step
@@ -206,7 +206,7 @@ def trace_to_step(trace: dict) -> Step:
         # ]
         # step.model_output.prompt_ids = [1, 2, 3]
         # step.model_output.completion_ids = [123, 456]
-        # step.info = {"session_id": "task_123:0:0"}
+        # step.info = {"session_name": "task_123:0:0"}
         ```
 
     Note:

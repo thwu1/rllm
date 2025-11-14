@@ -12,7 +12,7 @@ class SessionProtocol(Protocol):
     must implement this protocol.
     """
 
-    session_id: str
+    name: str
     metadata: dict[str, Any]
 
     @property

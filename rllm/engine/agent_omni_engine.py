@@ -20,7 +20,7 @@ from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
 from rllm.sdk.data_process import group_steps, trace_to_step
 from rllm.sdk.protocol import TrajectoryProto
-from rllm.sdk.shortcuts import _session_with_id
+from rllm.sdk.shortcuts import _session_with_name
 from rllm.sdk.store.sqlite_store import SqliteTraceStore
 from rllm.workflows.workflow import TerminationReason
 
@@ -83,13 +83,13 @@ class AgentOmniEngine:
     def _prepare_run_func_with_tracing(self, func):
         """Wrap agent function with session context for tracing.
 
-        Uses _session_with_id to set explicit session_id for internal tracking.
+        Uses _session_with_name to set explicit session name for internal tracking.
         """
         if inspect.iscoroutinefunction(func):
 
             async def wrapped_func_async(metadata, *args, **kwargs):
-                session_id = metadata.pop("session_id", None)
-                with _session_with_id(session_id=session_id, **metadata) as session:
+                session_name = metadata.pop("session_name", None)
+                with _session_with_name(name=session_name, **metadata) as session:
                     output = await func(*args, **kwargs)
                 return output, session._uid
 
@@ -97,8 +97,8 @@ class AgentOmniEngine:
         else:
 
             def wrapped_func_sync(metadata, *args, **kwargs):
-                session_id = metadata.pop("session_id", None)
-                with _session_with_id(session_id=session_id, **metadata) as session:
+                session_name = metadata.pop("session_name", None)
+                with _session_with_name(name=session_name, **metadata) as session:
                     output = func(*args, **kwargs)
                 return output, session._uid
 
@@ -169,7 +169,7 @@ class AgentOmniEngine:
     async def _execute_with_exception_handling(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
         # Format: "{task_id}:{rollout_idx}:{attempt_idx}"
         # This uniquely identifies each rollout attempt
-        metadata = {"session_id": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
+        metadata = {"session_name": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
         try:
             if inspect.iscoroutinefunction(self.wrapped_agent_run_func):
                 output, session_uid = await func(metadata, **task, **kwargs)
@@ -249,7 +249,7 @@ class AgentOmniEngine:
             futures.append(self.process_task_with_retry(task, task_id, rollout_idx, **kwargs))
             state["total_rollouts"] += 1
 
-        rollout_ids = set()
+        rollout_session_names = set()
         session_uids = set()
         outputs = dict()
         start_time = time.time()
@@ -257,7 +257,7 @@ class AgentOmniEngine:
             for future in asyncio.as_completed(futures):
                 task_id, rollout_idx, retry_attempt, output, session_uid = await future
                 session_uids.add(session_uid)
-                rollout_ids.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
+                rollout_session_names.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
                 outputs[f"{task_id}:{rollout_idx}:{retry_attempt}"] = output
                 state = task_states[task_id]
                 state["completed"] += 1
@@ -276,26 +276,26 @@ class AgentOmniEngine:
             all_traces.extend(traces)
         collect_sqlite_time = time.time() - collect_trajectory_start
 
-        traces_by_session_id = {}
-        for uid in rollout_ids:
-            traces_by_session_id[uid] = []
+        traces_by_session_name = {}
+        for session_name in rollout_session_names:
+            traces_by_session_name[session_name] = []
 
         for trace in all_traces:
-            session_id = trace.data.get("session_id", None)
-            if not session_id or session_id not in rollout_ids:
+            session_name = trace.data.get("session_name", None)
+            if not session_name or session_name not in rollout_session_names:
                 continue
-            traces_by_session_id[session_id].append((trace.id, trace.data))
+            traces_by_session_name[session_name].append((trace.id, trace.data))
 
-        num_traces_collected = sum(len(traces) for traces in traces_by_session_id.values())
+        num_traces_collected = sum(len(traces) for traces in traces_by_session_name.values())
 
-        for session_id, traces in traces_by_session_id.items():
+        for session_name, traces in traces_by_session_name.items():
             steps = [trace_to_step(trace[1]) for trace in traces]
             step_id_to_step = {trace[0]: step for trace, step in zip(traces, steps, strict=False)}
 
-            task_id = session_id.split(":")[0]
-            retry_attempt = int(session_id.split(":")[2])
+            task_id = session_name.split(":")[0]
+            retry_attempt = int(session_name.split(":")[2])
 
-            output = outputs[session_id]
+            output = outputs[session_name]
             if isinstance(output, float):
                 trajectories = group_steps(steps, by=self.groupby_key, name_key=self.traj_name_key)
                 # fill reward for each trajectory using the final reward
@@ -321,7 +321,7 @@ class AgentOmniEngine:
                     )
                 is_correct = trajectories[-1].reward >= 1.0 if len(trajectories) > 0 else False
 
-            episode = Episode(id=session_id, is_correct=is_correct, trajectories=trajectories, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "flush_success": int(flush_success), "num_trajectories": len(trajectories), "traces_collected": num_traces_collected, "collect_sqlite_time": collect_sqlite_time, "flush_time": flush_time})
+            episode = Episode(id=session_name, is_correct=is_correct, trajectories=trajectories, metrics={"retry_attempt": retry_attempt, "empty": int(len(steps) == 0), "flush_success": int(flush_success), "num_trajectories": len(trajectories), "traces_collected": num_traces_collected, "collect_sqlite_time": collect_sqlite_time, "flush_time": flush_time})
             task_states[task_id]["episodes"].append(episode)
 
         results = []
