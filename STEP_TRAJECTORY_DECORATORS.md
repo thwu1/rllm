@@ -73,7 +73,7 @@ Both `StepView` and `TrajectoryView` follow the same pattern:
   - Steps auto-register with parent trajectory
 
 - **`reward`**: Trajectory reward
-  - Calculated based on `reward_mode` ("return", "sum", "last", "manual")
+  - Must be set manually by user
 
 - **`metadata`**: User-defined tracking data
   - Passed via `**traj_metadata` in decorator
@@ -130,7 +130,7 @@ print(step_view.metadata['function_args'])    # Function arguments
 ```python
 from rllm.sdk import trajectory, TrajectoryView
 
-@trajectory(name="math_solver", reward_mode="sum")
+@trajectory(name="math_solver")
 async def solve_workflow(problem: str) -> float:
     # All @step calls auto-collected
     step1 = await solve_problem(problem)
@@ -139,11 +139,13 @@ async def solve_workflow(problem: str) -> float:
     step2 = await verify_solution(step1.result)
     step2.reward = calculate_reward(step2.result)
 
-    # Return value not used when reward_mode="sum"
     return 0.0
 
 # Returns TrajectoryView (not float!)
 traj: TrajectoryView = await solve_workflow("2+2")
+
+# Set reward manually
+traj.reward = sum(s.reward for s in traj.steps)
 
 # Access function input/output
 print(traj.input)   # {"problem": "2+2"}
@@ -152,7 +154,7 @@ print(traj.output)  # 0.0 (function return value)
 # Access collected steps
 print(traj.steps)  # [step1, step2]
 
-# Access reward (sum of step rewards)
+# Access reward (manually set)
 print(traj.reward)  # 2.0
 
 # Access final result
@@ -176,7 +178,7 @@ class Judge:
         response = await self.client.chat.completions.create(...)
         return self._parse_judge_response(response)
 
-@trajectory(name="solver_judge", reward_mode="sum")
+@trajectory(name="solver_judge")
 async def solver_judge_workflow(task: dict):
     problem = task["question"]
 
@@ -198,50 +200,13 @@ async def solver_judge_workflow(task: dict):
     )
     judge_step.reward = reward_function(task, judge_step.action).reward
 
-    return 0.0  # Not used with reward_mode="sum"
+    return 0.0
 
 # Usage
 traj = await solver_judge_workflow(task)
+# Set reward manually
+traj.reward = sum(s.reward for s in traj.steps)
 # traj.steps = [solver_step1, solver_step2, judge_step]
-# traj.reward = sum of all step rewards
-```
-
-## Reward Modes
-
-For `@trajectory`, you can specify how rewards are calculated:
-
-```python
-# Option 1: Use return value
-@trajectory(reward_mode="return")
-async def workflow():
-    step = await some_step()
-    return 1.0  # This becomes traj.reward
-
-# Option 2: Sum all step rewards (default for multi-step)
-@trajectory(reward_mode="sum")
-async def workflow():
-    step1 = await step_a()
-    step1.reward = 1.0
-    step2 = await step_b()
-    step2.reward = 0.5
-    return 0.0  # Ignored, traj.reward = 1.5
-
-# Option 3: Use last step's reward
-@trajectory(reward_mode="last")
-async def workflow():
-    step1 = await step_a()
-    step2 = await step_b()
-    step2.reward = 1.0
-    return 0.0  # Ignored, traj.reward = step2.reward
-
-# Option 4: Manual (set reward yourself)
-@trajectory(reward_mode="manual")
-async def workflow():
-    steps = [await step_a(), await step_b()]
-    return 0.0  # Ignored, traj.reward = 0.0 (set manually after)
-
-traj = await workflow()
-traj.reward = custom_calculation()
 ```
 
 ## Implementation Details
@@ -331,13 +296,12 @@ Decorator that creates a step from a function.
 - `.reward`: Step reward (set manually)
 - `.metadata`: Execution info + function args + LLM traces
 
-### `@trajectory(name="agent", reward_mode="return", **metadata)`
+### `@trajectory(name="agent", **metadata)`
 
 Decorator that creates a trajectory from a function.
 
 **Parameters:**
 - `name`: Trajectory name
-- `reward_mode`: "return", "sum", "last", or "manual"
 - `**metadata`: Additional metadata (stored in `.metadata`)
 
 **Returns:** `TrajectoryView` with:
@@ -345,7 +309,7 @@ Decorator that creates a trajectory from a function.
 - `.input`: Function arguments (dict)
 - `.output`: Function return value (Any)
 - `.steps`: List of collected StepViews
-- `.reward`: Calculated reward
+- `.reward`: Must be set manually by user
 - `.metadata`: User-defined tracking data
 - `.result`: Last step's result (property)
 

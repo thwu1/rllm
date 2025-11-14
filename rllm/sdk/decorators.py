@@ -162,7 +162,7 @@ def step(name: str | None = None, **step_metadata):
     return decorator
 
 
-def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata):
+def trajectory(name: str = "agent", **traj_metadata):
     """
     Decorator to mark a function as a trajectory.
 
@@ -173,20 +173,17 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
     All @step decorated functions called within this trajectory are
     automatically collected into trajectory.steps.
 
+    Reward must be set manually on the returned TrajectoryView.
+
     Args:
         name: Name of the trajectory
-        reward_mode: How to calculate trajectory reward:
-            - "return": Use function return value as reward (default)
-            - "sum": Sum all step rewards
-            - "last": Use last step's reward
-            - "manual": Reward must be set manually on returned TrajectoryView
         **traj_metadata: Additional metadata for the trajectory
 
     Returns:
         Decorator that wraps the function to return TrajectoryView
 
     Example:
-        >>> @trajectory(name="solver", reward_mode="sum")
+        >>> @trajectory(name="solver")
         >>> async def solve_workflow(task: dict, n: int):
         ...     # All @step calls are auto-collected
         ...     step1 = await solve(task["question"])
@@ -198,10 +195,12 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
         ...     return "final_answer"
 
         >>> traj = await solve_workflow(task, n=3)
+        >>> # Set reward manually
+        >>> traj.reward = sum(s.reward for s in traj.steps)
         >>> print(traj.input)   # {"task": {...}, "n": 3}
         >>> print(traj.output)  # "final_answer"
         >>> print(traj.steps)   # [step1, step2]
-        >>> print(traj.reward)  # sum of step rewards
+        >>> print(traj.reward)  # Manually set reward
     """
     def decorator(func: Callable) -> Callable:
         # Get function signature for capturing args/kwargs
@@ -230,13 +229,10 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
                     # Get collected steps
                     steps = traj_sess.metadata['_collected_steps']
 
-                    # Calculate reward based on mode
-                    reward = _calculate_trajectory_reward(reward_mode, result, steps)
-
                     return TrajectoryView(
                         name=name,
                         steps=steps,
-                        reward=reward,
+                        reward=0.0,  # Must be set manually by user
                         input=func_input,  # Function arguments
                         output=result,     # Function return value
                         metadata=traj_metadata if traj_metadata else None
@@ -266,13 +262,10 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
                     # Get collected steps
                     steps = traj_sess.metadata['_collected_steps']
 
-                    # Calculate reward based on mode
-                    reward = _calculate_trajectory_reward(reward_mode, result, steps)
-
                     return TrajectoryView(
                         name=name,
                         steps=steps,
-                        reward=reward,
+                        reward=0.0,  # Must be set manually by user
                         input=func_input,  # Function arguments
                         output=result,     # Function return value
                         metadata=traj_metadata if traj_metadata else None
@@ -305,34 +298,3 @@ def _register_step_with_trajectory(step_view: StepView):
             if collected_steps is not None:
                 collected_steps.append(step_view)
             break
-
-
-def _calculate_trajectory_reward(reward_mode: str, return_value: Any, steps: list[StepView]) -> float:
-    """
-    Calculate trajectory reward based on mode.
-
-    Args:
-        reward_mode: "return", "sum", "last", or "manual"
-        return_value: The function's return value
-        steps: List of collected steps
-
-    Returns:
-        Calculated reward as float
-    """
-    if reward_mode == "return":
-        # Use function return value
-        if isinstance(return_value, (int, float)):
-            return float(return_value)
-        else:
-            return 0.0
-    elif reward_mode == "sum":
-        # Sum all step rewards
-        return sum(s.reward for s in steps)
-    elif reward_mode == "last":
-        # Use last step's reward
-        return steps[-1].reward if steps else 0.0
-    elif reward_mode == "manual":
-        # User will set reward manually
-        return 0.0
-    else:
-        raise ValueError(f"Unknown reward_mode: {reward_mode}. Use 'return', 'sum', 'last', or 'manual'")

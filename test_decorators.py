@@ -22,7 +22,7 @@ async def multiply_numbers(a: int, b: int) -> int:
 
 
 # Test 3: Trajectory decorator with steps
-@trajectory(name="math_workflow", reward_mode="sum")
+@trajectory(name="math_workflow")
 async def math_workflow(x: int, y: int) -> float:
     """A simple math workflow with multiple steps."""
     # Step 1: Add
@@ -54,7 +54,7 @@ async def verify_solution(solution: str) -> bool:
     return "Solution" in solution
 
 
-@trajectory(name="solver_verifier", reward_mode="sum")
+@trajectory(name="solver_verifier")
 async def solver_verifier_workflow(problem: str):
     """Workflow similar to solver-judge pattern."""
     # Generate solution
@@ -69,7 +69,7 @@ async def solver_verifier_workflow(problem: str):
     solve_step.reward = 1.0 if verify_step.result else 0.0
     verify_step.reward = 1.0 if verify_step.result else 0.0
 
-    return 0.0  # Not used
+    return 0.0
 
 
 async def main():
@@ -104,6 +104,8 @@ async def main():
     assert len(traj.steps) == 2
     assert traj.steps[0].result == 15  # 10 + 5
     assert traj.steps[1].result == 30  # 15 * 2
+    # Set reward manually
+    traj.reward = sum(s.reward for s in traj.steps)
     assert traj.reward == 2.0  # sum of step rewards (1.0 + 1.0)
     assert traj.input == {"x": 10, "y": 5}  # Function arguments captured
     assert traj.output == 0.0  # Function return value captured
@@ -120,6 +122,8 @@ async def main():
     traj = await solver_verifier_workflow("What is 2+2?")
     assert isinstance(traj, TrajectoryView)
     assert len(traj.steps) == 2
+    # Set reward manually
+    traj.reward = sum(s.reward for s in traj.steps)
     assert traj.reward == 2.0  # Both steps got 1.0 reward
     print(f"✓ Workflow has {len(traj.steps)} steps")
     print(f"✓ Workflow reward: {traj.reward}")
