@@ -298,7 +298,7 @@ class SqliteSessionStorage:
             import logging
 
             logger = logging.getLogger(__name__)
-            logger.exception(f"Failed to retrieve traces for session {session_id}: {e}")
+            logger.exception(f"Failed to retrieve traces for session UID {session_uid}: {e}")
             return []
 
     def __repr__(self):
