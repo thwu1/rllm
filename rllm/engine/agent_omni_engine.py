@@ -47,8 +47,10 @@ class AgentOmniEngine:
                 - model_name: Model name to expose (required for VERL)
                 - proxy_host: Host to bind proxy (default: "127.0.0.1")
                 - proxy_port: Port to bind proxy (default: 4000)
-                - auto_start: Whether to auto-start proxy (default: False)
-                - proxy_access_log: Emit LiteLLM proxy access logs (default: False)
+                - mode: Proxy mode - "external" (manual) or "subprocess" (auto-start) (default: "external")
+                - admin_token: Admin token for proxy API access (default: "my-shared-secret")
+                - db_path: Database path for tracer (only used in subprocess mode)
+                - project: Project name for tracer (only used in subprocess mode)
             tracer: Optional tracer for logging.
             **kwargs: Additional keyword arguments.
         """
@@ -118,7 +120,7 @@ class AgentOmniEngine:
 
         proxy_host = proxy_config.get("proxy_host", "127.0.0.1")
         proxy_port = proxy_config.get("proxy_port", 4000)
-        auto_start = proxy_config.get("auto_start", False)
+        proxy_mode = proxy_config.get("mode", "external")
         admin_token = proxy_config.get("admin_token", "my-shared-secret")
 
         self.proxy_manager = VerlProxyManager(
@@ -135,13 +137,17 @@ class AgentOmniEngine:
 
         print(f"Initialized VerlProxyManager with {len(self.proxy_manager.get_server_addresses())} vLLM replicas. Proxy endpoint: {self.rollout_engine_endpoint}")
 
-        if auto_start:
-            self.proxy_manager.start_proxy_server()
-            logger.info(f"Auto-started LiteLLM proxy at {self.rollout_engine_endpoint}")
+        # Start proxy based on mode
+        if proxy_mode == "subprocess":
+            # Start subprocess, wait for server, then reload config
+            db_path = proxy_config.get("db_path")
+            project = proxy_config.get("project", "rllm-agent-omni")
+            self.proxy_manager.start_proxy_subprocess(db_path=db_path, project=project)
+        elif proxy_mode == "external":
+            # Reload external proxy with the generated configuration
+            self.proxy_manager.reload_external_proxy(inline_payload=True)
         else:
-            self.proxy_manager.reload_external_proxy(
-                inline_payload=True,
-            )
+            raise ValueError(f"Unknown proxy mode: {proxy_mode}. Must be 'external' or 'subprocess'")
 
     def get_server_addresses(self) -> list[str] | None:
         """Get all vLLM server addresses (for VERL engines).
@@ -649,3 +655,7 @@ class AgentOmniEngine:
         if hasattr(self, "executor") and self.executor is not None:
             self.executor.shutdown(wait=True)
             self.executor = None
+
+        # Shutdown proxy subprocess if running
+        if hasattr(self, "proxy_manager") and self.proxy_manager is not None:
+            self.proxy_manager.shutdown_proxy()

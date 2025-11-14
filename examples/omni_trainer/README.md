@@ -51,7 +51,7 @@ echo "AIOHTTP_KEEPALIVE_TIMEOUT: $AIOHTTP_KEEPALIVE_TIMEOUT"
 echo "Starting LiteLLM proxy..."
 
 # Start the proxy
-python scripts/litellm_proxy_server.py \
+python -m rllm.sdk.proxy.litellm_server \
   --config litellm_proxy_config_autogen.yaml \
   --host 127.0.0.1 \
   --port 4000 \
