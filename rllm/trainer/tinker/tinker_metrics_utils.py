@@ -124,60 +124,6 @@ def print_metrics_table(metrics: dict, step: int):
         print("=" * 60)
 
 
-def print_trajectories(
-    trajectories: list[list[dict]],
-    advantage_computer: Any,
-    tokenizer: Any,
-    num_groups_to_print: int = 2,
-):
-    """
-    Print sample trajectories for inspection (similar to tinker_cookbook print_group).
-
-    Args:
-        trajectories: List of trajectory groups
-        advantage_computer: Advantage computer for computing advantages
-        tokenizer: Tokenizer for decoding
-        num_groups_to_print: Number of trajectory groups to print
-    """
-    from rllm.trainer.tinker.tinker_data_processor import TinkerDatumBuilder
-
-    buf = io.StringIO()
-
-    def bprint(s: str):
-        print(s, file=buf)
-
-    for group_idx, group_trajectories in enumerate(trajectories[:num_groups_to_print]):
-        bprint(f"\n====== Trajectory Group {group_idx} ======")
-
-        # Select representative trajectories from this group (up to 4)
-        max_trajs_to_print = 4
-        selected_inds = list(range(len(group_trajectories)))
-        if len(group_trajectories) > max_trajs_to_print:
-            rewards = [traj["reward"] for traj in group_trajectories]
-            # Select uniformly distributed trajectories by reward
-            sorted_inds = np.argsort(rewards)
-            uniform_inds = np.linspace(0, len(sorted_inds) - 1, max_trajs_to_print).astype(int)
-            selected_inds = [int(sorted_inds[i]) for i in uniform_inds]
-            group_trajectories = [group_trajectories[i] for i in selected_inds]
-
-        # Compute advantages for this group
-        group_rewards = [traj["reward"] for traj in trajectories[group_idx]]
-        advantages = advantage_computer.compute(group_rewards)
-
-        for traj_idx, traj in enumerate(group_trajectories):
-            actual_traj_idx = selected_inds[traj_idx]
-            bprint(f"****** trajectory idx={actual_traj_idx}, reward={traj['reward']:.3g}, advantage={advantages[actual_traj_idx]:.3g} ******")
-
-            # Create datum for colorized display
-            datum = TinkerDatumBuilder.build_datum(traj, advantages[actual_traj_idx])
-            bprint("---- datum ----")
-            bprint(colorize_example(datum, tokenizer, key="advantages"))
-
-        bprint("====== End Trajectory Group ======")
-
-    logger.info(buf.getvalue().rstrip())
-
-
 def compute_env_metrics(episodes: list[Episode]) -> dict:
     """
     Compute environment-specific metrics from episodes.

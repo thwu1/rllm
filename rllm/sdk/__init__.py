@@ -10,7 +10,6 @@ from rllm.sdk.session import (
 )
 from rllm.sdk.shortcuts import get_chat_client, get_chat_client_async, session
 from rllm.sdk.tracers import (
-    CompositeTracer,
     ContextStoreProtocol,
     EpisodicTracer,
     InMemorySessionTracer,
@@ -32,18 +31,8 @@ __all__ = [
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
     "EpisodicTracer",  # Persistent tracer with Episodic backend
-    "CompositeTracer",  # Combine multiple tracers
     "ContextStoreProtocol",  # Context store protocol for episodic tracer
     # Rewards
     "set_reward",
     "set_reward_async",
 ]
-
-
-# Lazy import for OpenTelemetry session (optional dependency)
-def __getattr__(name):
-    if name == "OTelSession":
-        from rllm.sdk.session import OTelSession
-
-        return OTelSession
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

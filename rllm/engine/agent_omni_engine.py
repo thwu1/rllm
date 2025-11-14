@@ -404,10 +404,6 @@ class AgentOmniEngine:
                 results = await self._execute_tasks(tasks, task_ids, **kwargs)
             except Exception as e:
                 print(f"Error in execute_tasks: {e}, retrying...")
-                try:
-                    await self.context_subscriber.stop()
-                except Exception as e:
-                    print(f"Error in force stopping context subscriber: {e}")
 
             error_count = 0
             for episode in results:

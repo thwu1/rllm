@@ -198,22 +198,6 @@ class TinkerPolicyTrainer:
         # Return both logprobs and datums (with masks for metrics)
         return training_logprobs_D, training_datums
 
-    async def forward_backward_future(self, episodes: list[Episode]):
-        training_datums = process_episodes(
-            episodes,
-            self.advantage_computer,
-            self.trajectory_filter,
-        )
-
-        datums_no_mask = [self._remove_mask(datum) for datum in training_datums]
-
-        fwd_bwd_future = await self.training_client.forward_backward_async(
-            datums_no_mask,
-            loss_fn="importance_sampling",
-        )
-
-        return fwd_bwd_future
-
     async def optim_step_future(self, learning_rate: float = None, beta1: float = 0.9, beta2: float = 0.95, eps: float = 1e-8):
         if learning_rate is None:
             learning_rate = self.config.training.learning_rate
@@ -271,9 +255,3 @@ class TinkerPolicyTrainer:
             Resume info dictionary or None if no checkpoint exists
         """
         return checkpoint_utils.get_last_checkpoint(self.config.trainer.default_local_dir)
-
-    def get_tokenizer(self):
-        """Get tokenizer from training client."""
-        if self.training_client is None:
-            raise RuntimeError("Training client not initialized. Call initialize_async() first.")
-        return self.training_client.get_tokenizer()
