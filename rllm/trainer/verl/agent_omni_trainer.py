@@ -10,12 +10,10 @@ from pprint import pprint
 
 import numpy as np
 import torch
-from episodic import ContextStore
 from omegaconf import OmegaConf
 
 from rllm.engine.agent_omni_engine import AgentOmniEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
-from rllm.sdk.tracers import EpisodicTracer
 from rllm.workflows.workflow import TerminationReason
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor
@@ -63,10 +61,6 @@ class AgentOmniTrainer(RayPPOTrainer):
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
 
-        self.context_store = ContextStore(
-            endpoint=self.config.context_store.endpoint,
-            api_key=self.config.context_store.api_key,
-        )
         self.agent_run_func = agent_run_func
 
     # def _validate_config(self):
@@ -143,17 +137,14 @@ class AgentOmniTrainer(RayPPOTrainer):
             rollout_manager=self.async_rollout_manager,
             tokenizer=self.tokenizer,
         )
-        tracer = EpisodicTracer(
-            context_store=self.context_store,
-            project=self.config.rllm.run_name,
-        )
 
         # Setup proxy config for VERL engine
         proxy_config = {
             "model_name": self.config.actor_rollout_ref.model.path,
-            "proxy_host": self.config.rllm.proxy.host,
-            "proxy_port": self.config.rllm.proxy.port,
-            "auto_start": self.config.rllm.proxy.auto_start,  # Auto-start the proxy server
+            "proxy_host": self.config.rllm.omni.proxy.host,
+            "proxy_port": self.config.rllm.omni.proxy.port,
+            "auto_start": self.config.rllm.omni.proxy.auto_start,  # Auto-start the proxy server
+            "admin_token": self.config.rllm.omni.proxy.admin_token,
         }
 
         self.agent_execution_engine = AgentOmniEngine(
@@ -163,7 +154,7 @@ class AgentOmniTrainer(RayPPOTrainer):
             n_parallel_tasks=self.config.rllm.workflow.n_parallel_tasks,
             retry_limit=self.config.rllm.workflow.retry_limit,
             proxy_config=proxy_config,
-            tracer=tracer,
+            tracer=None,
         )
 
         # init workflow workers

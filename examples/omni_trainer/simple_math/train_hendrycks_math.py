@@ -13,16 +13,12 @@ def main(config):
 
     # Define run function that recreates the client inside to avoid closure capture
     # This ensures the function is fully serializable for Ray
-    def rollout(
-        question: str,
-        ground_truth: str,
-        base_url: str = "http://localhost:4000/v1",
-        api_key: str = "EMPTY",
-        **kwargs,
-    ):
+    def rollout(**kwargs):
         # Recreate the client inside the function to avoid serialization issues
         # This ensures the function doesn't capture non-serializable objects
-        client = get_chat_client(base_url=base_url, api_key=api_key)
+        ground_truth = kwargs["ground_truth"]
+        question = kwargs["question"]
+        client = get_chat_client(base_url="http://localhost:4000/v1", api_key="EMPTY")
         response = client.chat.completions.create(
             model="vllm/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
             messages=[
@@ -31,7 +27,7 @@ def main(config):
         )
         response_text = response.choices[0].message.content
         reward = math_reward_fn({"response": response_text, "ground_truth": ground_truth}, response_text).reward
-        return reward
+        return reward * 1.0
 
     trainer = AgentTrainer(
         config=config,
