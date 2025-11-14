@@ -249,7 +249,7 @@ class AgentOmniEngine:
             futures.append(self.process_task_with_retry(task, task_id, rollout_idx, **kwargs))
             state["total_rollouts"] += 1
 
-        rollout_ids = set()
+        rollout_session_names = set()
         session_uids = set()
         outputs = dict()
         start_time = time.time()
@@ -257,7 +257,7 @@ class AgentOmniEngine:
             for future in asyncio.as_completed(futures):
                 task_id, rollout_idx, retry_attempt, output, session_uid = await future
                 session_uids.add(session_uid)
-                rollout_ids.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
+                rollout_session_names.add(f"{task_id}:{rollout_idx}:{retry_attempt}")
                 outputs[f"{task_id}:{rollout_idx}:{retry_attempt}"] = output
                 state = task_states[task_id]
                 state["completed"] += 1
@@ -277,12 +277,12 @@ class AgentOmniEngine:
         collect_sqlite_time = time.time() - collect_trajectory_start
 
         traces_by_session_name = {}
-        for uid in rollout_ids:
-            traces_by_session_name[uid] = []
+        for session_name in rollout_session_names:
+            traces_by_session_name[session_name] = []
 
         for trace in all_traces:
             session_name = trace.data.get("session_name", None)
-            if not session_name or session_name not in rollout_ids:
+            if not session_name or session_name not in rollout_session_names:
                 continue
             traces_by_session_name[session_name].append((trace.id, trace.data))
 
