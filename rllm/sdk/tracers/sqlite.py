@@ -267,9 +267,9 @@ class SqliteTracer:
 
         # Get session_id from context if not provided
         if session_id is None:
-            from rllm.sdk.session import get_current_session_id
+            from rllm.sdk.session import get_current_session_name
 
-            session_id = get_current_session_id()
+            session_id = get_current_session_name()
 
         # Merge context metadata with call-specific metadata
         from rllm.sdk.session import get_active_sessions, get_current_metadata

@@ -9,7 +9,7 @@ from rllm.sdk.session import (
     SqliteSessionStorage,
     get_current_metadata,
     get_current_session,
-    get_current_session_id,
+    get_current_session_name,
 )
 from rllm.sdk.shortcuts import get_chat_client, get_chat_client_async, session
 from rllm.sdk.tracers import (
@@ -23,7 +23,7 @@ __all__ = [
     "SessionContext",  # Default (alias for ContextVarSession)
     "ContextVarSession",  # Explicit contextvars-based session
     "get_current_session",  # Get current session instance
-    "get_current_session_id",  # Get current session ID
+    "get_current_session_name",  # Get current session name
     "get_current_metadata",  # Get current metadata
     # Session Storage
     "SessionStorage",  # Storage protocol

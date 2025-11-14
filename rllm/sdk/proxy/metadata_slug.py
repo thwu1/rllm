@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from rllm.sdk.session import get_active_sessions, get_current_metadata, get_current_session_id
+from rllm.sdk.session import get_active_sessions, get_current_metadata, get_current_session_name
 
 _SLUG_PREFIX = "rllm1:"
 
@@ -16,9 +16,9 @@ _SLUG_PREFIX = "rllm1:"
 def assemble_routing_metadata(extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Return the metadata dict that should be routed through the proxy slug."""
     payload: dict[str, Any] = dict(get_current_metadata())
-    session_id = get_current_session_id()
-    if session_id and "session_id" not in payload:
-        payload["session_id"] = session_id
+    session_name = get_current_session_name()
+    if session_name and "session_id" not in payload:
+        payload["session_id"] = session_name
 
     # Add session UIDs from active sessions for trace association
     active_sessions = get_active_sessions()

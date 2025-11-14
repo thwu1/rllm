@@ -20,7 +20,7 @@ from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
 from rllm.sdk.data_process import group_steps, trace_to_step
 from rllm.sdk.protocol import TrajectoryProto
-from rllm.sdk.shortcuts import _session_with_id
+from rllm.sdk.shortcuts import _session_with_name
 from rllm.sdk.store.sqlite_store import SqliteTraceStore
 from rllm.workflows.workflow import TerminationReason
 
@@ -83,13 +83,13 @@ class AgentOmniEngine:
     def _prepare_run_func_with_tracing(self, func):
         """Wrap agent function with session context for tracing.
 
-        Uses _session_with_id to set explicit session_id for internal tracking.
+        Uses _session_with_name to set explicit session name for internal tracking.
         """
         if inspect.iscoroutinefunction(func):
 
             async def wrapped_func_async(metadata, *args, **kwargs):
-                session_id = metadata.pop("session_id", None)
-                with _session_with_id(session_id=session_id, **metadata) as session:
+                session_name = metadata.pop("session_name", None)
+                with _session_with_name(name=session_name, **metadata) as session:
                     output = await func(*args, **kwargs)
                 return output, session._uid
 
@@ -97,8 +97,8 @@ class AgentOmniEngine:
         else:
 
             def wrapped_func_sync(metadata, *args, **kwargs):
-                session_id = metadata.pop("session_id", None)
-                with _session_with_id(session_id=session_id, **metadata) as session:
+                session_name = metadata.pop("session_name", None)
+                with _session_with_name(name=session_name, **metadata) as session:
                     output = func(*args, **kwargs)
                 return output, session._uid
 
@@ -169,7 +169,7 @@ class AgentOmniEngine:
     async def _execute_with_exception_handling(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
         # Format: "{task_id}:{rollout_idx}:{attempt_idx}"
         # This uniquely identifies each rollout attempt
-        metadata = {"session_id": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
+        metadata = {"session_name": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
         try:
             if inspect.iscoroutinefunction(self.wrapped_agent_run_func):
                 output, session_uid = await func(metadata, **task, **kwargs)

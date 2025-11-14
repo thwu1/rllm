@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
-_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("session_id", default=None)
+_session_name: contextvars.ContextVar[str | None] = contextvars.ContextVar("session_name", default=None)
 _metadata: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("metadata", default=None)
 # Stack of active sessions (outer → inner). Use None default to avoid shared list instances.
 _sessions_stack: contextvars.ContextVar[list["ContextVarSession"] | None] = contextvars.ContextVar("sessions_stack", default=None)
@@ -23,9 +23,9 @@ def get_current_session() -> "ContextVarSession | None":
     return _current_session.get()
 
 
-def get_current_session_id() -> str | None:
-    """Get current session_id from context."""
-    return _session_id.get()
+def get_current_session_name() -> str | None:
+    """Get current session name from context."""
+    return _session_name.get()
 
 
 def get_current_metadata() -> dict[str, Any]:
@@ -77,18 +77,18 @@ class ContextVarSession:
         >>> storage = SqliteSessionStorage("traces.db")
         >>>
         >>> # Process 1
-        >>> with ContextVarSession(storage=storage, session_id="task-123") as session:
+        >>> with ContextVarSession(storage=storage, name="task-123") as session:
         ...     llm.chat.completions.create(...)
         >>>
         >>> # Process 2 (can access same traces!)
-        >>> with ContextVarSession(storage=storage, session_id="task-123") as session:
+        >>> with ContextVarSession(storage=storage, name="task-123") as session:
         ...     llm.chat.completions.create(...)
         ...     print(session.llm_calls)  # Sees traces from both processes!
     """
 
     def __init__(
         self,
-        session_id: str | None = None,
+        name: str | None = None,
         storage: "SessionStorage | None" = None,
         formatter: Callable[[dict], dict] | None = None,
         persistent_tracers: list | None = None,
@@ -99,9 +99,9 @@ class ContextVarSession:
         Initialize contextvars-based session.
 
         Args:
-            session_id: Session ID (auto-generated if None). If None and there's an
-                       existing session_id in the context (from a parent session),
-                       that will be inherited instead of generating a new one.
+            name: Session name (auto-generated if None). If None and there's an
+                  existing session name in the context (from a parent session),
+                  that will be inherited instead of generating a new one.
             storage: Storage backend for traces. If None, uses InMemoryStorage (default).
                     Pass SqliteSessionStorage for multi-process scenarios.
             formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
@@ -109,19 +109,19 @@ class ContextVarSession:
             _session_uid_chain: Internal parameter for context restoration (do not use directly)
             **metadata: Session metadata
         """
-        # If session_id is not explicitly provided, check if there's one in the context
-        # (set by a parent _session_with_id). This allows internal code to control
-        # the session_id while keeping it hidden from users via the session() shortcut.
-        if session_id is None:
-            existing_session_id = _session_id.get()
-            if existing_session_id is not None:
-                session_id = existing_session_id
+        # If name is not explicitly provided, check if there's one in the context
+        # (set by a parent _session_with_name). This allows internal code to control
+        # the session name while keeping it hidden from users via the session() shortcut.
+        if name is None:
+            existing_name = _session_name.get()
+            if existing_name is not None:
+                name = existing_name
 
-        # Generate new session_id only if none was provided and none exists in context
-        self.session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+        # Generate new name only if none was provided and none exists in context
+        self.name = name or f"sess_{uuid.uuid4().hex[:16]}"
 
-        # Internal unique ID for this session context instance (different from session_id which can be inherited)
-        # This allows tracking each unique session context even when session_id is shared
+        # Internal unique ID for this session context instance (different from name which can be inherited)
+        # This allows tracking each unique session context even when name is shared
         self._uid = f"ctx_{uuid.uuid4().hex[:16]}"
 
         # Build session UID chain for tree hierarchy support
@@ -153,7 +153,7 @@ class ContextVarSession:
 
         # Context tokens for cleanup
         self._session_token = None
-        self._session_id_token = None
+        self._session_name_token = None
         self._metadata_token = None
         self._stack_token = None
 
@@ -194,7 +194,7 @@ class ContextVarSession:
         Returns:
             List of Trace objects for this session and all descendants
         """
-        return self.storage.get_traces(self._uid, self.session_id)
+        return self.storage.get_traces(self._uid, self.name)
 
     @property
     def steps(self) -> list[StepProto]:
@@ -209,15 +209,15 @@ class ContextVarSession:
         SQLite and other persistent storage may not support this operation.
         """
         if hasattr(self.storage, "clear"):
-            self.storage.clear(self._uid, self.session_id)
+            self.storage.clear(self._uid, self.name)
 
     def __enter__(self):
         """Enter session context - set up context variables."""
         # Set this session instance in context
         self._session_token = _current_session.set(self)
 
-        # Set session_id in context
-        self._session_id_token = _session_id.set(self.session_id)
+        # Set session name in context
+        self._session_name_token = _session_name.set(self.name)
 
         # Merge and set metadata (inherits from parent)
         parent_meta = _metadata.get() or {}
@@ -237,8 +237,8 @@ class ContextVarSession:
         """Exit session context - restore previous context."""
         if self._session_token is not None:
             _current_session.reset(self._session_token)
-        if self._session_id_token is not None:
-            _session_id.reset(self._session_id_token)
+        if self._session_name_token is not None:
+            _session_name.reset(self._session_name_token)
         if self._metadata_token is not None:
             _metadata.reset(self._metadata_token)
 
@@ -261,17 +261,17 @@ class ContextVarSession:
         across process boundaries.
 
         Returns:
-            Dictionary with session_id, session_uid_chain (excluding current),
+            Dictionary with name, session_uid_chain (excluding current),
             and metadata
 
         Example:
             >>> # Process 1
-            >>> with ContextVarSession(session_id="task-123") as session:
+            >>> with ContextVarSession(name="task-123") as session:
             ...     context = session.to_context()
             ...     send_to_remote_process(context)
         """
         return {
-            "session_id": self.session_id,
+            "name": self.name,
             "session_uid_chain": self._session_uid_chain[:-1],  # Exclude current UID
             "metadata": self.metadata,
         }
@@ -304,11 +304,11 @@ class ContextVarSession:
             ...     llm.call()  # Traces visible to parent session in Process 1!
         """
         return cls(
-            session_id=context["session_id"],
+            name=context["name"],
             _session_uid_chain=context["session_uid_chain"],
             storage=storage,
             **context.get("metadata", {}),
         )
 
     def __repr__(self):
-        return f"ContextVarSession(session_id={self.session_id!r}, _uid={self._uid!r}, chain_depth={len(self._session_uid_chain)}, storage={self.storage!r})"
+        return f"ContextVarSession(name={self.name!r}, _uid={self._uid!r}, chain_depth={len(self._session_uid_chain)}, storage={self.storage!r})"
