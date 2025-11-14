@@ -220,7 +220,7 @@ class SqliteTracer:
         model: str,
         latency_ms: float,
         tokens: dict[str, int],
-        session_id: str | None = None,
+        session_name: str | None = None,
         metadata: dict[str, Any] | None = None,
         trace_id: str | None = None,
         parent_trace_id: str | None = None,
@@ -244,7 +244,7 @@ class SqliteTracer:
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_id: Session ID (optional, extracted from context if available)
+            session_name: Session name (optional, extracted from context if available)
             metadata: Additional metadata dict
             trace_id: Unique trace ID (auto-generated if None, or extracted from output.id)
             parent_trace_id: Parent trace ID for nested calls
@@ -265,11 +265,11 @@ class SqliteTracer:
         if trace_id is None:
             trace_id = f"tr_{uuid.uuid4().hex[:16]}"
 
-        # Get session_id from context if not provided
-        if session_id is None:
+        # Get session_name from context if not provided
+        if session_name is None:
             from rllm.sdk.session import get_current_session_name
 
-            session_id = get_current_session_name()
+            session_name = get_current_session_name()
 
         # Merge context metadata with call-specific metadata
         from rllm.sdk.session import get_active_sessions, get_current_metadata
@@ -285,7 +285,7 @@ class SqliteTracer:
         # Create Trace object following the protocol
         trace = Trace(
             trace_id=trace_id,
-            session_id=session_id or "",  # Trace protocol requires session_id
+            session_name=session_name or "",  # Trace protocol requires session_name
             name=name,
             input=input,
             output=output,

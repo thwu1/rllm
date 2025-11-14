@@ -88,7 +88,7 @@ class InMemorySessionTracer:
         model: str,
         latency_ms: float,
         tokens: dict[str, int],
-        session_id: str | None = None,
+        session_name: str | None = None,
         metadata: dict[str, Any] | None = None,
         trace_id: str | None = None,
         parent_trace_id: str | None = None,
@@ -115,7 +115,7 @@ class InMemorySessionTracer:
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_id: Session ID (ignored - session IDs come from active sessions in context)
+            session_name: Session name (ignored - session names come from active sessions in context)
             metadata: Additional metadata dict
             trace_id: Unique trace ID (auto-generated if None, or extracted from output.id)
             parent_trace_id: Parent trace ID for nested calls
@@ -126,9 +126,9 @@ class InMemorySessionTracer:
             tags: List of tags for categorization
 
         Note:
-            - The `session_id` parameter is ignored. Session IDs are automatically
+            - The `session_name` parameter is ignored. Session names are automatically
               extracted from active sessions in context via `get_active_sessions()`.
-              Each active session gets its own trace with its own session_id.
+              Each active session gets its own trace with its own session_name.
             - If not within a session context (no active sessions found),
               the trace is silently dropped. This is intentional - in-memory tracer
               only works within sessions.
@@ -152,7 +152,7 @@ class InMemorySessionTracer:
         # Use single trace_id for the same logical call across sessions
         actual_trace_id = trace_id or f"tr_{uuid.uuid4().hex[:16]}"
 
-        # Build base trace data (session_id will be set per-session)
+        # Build base trace data (session_name will be set per-session)
         trace_kwargs = {
             "trace_id": actual_trace_id,
             "name": name,
@@ -171,9 +171,9 @@ class InMemorySessionTracer:
             "tags": tags,
         }
 
-        # Add trace to every active session's storage with its own session_id
+        # Add trace to every active session's storage with its own session_name
         for sess in sessions:
-            trace_obj = Trace(session_id=sess.name, **trace_kwargs)
+            trace_obj = Trace(session_name=sess.name, **trace_kwargs)
             # Add to session storage with full UID chain for tree hierarchy
             sess.storage.add_trace(sess._session_uid_chain, sess.name, trace_obj)
 

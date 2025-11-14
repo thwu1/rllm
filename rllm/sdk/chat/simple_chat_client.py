@@ -82,7 +82,7 @@ class _SimpleTrackedChatClientBase:
             model=model,
             input={"messages": messages},
             output=response_payload,
-            session_id=session_name,
+            session_name=session_name,
             metadata=metadata,
             latency_ms=latency_ms,
             tokens=tokens_summary,

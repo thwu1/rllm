@@ -38,7 +38,7 @@ class TracerProtocol(Protocol):
         model: str,
         latency_ms: float,
         tokens: dict[str, int],
-        session_id: str | None = None,
+        session_name: str | None = None,
         metadata: dict[str, Any] | None = None,
         trace_id: str | None = None,
         parent_trace_id: str | None = None,
@@ -58,7 +58,7 @@ class TracerProtocol(Protocol):
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_id: Session ID (optional, may be inferred from context)
+            session_name: Session name (optional, may be inferred from context)
             metadata: Additional metadata dict
             trace_id: Unique trace ID (auto-generated if None)
             parent_trace_id: Parent trace ID for nested calls

@@ -281,7 +281,7 @@ class AgentOmniEngine:
             traces_by_session_id[uid] = []
 
         for trace in all_traces:
-            session_id = trace.data.get("session_id", None)
+            session_id = trace.data.get("session_name", None)
             if not session_id or session_id not in rollout_ids:
                 continue
             traces_by_session_id[session_id].append((trace.id, trace.data))

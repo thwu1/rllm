@@ -17,8 +17,8 @@ def assemble_routing_metadata(extra: Mapping[str, Any] | None = None) -> dict[st
     """Return the metadata dict that should be routed through the proxy slug."""
     payload: dict[str, Any] = dict(get_current_metadata())
     session_name = get_current_session_name()
-    if session_name and "session_id" not in payload:
-        payload["session_id"] = session_name
+    if session_name and "session_name" not in payload:
+        payload["session_name"] = session_name
 
     # Add session UIDs from active sessions for trace association
     active_sessions = get_active_sessions()

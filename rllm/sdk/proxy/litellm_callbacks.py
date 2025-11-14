@@ -135,7 +135,7 @@ class TracingCallback(CustomLogger):
             input={"messages": messages},
             output=response_payload,
             metadata=metadata,
-            session_id=metadata.get("session_id"),
+            session_name=metadata.get("session_name"),
             latency_ms=latency_ms,
             tokens=tokens,
             trace_id=response_id,  # Use the provider's response ID as the trace_id

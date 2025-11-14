@@ -40,24 +40,24 @@ class SessionStorage(Protocol):
     Querying "ctx_aaa" returns traces from all three sessions!
     """
 
-    def add_trace(self, session_uid_chain: list[str], session_id: str, trace: Trace) -> None:
+    def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
         """
         Add a trace to storage associated with a session hierarchy.
 
         Args:
             session_uid_chain: List of session UIDs from root to current (e.g., ["ctx_root", "ctx_child"])
-            session_id: User-visible session ID (for logging/debugging)
+            session_name: User-visible session name (for logging/debugging)
             trace: Trace object to store
         """
         ...
 
-    def get_traces(self, session_uid: str, session_id: str) -> list[Trace]:
+    def get_traces(self, session_uid: str, session_name: str) -> list[Trace]:
         """
         Retrieve all traces for a session (includes all descendant sessions).
 
         Args:
             session_uid: Session UID to query (returns this session + all descendants)
-            session_id: User-visible session ID (for logging/debugging)
+            session_name: User-visible session name (for logging/debugging)
 
         Returns:
             List of Trace objects for this session and all descendants
@@ -98,7 +98,7 @@ class InMemoryStorage:
         self._traces: dict[str, list[Trace]] = defaultdict(list)
         self._lock = threading.Lock()
 
-    def add_trace(self, session_uid_chain: list[str], session_id: str, trace: Trace) -> None:
+    def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
         """
         Add trace to in-memory storage (thread-safe).
 
@@ -107,7 +107,7 @@ class InMemoryStorage:
 
         Args:
             session_uid_chain: List of session UIDs from root to current
-            session_id: User-visible session ID (for logging/debugging)
+            session_name: User-visible session name (for logging/debugging)
             trace: Trace object to store
         """
         with self._lock:
@@ -116,7 +116,7 @@ class InMemoryStorage:
             for uid in session_uid_chain:
                 self._traces[uid].append(trace)
 
-    def get_traces(self, session_uid: str, session_id: str) -> list[Trace]:
+    def get_traces(self, session_uid: str, session_name: str) -> list[Trace]:
         """
         Get all traces for a session UID (thread-safe).
 
@@ -124,7 +124,7 @@ class InMemoryStorage:
 
         Args:
             session_uid: Unique ID of the session context (used as storage key)
-            session_id: User-visible session ID (ignored, for protocol compatibility)
+            session_name: User-visible session name (ignored, for protocol compatibility)
 
         Returns:
             Copy of the trace list for this session
@@ -132,13 +132,13 @@ class InMemoryStorage:
         with self._lock:
             return self._traces[session_uid].copy()
 
-    def clear(self, session_uid: str, session_id: str) -> None:
+    def clear(self, session_uid: str, session_name: str) -> None:
         """
         Clear all traces for a session UID (thread-safe).
 
         Args:
             session_uid: Unique ID of the session context
-            session_id: User-visible session ID (ignored, for protocol compatibility)
+            session_name: User-visible session name (ignored, for protocol compatibility)
         """
         with self._lock:
             if session_uid in self._traces:
@@ -192,7 +192,7 @@ class SqliteSessionStorage:
 
         self.store = SqliteTraceStore(db_path=db_path)
 
-    def add_trace(self, session_uid_chain: list[str], session_id: str, trace: Trace) -> None:
+    def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
         """
         Add trace to SQLite storage (async operation, returns immediately).
 
@@ -205,7 +205,7 @@ class SqliteSessionStorage:
 
         Args:
             session_uid_chain: List of session UIDs from root to current
-            session_id: User-visible session ID (for logging/debugging)
+            session_name: User-visible session name (for logging/debugging)
             trace: Trace object to store
         """
         # Create an async task to store the trace
@@ -237,7 +237,7 @@ class SqliteSessionStorage:
                 data=trace.model_dump(),
                 namespace="default",
                 context_type="llm_trace",
-                metadata={"session_id": trace.session_id},
+                metadata={"session_name": trace.session_name},
                 session_uids=session_uid_chain,  # Pass full chain to junction table!
             )
         except Exception as e:
@@ -246,7 +246,7 @@ class SqliteSessionStorage:
             logger = logging.getLogger(__name__)
             logger.exception(f"Failed to store trace {trace.trace_id}: {e}")
 
-    def get_traces(self, session_uid: str, session_id: str) -> list[Trace]:
+    def get_traces(self, session_uid: str, session_name: str) -> list[Trace]:
         """
         Retrieve all traces for a session from SQLite.
 
@@ -257,7 +257,7 @@ class SqliteSessionStorage:
 
         Args:
             session_uid: Unique session context UID (used as storage key)
-            session_id: User-visible session ID (for logging/debugging)
+            session_name: User-visible session name (for logging/debugging)
 
         Returns:
             List of Trace objects for this session and all descendants
