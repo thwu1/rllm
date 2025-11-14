@@ -21,7 +21,7 @@ class _ScopedClientMixin:
     _memory_tracer = InMemorySessionTracer()
 
     def _scoped_client(self, metadata: Mapping[str, Any]):
-        base_url = getattr(self, "_proxy_base_url", None)
+        base_url = getattr(self, "base_url", None)
         if not base_url or not metadata:
             return self._client
         proxied_base = build_proxied_base_url(base_url, metadata)
@@ -87,8 +87,15 @@ class _ProxyChatCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata)
-        scoped_client = self.parent._scoped_client(routing_metadata)
+
+        # Choose client based on use_proxy setting
+        if self.parent.use_proxy:
+            # Proxy mode: inject metadata slug into URL
+            routing_metadata = assemble_routing_metadata(metadata)
+            scoped_client = self.parent._scoped_client(routing_metadata)
+        else:
+            # Direct mode: use client as-is (like normal OpenAI client)
+            scoped_client = self.parent._client
 
         start = time.perf_counter()
         response = scoped_client.chat.completions.create(**call_kwargs)
@@ -131,8 +138,15 @@ class _ProxyCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata)
-        scoped_client = self.parent._scoped_client(routing_metadata)
+
+        # Choose client based on use_proxy setting
+        if self.parent.use_proxy:
+            # Proxy mode: inject metadata slug into URL
+            routing_metadata = assemble_routing_metadata(metadata)
+            scoped_client = self.parent._scoped_client(routing_metadata)
+        else:
+            # Direct mode: use client as-is (like normal OpenAI client)
+            scoped_client = self.parent._client
 
         start = time.perf_counter()
         response = scoped_client.completions.create(**call_kwargs)
@@ -162,6 +176,7 @@ class ProxyTrackedChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
         tracer: Any = None,
         default_model: str | None = None,
         client: OpenAI | None = None,
+        use_proxy: bool = True,
         **client_kwargs: Any,
     ) -> None:
         if client is not None:
@@ -176,7 +191,8 @@ class ProxyTrackedChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
 
         self.tracer = tracer
         self.default_model = default_model
-        self._proxy_base_url = base_url
+        self.base_url = base_url
+        self.use_proxy = use_proxy
 
         self.chat = _ProxyChatNamespace(self)
         self.completions = _ProxyCompletions(self)
@@ -197,8 +213,15 @@ class _ProxyAsyncChatCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata)
-        scoped_client = self.parent._scoped_client(routing_metadata)
+
+        # Choose client based on use_proxy setting
+        if self.parent.use_proxy:
+            # Proxy mode: inject metadata slug into URL
+            routing_metadata = assemble_routing_metadata(metadata)
+            scoped_client = self.parent._scoped_client(routing_metadata)
+        else:
+            # Direct mode: use client as-is (like normal OpenAI client)
+            scoped_client = self.parent._client
 
         start = time.perf_counter()
         response = await scoped_client.chat.completions.create(**call_kwargs)
@@ -241,8 +264,15 @@ class _ProxyAsyncCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata)
-        scoped_client = self.parent._scoped_client(routing_metadata)
+
+        # Choose client based on use_proxy setting
+        if self.parent.use_proxy:
+            # Proxy mode: inject metadata slug into URL
+            routing_metadata = assemble_routing_metadata(metadata)
+            scoped_client = self.parent._scoped_client(routing_metadata)
+        else:
+            # Direct mode: use client as-is (like normal OpenAI client)
+            scoped_client = self.parent._client
 
         start = time.perf_counter()
         response = await scoped_client.completions.create(**call_kwargs)
@@ -272,6 +302,7 @@ class ProxyTrackedAsyncChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBa
         tracer: Any = None,
         default_model: str | None = None,
         client: AsyncOpenAI | None = None,
+        use_proxy: bool = True,
         **client_kwargs: Any,
     ) -> None:
         if client is not None:
@@ -286,7 +317,8 @@ class ProxyTrackedAsyncChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBa
 
         self.tracer = tracer
         self.default_model = default_model
-        self._proxy_base_url = base_url
+        self.base_url = base_url
+        self.use_proxy = use_proxy
 
         self.chat = _ProxyAsyncChatNamespace(self)
         self.completions = _ProxyAsyncCompletions(self)

@@ -12,7 +12,7 @@ from rllm.workflows.workflow import Workflow
 
 class Solver:
     def __init__(self, **kwargs):
-        self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="vllm/Qwen/Qwen3-4B-Instruct-2507")
+        self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="Qwen/Qwen3-4B-Instruct-2507")
 
     async def generate_solution(self, problem: str) -> Trajectory:
         with session(agent="solver", groupby_key=str(uuid.uuid4())) as sess:
@@ -42,7 +42,7 @@ class Solver:
 
 class Judge:
     def __init__(self, **kwargs):
-        self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="vllm/Qwen/Qwen3-4B-Instruct-2507")
+        self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="Qwen/Qwen3-4B-Instruct-2507")
 
     async def judge_solutions(self, problem: str, solutions: list[str]) -> Trajectory:
         with session(agent="judge") as sess:
