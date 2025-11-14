@@ -64,10 +64,7 @@ python3 -m examples.omni_trainer.simple_math.train_hendrycks_math \
     rllm.stepwise_advantage.enable=False \
     rllm.workflow.use_workflow=True \
     trainer.total_epochs=100 \
-    +rllm.proxy.host=127.0.0.1 \
-    +rllm.proxy.port=4000 \
-    +rllm.proxy.auto_start=False \
-    +rllm.proxy.admin_token=my-shared-secret \
-    +rllm.run_name=rllm-agent-omni-engine \
-    +context_store.endpoint=http://localhost:8000 \
-    +context_store.api_key=your-api-key-here
+    rllm.omni.proxy.host=127.0.0.1 \
+    rllm.omni.proxy.port=4000 \
+    rllm.omni.proxy.auto_start=False \
+    rllm.omni.proxy.admin_token=my-shared-secret \
