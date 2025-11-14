@@ -143,7 +143,6 @@ class AgentOmniTrainer(RayPPOTrainer):
             "model_name": self.config.actor_rollout_ref.model.path,
             "proxy_host": self.config.rllm.omni.proxy.host,
             "proxy_port": self.config.rllm.omni.proxy.port,
-            "auto_start": self.config.rllm.omni.proxy.auto_start,  # Auto-start the proxy server
             "admin_token": self.config.rllm.omni.proxy.admin_token,
         }
 

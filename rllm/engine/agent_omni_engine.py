@@ -47,7 +47,7 @@ class AgentOmniEngine:
                 - model_name: Model name to expose (required for VERL)
                 - proxy_host: Host to bind proxy (default: "127.0.0.1")
                 - proxy_port: Port to bind proxy (default: 4000)
-                - auto_start: Whether to auto-start proxy (default: False)
+                - admin_token: Admin token for proxy API access (default: "my-shared-secret")
                 - proxy_access_log: Emit LiteLLM proxy access logs (default: False)
             tracer: Optional tracer for logging.
             **kwargs: Additional keyword arguments.
@@ -118,7 +118,6 @@ class AgentOmniEngine:
 
         proxy_host = proxy_config.get("proxy_host", "127.0.0.1")
         proxy_port = proxy_config.get("proxy_port", 4000)
-        auto_start = proxy_config.get("auto_start", False)
         admin_token = proxy_config.get("admin_token", "my-shared-secret")
 
         self.proxy_manager = VerlProxyManager(
@@ -135,13 +134,10 @@ class AgentOmniEngine:
 
         print(f"Initialized VerlProxyManager with {len(self.proxy_manager.get_server_addresses())} vLLM replicas. Proxy endpoint: {self.rollout_engine_endpoint}")
 
-        if auto_start:
-            self.proxy_manager.start_proxy_server()
-            logger.info(f"Auto-started LiteLLM proxy at {self.rollout_engine_endpoint}")
-        else:
-            self.proxy_manager.reload_external_proxy(
-                inline_payload=True,
-            )
+        # Reload external proxy with the generated configuration
+        self.proxy_manager.reload_external_proxy(
+            inline_payload=True,
+        )
 
     def get_server_addresses(self) -> list[str] | None:
         """Get all vLLM server addresses (for VERL engines).
