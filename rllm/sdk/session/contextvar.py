@@ -144,15 +144,15 @@ class ContextVarSession:
         """
         Get all LLM calls made within this session.
 
-        This queries the storage backend using the session's unique UID (_uid).
-        The storage implementation determines where traces are retrieved from:
-        - InMemoryStorage: returns in-memory list
-        - SqliteSessionStorage: queries SQLite database
+        This queries the storage backend with both identifiers, allowing
+        storage implementations to choose their keying strategy:
+        - InMemoryStorage: keys by _uid for instance isolation
+        - SqliteSessionStorage: keys by session_id for cross-process sharing
 
         Returns:
             List of Trace objects for this session
         """
-        return self.storage.get_traces(self._uid)
+        return self.storage.get_traces(self._uid, self.session_id)
 
     @property
     def steps(self) -> list[StepProto]:
@@ -167,7 +167,7 @@ class ContextVarSession:
         SQLite and other persistent storage may not support this operation.
         """
         if hasattr(self.storage, "clear"):
-            self.storage.clear(self._uid)
+            self.storage.clear(self._uid, self.session_id)
 
     def __enter__(self):
         """Enter session context - set up context variables."""

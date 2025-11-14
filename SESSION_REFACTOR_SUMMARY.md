@@ -185,19 +185,28 @@ with ContextVarSession(storage=storage, session_id="task-123") as session:
 - **`session_id`**: User-visible identifier, can be inherited/shared
 - **`_uid`**: Internal unique ID for each session *instance*
 
-This allows:
+**Storage backends choose which identifier to use:**
+
+- **`InMemoryStorage`**: Keys by `_uid` for instance-level isolation
+  - Each session instance gets its own trace collection
+  - Nested sessions with same `session_id` have separate storage
+
+- **`SqliteSessionStorage`**: Keys by `session_id` for cross-process sharing
+  - All sessions with same `session_id` share traces
+  - Enables multiprocessing scenarios
+
+Example:
 ```python
-# Both sessions share session_id="task-123"
+# Process 1
+storage = SqliteSessionStorage("traces.db")
 with ContextVarSession(storage=storage, session_id="task-123") as s1:
-    # s1._uid = "ctx_abc123"
-    pass
+    llm.call()  # Stored under session_id="task-123"
 
+# Process 2 (different process, same session_id)
+storage = SqliteSessionStorage("traces.db")
 with ContextVarSession(storage=storage, session_id="task-123") as s2:
-    # s2._uid = "ctx_def456" (different from s1!)
-    pass
+    print(s2.llm_calls)  # Sees traces from Process 1!
 ```
-
-Storage is keyed by `_uid`, so each session instance gets its own trace collection, even if they share the same `session_id`.
 
 ### Async Storage, Sync Retrieval
 

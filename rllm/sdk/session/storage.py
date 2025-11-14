@@ -17,8 +17,8 @@ class SessionStorage(Protocol):
 
     Separates the concern of storing/retrieving traces from session context propagation.
     Different implementations can provide different storage strategies:
-    - InMemoryStorage: Thread-safe, single-process, ephemeral
-    - SqliteSessionStorage: Durable, multi-process via shared SQLite file
+    - InMemoryStorage: Thread-safe, single-process, ephemeral (keys by instance _uid)
+    - SqliteSessionStorage: Durable, multi-process via shared SQLite file (keys by session_id)
     - PostgresStorage: Distributed, scalable
 
     Thread-safety requirement:
@@ -26,29 +26,32 @@ class SessionStorage(Protocol):
     - InMemoryStorage uses locks to ensure thread-safety
     - SqliteSessionStorage uses SQLite's built-in locking
 
-    All storage implementations must support querying by session_uid (the internal
-    unique ID of each session context instance).
+    Storage backends decide which identifier to use:
+    - Instance-based (InMemoryStorage): Uses session_uid for isolation per instance
+    - Session-based (SqliteSessionStorage): Uses session_id for sharing across processes
     """
 
-    def add_trace(self, session_uid: str, trace: Trace) -> None:
+    def add_trace(self, session_uid: str, session_id: str, trace: Trace) -> None:
         """
-        Add a trace to storage associated with a session UID.
+        Add a trace to storage associated with a session.
 
         Args:
-            session_uid: Unique ID of the session context (_uid field)
+            session_uid: Unique ID of the session context instance (_uid field)
+            session_id: User-visible session ID (session_id field)
             trace: Trace object to store
         """
         ...
 
-    def get_traces(self, session_uid: str) -> list[Trace]:
+    def get_traces(self, session_uid: str, session_id: str) -> list[Trace]:
         """
-        Retrieve all traces for a session UID.
+        Retrieve all traces for a session.
 
         Args:
-            session_uid: Unique ID of the session context (_uid field)
+            session_uid: Unique ID of the session context instance (_uid field)
+            session_id: User-visible session ID (session_id field)
 
         Returns:
-            List of Trace objects associated with this session UID
+            List of Trace objects for this session
         """
         ...
 
@@ -86,23 +89,29 @@ class InMemoryStorage:
         self._traces: dict[str, list[Trace]] = defaultdict(list)
         self._lock = threading.Lock()
 
-    def add_trace(self, session_uid: str, trace: Trace) -> None:
+    def add_trace(self, session_uid: str, session_id: str, trace: Trace) -> None:
         """
         Add trace to in-memory storage (thread-safe).
 
+        Uses session_uid for instance-level isolation (nested sessions get separate storage).
+
         Args:
-            session_uid: Unique ID of the session context
+            session_uid: Unique ID of the session context (used as storage key)
+            session_id: User-visible session ID (ignored, for protocol compatibility)
             trace: Trace object to store
         """
         with self._lock:
             self._traces[session_uid].append(trace)
 
-    def get_traces(self, session_uid: str) -> list[Trace]:
+    def get_traces(self, session_uid: str, session_id: str) -> list[Trace]:
         """
         Get all traces for a session UID (thread-safe).
 
+        Uses session_uid for instance-level isolation.
+
         Args:
-            session_uid: Unique ID of the session context
+            session_uid: Unique ID of the session context (used as storage key)
+            session_id: User-visible session ID (ignored, for protocol compatibility)
 
         Returns:
             Copy of the trace list for this session
@@ -110,12 +119,13 @@ class InMemoryStorage:
         with self._lock:
             return self._traces[session_uid].copy()
 
-    def clear(self, session_uid: str) -> None:
+    def clear(self, session_uid: str, session_id: str) -> None:
         """
         Clear all traces for a session UID (thread-safe).
 
         Args:
             session_uid: Unique ID of the session context
+            session_id: User-visible session ID (ignored, for protocol compatibility)
         """
         with self._lock:
             if session_uid in self._traces:
@@ -169,16 +179,20 @@ class SqliteSessionStorage:
 
         self.store = SqliteTraceStore(db_path=db_path)
 
-    def add_trace(self, session_uid: str, trace: Trace) -> None:
+    def add_trace(self, session_uid: str, session_id: str, trace: Trace) -> None:
         """
         Add trace to SQLite storage (async operation, returns immediately).
+
+        Uses session_id for cross-process sharing. All sessions with the same
+        session_id will see the same traces, regardless of process boundaries.
 
         Note: This method queues the trace for async storage. The actual
         storage happens in a background task. Use flush() or await close()
         to ensure all traces are written.
 
         Args:
-            session_uid: Session UID to associate with this trace
+            session_uid: Unique instance ID (ignored, for protocol compatibility)
+            session_id: User-visible session ID (used as storage key)
             trace: Trace object to store
         """
         # Create an async task to store the trace
@@ -186,19 +200,24 @@ class SqliteSessionStorage:
         try:
             loop = asyncio.get_running_loop()
             # If we're in an async context, schedule the coroutine
-            loop.create_task(self._async_add_trace(session_uid, trace))
+            loop.create_task(self._async_add_trace(session_id, trace))
         except RuntimeError:
             # No running loop, use asyncio.run() in a thread to avoid blocking
             import threading
 
             def _run_async():
-                asyncio.run(self._async_add_trace(session_uid, trace))
+                asyncio.run(self._async_add_trace(session_id, trace))
 
             thread = threading.Thread(target=_run_async, daemon=True)
             thread.start()
 
-    async def _async_add_trace(self, session_uid: str, trace: Trace) -> None:
-        """Async helper to store trace to SQLite."""
+    async def _async_add_trace(self, session_id: str, trace: Trace) -> None:
+        """Async helper to store trace to SQLite.
+
+        Args:
+            session_id: User-visible session ID used as storage key
+            trace: Trace object to store
+        """
         try:
             await self.store.store(
                 trace_id=trace.trace_id,
@@ -206,7 +225,7 @@ class SqliteSessionStorage:
                 namespace="default",
                 context_type="llm_trace",
                 metadata={"session_id": trace.session_id},
-                session_uids=[session_uid],
+                session_uids=[session_id],  # Use session_id for cross-process sharing
             )
         except Exception as e:
             import logging
@@ -214,14 +233,18 @@ class SqliteSessionStorage:
             logger = logging.getLogger(__name__)
             logger.exception(f"Failed to store trace {trace.trace_id}: {e}")
 
-    def get_traces(self, session_uid: str) -> list[Trace]:
+    def get_traces(self, session_uid: str, session_id: str) -> list[Trace]:
         """
-        Retrieve all traces for a session UID from SQLite.
+        Retrieve all traces for a session from SQLite.
+
+        Uses session_id for cross-process sharing. All sessions with the same
+        session_id will see the same traces, regardless of process boundaries.
 
         This method runs the async query synchronously using asyncio.run().
 
         Args:
-            session_uid: Session UID to query
+            session_uid: Unique instance ID (ignored, for protocol compatibility)
+            session_id: User-visible session ID (used as storage key)
 
         Returns:
             List of Trace objects for this session
@@ -234,16 +257,23 @@ class SqliteSessionStorage:
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self._async_get_traces(session_uid))
+                future = executor.submit(asyncio.run, self._async_get_traces(session_id))
                 return future.result()
         except RuntimeError:
             # No running loop, safe to use asyncio.run()
-            return asyncio.run(self._async_get_traces(session_uid))
+            return asyncio.run(self._async_get_traces(session_id))
 
-    async def _async_get_traces(self, session_uid: str) -> list[Trace]:
-        """Async helper to retrieve traces from SQLite."""
+    async def _async_get_traces(self, session_id: str) -> list[Trace]:
+        """Async helper to retrieve traces from SQLite.
+
+        Args:
+            session_id: User-visible session ID used as storage key
+
+        Returns:
+            List of Trace objects for this session
+        """
         try:
-            trace_contexts = await self.store.get_by_session_uid(session_uid)
+            trace_contexts = await self.store.get_by_session_uid(session_id)
 
             # Convert TraceContext objects to Trace protocol objects
             traces = []
@@ -257,7 +287,7 @@ class SqliteSessionStorage:
             import logging
 
             logger = logging.getLogger(__name__)
-            logger.exception(f"Failed to retrieve traces for session {session_uid}: {e}")
+            logger.exception(f"Failed to retrieve traces for session {session_id}: {e}")
             return []
 
     def __repr__(self):
