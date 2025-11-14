@@ -166,3 +166,142 @@ class _Completions:
         )
 
         return response
+
+
+class SimpleTrackedChatClient(_SimpleTrackedChatClientBase):
+    """Lean wrapper around `OpenAI` that records chat completions only."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        tracer: Any = None,
+        default_model: str | None = None,
+        client: OpenAI | None = None,
+        **client_kwargs: Any,
+    ) -> None:
+        if client is not None:
+            self._client = client
+        else:
+            init_kwargs = dict(client_kwargs)
+            if api_key is not None:
+                init_kwargs["api_key"] = api_key
+            if base_url is not None:
+                init_kwargs["base_url"] = base_url
+            self._client = OpenAI(**init_kwargs)
+
+        self.tracer = tracer
+        self.default_model = default_model
+
+        self.chat = _ChatNamespace(self)
+        self.completions = _Completions(self)
+
+
+@dataclass
+class _AsyncChatCompletions:
+    parent: SimpleTrackedAsyncChatClient
+
+    async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
+        call_kwargs = self.parent._merge_args(args, kwargs)
+        messages = call_kwargs.get("messages")
+        if not messages:
+            raise ValueError("messages must be provided for chat.completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
+
+        start = time.perf_counter()
+        response = await self.parent._client.chat.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
+        response_dict = response.model_dump()
+
+        completion_token_ids = self.parent._extract_completion_tokens(response_dict)
+
+        self.parent._log_trace(
+            model=model,
+            messages=messages,
+            response_payload=response_dict,
+            completion_token_ids=completion_token_ids,
+            metadata_overrides=metadata,
+            latency_ms=latency_ms,
+        )
+
+        return response
+
+
+@dataclass
+class _AsyncChatNamespace:
+    parent: SimpleTrackedAsyncChatClient
+
+    @property
+    def completions(self) -> _AsyncChatCompletions:
+        return _AsyncChatCompletions(self.parent)
+
+
+@dataclass
+class _AsyncCompletions:
+    parent: SimpleTrackedAsyncChatClient
+
+    async def create(self, *args: Any, **kwargs: Any) -> Completion:
+        call_kwargs = self.parent._merge_args(args, kwargs)
+        prompt = call_kwargs.get("prompt")
+        if prompt is None:
+            raise ValueError("prompt must be provided for completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
+
+        start = time.perf_counter()
+        response = await self.parent._client.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
+        response_dict = response.model_dump()
+
+        completion_token_ids = self.parent._extract_completion_tokens(response_dict)
+
+        self.parent._log_trace(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_payload=response_dict,
+            completion_token_ids=completion_token_ids,
+            metadata_overrides=metadata,
+            latency_ms=latency_ms,
+        )
+
+        return response
+
+
+class SimpleTrackedAsyncChatClient(_SimpleTrackedChatClientBase):
+    """Async variant of the simple client that records chat completions."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        tracer: Any = None,
+        default_model: str | None = None,
+        client: AsyncOpenAI | None = None,
+        **client_kwargs: Any,
+    ) -> None:
+        if client is not None:
+            self._client = client
+        else:
+            init_kwargs = dict(client_kwargs)
+            if api_key is not None:
+                init_kwargs["api_key"] = api_key
+            if base_url is not None:
+                init_kwargs["base_url"] = base_url
+            self._client = AsyncOpenAI(**init_kwargs)
+
+        self.tracer = tracer
+        self.default_model = default_model
+
+        self.chat = _AsyncChatNamespace(self)
+        self.completions = _AsyncCompletions(self)

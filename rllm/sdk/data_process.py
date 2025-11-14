@@ -248,6 +248,47 @@ def group_steps(steps: list[Step], by: str | None = None, name_key: str | None =
         return [Trajectory(name=get_trajectory_name(group_steps, name_key), steps=group_steps) for group_key, group_steps in step_groups.items()]
 
 
+class SequenceAccumulator:
+    def __init__(self):
+        self.full_sequence = []
+        self.logprobs = []
+        self.advantages = []
+        self.mask = []
+
+    def is_empty(self):
+        return len(self.full_sequence) == 0
+
+    def clear(self):
+        self.full_sequence = []
+        self.logprobs = []
+        self.advantages = []
+        self.mask = []
+
+    def add_step(self, step: Step, advantage: float, is_extension: bool = False):
+        """Add a step to the accumulated sequence."""
+        if is_extension:
+            # Only add the new tokens (delta)
+            prev_len = len(self.full_sequence)
+            delta_prompt = step.prompt_ids[prev_len:]
+            delta_prompt_len = len(delta_prompt)
+        else:
+            # Add entire prompt
+            delta_prompt = step.prompt_ids
+            delta_prompt_len = len(delta_prompt)
+
+        # Add prompt tokens (observation)
+        self.full_sequence.extend(delta_prompt)
+        self.logprobs.extend([0.0] * delta_prompt_len)
+        self.advantages.extend([0.0] * delta_prompt_len)
+        self.mask.extend([0.0] * delta_prompt_len)
+
+        # Add response tokens (action)
+        self.full_sequence.extend(step.response_ids)
+        self.logprobs.extend(step.logprobs)
+        self.advantages.extend([advantage] * len(step.response_ids))
+        self.mask.extend([1.0] * len(step.response_ids))
+
+
 # def build_trajectories_from_steps(steps: List[Step]) -> list[Trajectory]:
 #     """
 #     Build one or more Datums from a trajectory, merging steps when possible.
