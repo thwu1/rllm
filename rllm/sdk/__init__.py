@@ -3,7 +3,10 @@
 from rllm.sdk.reward import set_reward, set_reward_async
 from rllm.sdk.session import (
     ContextVarSession,
+    InMemoryStorage,
     SessionContext,
+    SessionStorage,
+    SqliteSessionStorage,
     get_current_metadata,
     get_current_session,
     get_current_session_id,
@@ -14,6 +17,7 @@ from rllm.sdk.tracers import (
     ContextStoreProtocol,
     EpisodicTracer,
     InMemorySessionTracer,
+    SqliteTracer,
     TracerProtocol,
 )
 
@@ -24,6 +28,10 @@ __all__ = [
     "get_current_session",  # Get current session instance
     "get_current_session_id",  # Get current session ID
     "get_current_metadata",  # Get current metadata
+    # Session Storage
+    "SessionStorage",  # Storage protocol
+    "InMemoryStorage",  # Default in-memory storage
+    "SqliteSessionStorage",  # SQLite-backed storage
     # Shortcuts
     "session",
     "get_chat_client",
@@ -32,6 +40,7 @@ __all__ = [
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
     "EpisodicTracer",  # Persistent tracer with Episodic backend
+    "SqliteTracer",  # SQLite-based persistent tracer
     "CompositeTracer",  # Combine multiple tracers
     "ContextStoreProtocol",  # Context store protocol for episodic tracer
     # Rewards

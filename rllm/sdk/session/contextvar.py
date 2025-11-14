@@ -3,9 +3,12 @@
 import contextvars
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rllm.sdk.protocol import StepProto, Trace, trace_to_step_proto
+
+if TYPE_CHECKING:
+    from rllm.sdk.session.storage import SessionStorage
 
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
@@ -40,29 +43,57 @@ def get_active_sessions() -> list["ContextVarSession"]:
 
 class ContextVarSession:
     """
-    Session implementation using Python contextvars.
+    Session implementation using Python contextvars with pluggable storage.
 
-    This is the default session implementation that uses contextvars
-    for thread-safe and async-safe context propagation.
+    This session implementation separates context propagation (session_id, metadata)
+    from trace storage. The storage backend can be plugged in to support different
+    deployment scenarios:
+
+    - **InMemoryStorage** (default): Fast, single-process, ephemeral
+    - **SqliteSessionStorage**: Durable, multi-process via shared SQLite file
+    - **Custom storage**: Implement SessionStorage protocol
 
     Features:
-    - Thread-safe and async-safe
-    - Automatic nested session isolation
-    - In-memory call storage
-    - Zero external dependencies
+    - Thread-safe and async-safe context propagation
+    - Automatic nested session isolation with metadata inheritance
+    - Pluggable storage backends
+    - Backward compatible with existing code
 
-    Example:
+    Example (in-memory, default):
         >>> from rllm.sdk.session import ContextVarSession
         >>> from rllm.sdk import get_chat_client
         >>>
         >>> llm = get_chat_client(api_key="...", model="gpt-4")
         >>>
+        >>> # Default: in-memory storage
         >>> with ContextVarSession() as session:
         ...     llm.chat.completions.create(...)
         ...     print(len(session.llm_calls))  # Immediate access
+
+    Example (SQLite, multi-process):
+        >>> from rllm.sdk.session import ContextVarSession
+        >>> from rllm.sdk.session.storage import SqliteSessionStorage
+        >>>
+        >>> storage = SqliteSessionStorage("traces.db")
+        >>>
+        >>> # Process 1
+        >>> with ContextVarSession(storage=storage, session_id="task-123") as session:
+        ...     llm.chat.completions.create(...)
+        >>>
+        >>> # Process 2 (can access same traces!)
+        >>> with ContextVarSession(storage=storage, session_id="task-123") as session:
+        ...     llm.chat.completions.create(...)
+        ...     print(session.llm_calls)  # Sees traces from both processes!
     """
 
-    def __init__(self, session_id: str | None = None, formatter: Callable[[dict], dict] | None = None, persistent_tracers: list | None = None, **metadata):
+    def __init__(
+        self,
+        session_id: str | None = None,
+        storage: "SessionStorage | None" = None,
+        formatter: Callable[[dict], dict] | None = None,
+        persistent_tracers: list | None = None,
+        **metadata,
+    ):
         """
         Initialize contextvars-based session.
 
@@ -70,8 +101,10 @@ class ContextVarSession:
             session_id: Session ID (auto-generated if None). If None and there's an
                        existing session_id in the context (from a parent session),
                        that will be inherited instead of generating a new one.
-            formatter: Optional formatter to transform trace data
-            persistent_tracers: Optional list of persistent tracers
+            storage: Storage backend for traces. If None, uses InMemoryStorage (default).
+                    Pass SqliteSessionStorage for multi-process scenarios.
+            formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
+            persistent_tracers: Optional list of persistent tracers (deprecated, kept for compatibility)
             **metadata: Session metadata
         """
         # If session_id is not explicitly provided, check if there's one in the context
@@ -90,10 +123,14 @@ class ContextVarSession:
         self.metadata = metadata
         self.formatter = formatter or (lambda x: x)
 
-        # In-memory storage for THIS session's calls
-        self._calls: list[Trace] = []
+        # Storage backend (defaults to InMemoryStorage for backward compatibility)
+        if storage is None:
+            from rllm.sdk.session.storage import InMemoryStorage
 
-        # Optional persistent tracers
+            storage = InMemoryStorage()
+        self.storage = storage
+
+        # Optional persistent tracers (kept for backward compatibility)
         self._persistent_tracers = persistent_tracers or []
 
         # Context tokens for cleanup
@@ -104,17 +141,33 @@ class ContextVarSession:
 
     @property
     def llm_calls(self) -> list[Trace]:
-        """Get all LLM calls made within this session."""
-        return self._calls.copy()
+        """
+        Get all LLM calls made within this session.
+
+        This queries the storage backend using the session's unique UID (_uid).
+        The storage implementation determines where traces are retrieved from:
+        - InMemoryStorage: returns in-memory list
+        - SqliteSessionStorage: queries SQLite database
+
+        Returns:
+            List of Trace objects for this session
+        """
+        return self.storage.get_traces(self._uid)
 
     @property
     def steps(self) -> list[StepProto]:
         """Get all steps within this session."""
-        return [trace_to_step_proto(trace) for trace in self._calls]
+        return [trace_to_step_proto(trace) for trace in self.llm_calls]
 
     def clear_calls(self) -> None:
-        """Clear all stored calls for this session."""
-        self._calls.clear()
+        """
+        Clear all stored calls for this session.
+
+        Only works with storage backends that support clearing (e.g., InMemoryStorage).
+        SQLite and other persistent storage may not support this operation.
+        """
+        if hasattr(self.storage, "clear"):
+            self.storage.clear(self._uid)
 
     def __enter__(self):
         """Enter session context - set up context variables."""
@@ -155,7 +208,7 @@ class ContextVarSession:
 
     def __len__(self) -> int:
         """Return number of calls in this session."""
-        return len(self._calls)
+        return len(self.llm_calls)
 
     def __repr__(self):
-        return f"ContextVarSession(session_id={self.session_id!r}, calls={len(self._calls)})"
+        return f"ContextVarSession(session_id={self.session_id!r}, _uid={self._uid!r}, storage={self.storage!r})"
