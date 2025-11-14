@@ -10,6 +10,7 @@ import time
 import uuid
 from typing import Any
 
+from rllm.sdk.protocol import Trace
 from rllm.sdk.store import SqliteTraceStore
 
 logger = logging.getLogger(__name__)
@@ -186,8 +187,7 @@ class SqliteTracer:
 
     def _queue_trace(
         self,
-        trace_id: str,
-        data: dict[str, Any],
+        trace: Trace,
         metadata: dict[str, Any] | None = None,
         session_uids: list[str] | None = None,
     ) -> None:
@@ -197,9 +197,12 @@ class SqliteTracer:
             self._start_background_worker()
 
         try:
+            # Convert Trace object to dict for storage
+            trace_data = trace.model_dump()
+
             queue_item = {
-                "trace_id": trace_id,
-                "data": data,
+                "trace_id": trace.trace_id,
+                "data": trace_data,
                 "namespace": self.namespace,
                 "context_type": "llm_trace",
                 "metadata": metadata,
@@ -207,7 +210,7 @@ class SqliteTracer:
             }
             self._store_queue.put_nowait(queue_item)
         except queue.Full:
-            logger.warning(f"Store queue full (max size: {self._max_queue_size}), dropping trace {trace_id}")
+            logger.warning(f"Store queue full (max size: {self._max_queue_size}), dropping trace {trace.trace_id}")
 
     def log_llm_call(
         self,
@@ -279,42 +282,30 @@ class SqliteTracer:
             active_sessions = get_active_sessions()
             session_uids = [s._uid for s in active_sessions]
 
-        trace_data = {
-            "name": name,
-            "input": input,
-            "output": output,
-            "model": model,
-            "latency_ms": latency_ms,
-            "tokens": tokens,
-            "timestamp": time.time(),
-        }
-
-        # Add optional fields
-        if parent_trace_id is not None:
-            trace_data["parent_trace_id"] = parent_trace_id
-        if cost is not None:
-            trace_data["cost"] = cost
-        if environment is not None:
-            trace_data["environment"] = environment
-        if tools is not None:
-            trace_data["tools"] = tools
-        if contexts is not None:
-            trace_data["contexts"] = contexts
-        if tags is not None:
-            trace_data["tags"] = tags
-        if session_id is not None:
-            trace_data["session_id"] = session_id
-
-        # Store metadata separately
-        store_metadata = {}
-        if final_metadata:
-            store_metadata = final_metadata
+        # Create Trace object following the protocol
+        trace = Trace(
+            trace_id=trace_id,
+            session_id=session_id or "",  # Trace protocol requires session_id
+            name=name,
+            input=input,
+            output=output,
+            model=model,
+            latency_ms=latency_ms,
+            tokens=tokens,
+            metadata=final_metadata,
+            timestamp=time.time(),
+            parent_trace_id=parent_trace_id,
+            cost=cost,
+            environment=environment,
+            tools=tools,
+            contexts=contexts,
+            tags=tags,
+        )
 
         # Queue trace for storage (non-blocking, worker will await it)
         self._queue_trace(
-            trace_id=trace_id,
-            data=trace_data,
-            metadata=store_metadata,
+            trace=trace,
+            metadata=final_metadata,
             session_uids=session_uids if session_uids else None,
         )
 
