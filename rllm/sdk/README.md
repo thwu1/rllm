@@ -94,7 +94,6 @@ The SDK uses Python's `contextvars` for automatic context propagation:
 
 1. **Context Variables** (`rllm/sdk/context.py`): Thread-safe storage
 2. **Session Context Manager** (`rllm/sdk/session.py`): `__enter__`/`__exit__` handling
-3. **Modified Tracer** (`episodic/tracing.py`): Auto-inject session_id and metadata
 
 ### Files Created
 
@@ -108,10 +107,6 @@ rllm/sdk/
 ├── test_tracer_integration.py  # Integration tests
 └── example_usage.py      # Usage examples
 ```
-
-### Modified Files
-
-- `episodic/tracing.py`: Added 3 lines to use context
 
 ## API Reference
 
@@ -153,29 +148,6 @@ python rllm/sdk/example_usage.py
 3. **Thread-safe**: Each thread gets isolated context
 4. **Backward compatible**: Explicit session_id still works
 5. **Flexible**: Support arbitrary metadata keys
-
-## Integration with Episodic Tracer
-
-The episodic tracer automatically uses context:
-
-```python
-from rllm.sdk import LLMTracer
-from rllm.sdk import RLLMClient
-
-client = RLLMClient()
-tracer = LLMTracer(store)
-
-with client.session("task-123", experiment="v1"):
-    tracer.log_llm_call(
-        name="step1",
-        input="...",
-        output="...",
-        model="gpt-4",
-        latency_ms=100,
-        tokens={"total": 50}
-        # session_id and metadata auto-injected!
-    )
-```
 
 ## Benefits
 

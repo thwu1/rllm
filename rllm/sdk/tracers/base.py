@@ -17,14 +17,14 @@ class TracerProtocol(Protocol):
     This allows chat clients to work with any tracer through a uniform API.
 
     Example:
-        >>> from rllm.sdk.tracers import InMemorySessionTracer, EpisodicTracer
+        >>> from rllm.sdk.tracers import InMemorySessionTracer, SqliteTracer
         >>>
         >>> # Use in-memory tracer
         >>> tracer = InMemorySessionTracer()
         >>> llm = get_chat_client(tracer=tracer, ...)
         >>>
         >>> # Or use persistent tracer
-        >>> tracer = EpisodicTracer(context_store=cs, project="my-app")
+        >>> tracer = SqliteTracer(db_path="traces.db")
         >>> llm = get_chat_client(tracer=tracer, ...)
         >>>
         >>> # Chat client calls tracer.log_llm_call() - works with any tracer

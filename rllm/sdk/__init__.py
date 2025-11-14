@@ -10,8 +10,6 @@ from rllm.sdk.session import (
 )
 from rllm.sdk.shortcuts import get_chat_client, get_chat_client_async, session
 from rllm.sdk.tracers import (
-    ContextStoreProtocol,
-    EpisodicTracer,
     InMemorySessionTracer,
     TracerProtocol,
 )
@@ -30,8 +28,6 @@ __all__ = [
     # Tracers
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
-    "EpisodicTracer",  # Persistent tracer with Episodic backend
-    "ContextStoreProtocol",  # Context store protocol for episodic tracer
     # Rewards
     "set_reward",
     "set_reward_async",

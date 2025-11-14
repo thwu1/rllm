@@ -7,7 +7,7 @@ from typing import Any
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import ModelResponse, ModelResponseStream
 
-from rllm.sdk.tracers import EpisodicTracer, SqliteTracer
+from rllm.sdk.tracers import SqliteTracer
 
 
 class SamplingParametersCallback(CustomLogger):
@@ -68,7 +68,7 @@ class SamplingParametersCallback(CustomLogger):
 
 
 class TracingCallback(CustomLogger):
-    """Log LLM calls to episodic tracer right after provider response.
+    """Log LLM calls to tracer right after provider response.
 
     Uses LiteLLM's async_post_call_success_hook which fires at the proxy level,
     once per HTTP request, immediately before the response is sent to the user.
@@ -76,7 +76,7 @@ class TracingCallback(CustomLogger):
     pre-send, and avoids duplicate logging from nested deployment calls.
     """
 
-    def __init__(self, tracer: EpisodicTracer | SqliteTracer):
+    def __init__(self, tracer: SqliteTracer):
         super().__init__()
         self.tracer = tracer
         # Track logged call IDs to prevent duplicates
