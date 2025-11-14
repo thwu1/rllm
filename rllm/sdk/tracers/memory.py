@@ -171,11 +171,11 @@ class InMemorySessionTracer:
             "tags": tags,
         }
 
-        # Append to every active session with its own session_id
+        # Add trace to every active session's storage with its own session_id
         for sess in sessions:
             trace_obj = Trace(session_id=sess.session_id, **trace_kwargs)
-            # formatted = self.formatter(trace_obj.model_dump())
-            sess._calls.append(trace_obj)
+            # Add to session storage with full UID chain for tree hierarchy
+            sess.storage.add_trace(sess._session_uid_chain, sess.session_id, trace_obj)
 
     def flush(self, timeout: float = 30.0) -> bool:
         """
