@@ -108,23 +108,6 @@ class VerlProxyManager:
         self._config_file: str | None = None
         self._is_running = False
 
-    async def emit_batch_end_signal(self, token: str) -> bool:
-        """Ask LiteLLM proxy to enqueue a batch-end marker."""
-
-        url = f"http://{self.proxy_host}:{self.proxy_port}/admin/tracer-signal"
-        headers = {"Content-Type": "application/json"}
-        headers["Authorization"] = f"Bearer {self.admin_token}"
-
-        try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, json={"token": token}, headers=headers) as resp:
-                    resp.raise_for_status()
-            return True
-        except Exception as exc:
-            logger.warning("Failed to emit batch end signal via proxy: %s", exc)
-            return False
-
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
         """Ask LiteLLM proxy to flush the tracer queue.
 
@@ -252,14 +235,6 @@ class VerlProxyManager:
             logger.warning(f"Failed to write LiteLLM config snapshot: {e}")
             return None
 
-    def get_litellm_config(self) -> dict[str, Any]:
-        """Get the generated LiteLLM configuration."""
-        return self._config
-
-    def get_config_snapshot_path(self) -> str | None:
-        """Return the path of the last config snapshot written to disk."""
-        return self._config_snapshot_path
-
     def reload_external_proxy(
         self,
         reload_url: str | None = None,
@@ -317,18 +292,6 @@ class VerlProxyManager:
         """
         base = f"http://{self.proxy_host}:{self.proxy_port}"
         return f"{base}/v1" if include_v1 else base
-
-    def get_litellm_model_name(self) -> str:
-        """Get the LiteLLM model name (with vllm/ prefix).
-
-        This is the model name that should be used when making API calls to the proxy.
-        It includes the "vllm/" prefix so that SamplingParametersCallback knows to
-        add return_token_ids=True to requests.
-
-        Returns:
-            Model name with vllm/ prefix (e.g., "vllm/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
-        """
-        return f"vllm/{self.model_name}"
 
     def write_config_file(self, path: str | None = None) -> str:
         """Write LiteLLM config to a YAML file.
@@ -474,21 +437,6 @@ class VerlProxyManager:
         logger.info(f"📊 Proxy serving {len(self._server_addresses)} vLLM replicas:")
         for idx, addr in enumerate(self._server_addresses):
             logger.info(f"   [{idx}] {addr}")
-
-    def stop_proxy_server(self) -> None:
-        """Stop the proxy server and clean up temp files."""
-        if not self._is_running:
-            return
-
-        # Note: uvicorn doesn't provide a clean shutdown mechanism in thread mode
-        # For production, use a proper process manager
-        logger.warning("Proxy server shutdown not fully implemented in thread mode")
-
-        if self._config_file and os.path.exists(self._config_file):
-            os.unlink(self._config_file)
-            self._config_file = None
-
-        self._is_running = False
 
     def is_running(self) -> bool:
         """Check if the proxy server is running."""

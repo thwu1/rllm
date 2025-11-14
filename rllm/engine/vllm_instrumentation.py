@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "instrument_vllm",
-    "uninstrument_vllm",
     "is_vllm_instrumented",
 ]
 
@@ -229,48 +228,6 @@ def instrument_vllm(force: bool = False) -> bool:
         import traceback
 
         traceback.print_exc()
-        return False
-
-
-def uninstrument_vllm() -> bool:
-    """Uninstrument vLLM to stop capturing token IDs.
-
-    This restores vLLM's original behavior.
-
-    Returns:
-        True if uninstrumentation was successful, False otherwise.
-    """
-    if not _check_vllm_available():
-        logger.warning("vLLM not available, nothing to uninstrument")
-        return False
-
-    try:
-        import vllm.entrypoints.openai.protocol
-        from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-
-        global _original_chat_completion_full_generator, _original_response_class, _is_instrumented
-
-        if not _is_instrumented:
-            logger.warning("vLLM was not instrumented by RLLM")
-            return False
-
-        # Restore original generator
-        OpenAIServingChat.chat_completion_full_generator = _original_chat_completion_full_generator
-
-        # Restore original response class
-        if _original_response_class is not None:
-            vllm.entrypoints.openai.protocol.ChatCompletionResponse = _original_response_class
-
-        # Reset state
-        _original_chat_completion_full_generator = None
-        _original_response_class = None
-        _is_instrumented = False
-
-        logger.info("vLLM uninstrumented successfully")
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to uninstrument vLLM: {e}")
         return False
 
 
