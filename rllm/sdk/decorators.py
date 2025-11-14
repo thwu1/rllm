@@ -22,12 +22,12 @@ def step(name: str | None = None, **step_metadata):
 
     The StepView captures:
     - result: User's function return value (accessible via .result)
-    - input/output: LLM-level data (formatted from sess.llm_calls)
-      * A step should have at most one LLM call (0 or 1)
-      * input/output = trace input/output if present, None otherwise
+    - input/output: LLM-level data (populated only for single LLM call)
+      * Exactly 1 LLM call: input/output populated from that call
+      * 0 or multiple calls: input/output = None (use metadata['llm_traces'])
     - action: Can be set later for parsed results
     - reward: Can be set later (supports delayed reward assignment)
-    - metadata: Execution info + function args + all LLM traces
+    - metadata: Execution info + function args + ALL LLM traces (always complete)
 
     Steps automatically register with parent @trajectory if one exists.
 
@@ -71,12 +71,14 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # A step should have at most one LLM call
-                    assert len(sess.llm_calls) in (0, 1), f"Step should have 0 or 1 LLM call, got {len(sess.llm_calls)}"
-
-                    # Format LLM call into input/output (0 or 1 call)
-                    step_input = sess.llm_calls[0].input if sess.llm_calls else None
-                    step_output = sess.llm_calls[0].output if sess.llm_calls else None
+                    # Format LLM calls into input/output
+                    # Only populate for single LLM call; use metadata['llm_traces'] for multiple
+                    if len(sess.llm_calls) == 1:
+                        step_input = sess.llm_calls[0].input
+                        step_output = sess.llm_calls[0].output
+                    else:
+                        step_input = None  # Multiple or zero calls - check metadata['llm_traces']
+                        step_output = None
 
                     # Create StepView
                     step_view = StepView(
@@ -124,12 +126,14 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # A step should have at most one LLM call
-                    assert len(sess.llm_calls) in (0, 1), f"Step should have 0 or 1 LLM call, got {len(sess.llm_calls)}"
-
-                    # Format LLM call into input/output (0 or 1 call)
-                    step_input = sess.llm_calls[0].input if sess.llm_calls else None
-                    step_output = sess.llm_calls[0].output if sess.llm_calls else None
+                    # Format LLM calls into input/output
+                    # Only populate for single LLM call; use metadata['llm_traces'] for multiple
+                    if len(sess.llm_calls) == 1:
+                        step_input = sess.llm_calls[0].input
+                        step_output = sess.llm_calls[0].output
+                    else:
+                        step_input = None  # Multiple or zero calls - check metadata['llm_traces']
+                        step_output = None
 
                     # Create StepView
                     step_view = StepView(

@@ -18,7 +18,7 @@ The SDK now provides `@step` and `@trajectory` decorators for building RL workfl
 ```
 Low-level:    session() → Trace (individual LLM call)
               ↓
-Mid-level:    @step → StepView (semantic unit, 0 or 1 LLM call)
+Mid-level:    @step → StepView (semantic unit, may contain multiple LLM calls)
               ↓
 High-level:   @trajectory → TrajectoryView (collection of steps)
 ```
@@ -41,8 +41,9 @@ Both `StepView` and `TrajectoryView` follow the same pattern:
 
 - **`input` / `output`**: LLM-level data (input to model, response from model)
   - Automatically formatted from `sess.llm_calls` by `@step` decorator
-  - A step should have **at most one LLM call** (0 or 1)
-  - `input`/`output` = trace input/output if present, `None` otherwise
+  - Only populated when exactly 1 LLM call (keeps semantics clear)
+  - For 0 or multiple calls: both are `None` (use `metadata['llm_traces']`)
+  - ALL LLM traces always stored in `metadata['llm_traces']` for complete inspection
 
 - **`result`**: User's function return value
   - Set by `@step` decorator

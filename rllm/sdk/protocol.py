@@ -26,16 +26,18 @@ class StepView(BaseModel):
     """
     A view of a single step execution.
 
-    Represents a semantic unit of work containing at most one LLM trace.
+    Represents a semantic unit of work that may contain multiple LLM calls.
     Provides a high-level view for reward assignment and action extraction.
 
     Fields:
         - input/output: LLM-level data (input to model, response from model)
-          * Filled by tracer when converting Trace → StepView
-          * OR formatted from sess.llm_calls by @step decorator (0 or 1 LLM call)
+          * Filled by tracer when converting Trace → StepView (single trace)
+          * OR by @step decorator: populated only if exactly 1 LLM call
+          * For 0 or multiple calls: both None (check metadata['llm_traces'])
         - result: User-defined function return value (set by @step decorator)
         - action: Parsed action/answer (set manually after step creation)
         - reward: Step reward (set manually, supports delayed assignment)
+        - metadata: Always contains complete LLM trace list in metadata['llm_traces']
     """
     id: str
     action: str | None = None
