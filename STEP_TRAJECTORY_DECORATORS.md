@@ -22,6 +22,31 @@ Mid-level:    @step → StepView (semantic unit, may have multiple traces)
 High-level:   @trajectory → TrajectoryView (collection of steps)
 ```
 
+## StepView Fields
+
+`StepView` has distinct fields for different purposes:
+
+- **`input` / `output`**: LLM-level data (input to model, response from model)
+  - Filled by tracers when converting `Trace` → `StepView`
+  - NOT set by `@step` decorator (will be `None`)
+
+- **`result`**: User's function return value
+  - Set by `@step` decorator
+  - This is what the decorated function returned
+
+- **`action`**: Parsed action/answer
+  - Set manually after step creation
+  - Example: extract `<answer>42</answer>` from LLM output
+
+- **`reward`**: Step reward
+  - Set manually (supports delayed assignment)
+  - Used for RL training
+
+**Two ways to create StepView:**
+
+1. **From Trace** (via `trace_to_step_view`): `input`/`output` have LLM data, `result` is None
+2. **From Decorator** (via `@step`): `result` has function return, `input`/`output` are None
+
 ## Usage
 
 ### Basic Step
@@ -39,15 +64,22 @@ async def solve_problem(query: str) -> str:
 # Returns StepView (not string!)
 step_view: StepView = await solve_problem("What is 2+2?")
 
-# Access result
+# Access result (user's function return value)
 print(step_view.result)  # "4"
-print(step_view.output)  # Same as .result
+
+# input/output are for LLM-level data (filled by tracer, not decorator)
+print(step_view.input)   # None (not set by @step decorator)
+print(step_view.output)  # None (not set by @step decorator)
 
 # Delayed reward assignment
 step_view.reward = 1.0
 
+# Parse and set action
+step_view.action = parse_answer(step_view.result)
+
 # Access metadata
 print(step_view.metadata['llm_calls_count'])  # How many LLM calls
+print(step_view.metadata['function_args'])    # Function arguments
 ```
 
 ### Basic Trajectory

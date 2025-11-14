@@ -21,11 +21,11 @@ def step(name: str | None = None, **step_metadata):
     of the original return value.
 
     The StepView captures:
-    - Input: function arguments
-    - Output: function return value (accessible via .result or .output)
-    - Action: can be set later for parsed results
-    - Reward: can be set later (supports delayed reward assignment)
-    - Metadata: execution info + any LLM traces from the session
+    - result: User's function return value (accessible via .result)
+    - input/output: LLM-level data (filled by tracer, not decorator)
+    - action: Can be set later for parsed results
+    - reward: Can be set later (supports delayed reward assignment)
+    - metadata: Execution info + function args + LLM trace count
 
     Steps automatically register with parent @trajectory if one exists.
 
@@ -43,7 +43,8 @@ def step(name: str | None = None, **step_metadata):
         ...     return response.choices[0].message.content
 
         >>> step_view = await solve_problem("What is 2+2?")
-        >>> print(step_view.result)  # "4"
+        >>> print(step_view.result)  # "4" - function return value
+        >>> step_view.action = parse_answer(step_view.result)
         >>> step_view.reward = 1.0  # Delayed reward assignment
     """
     def decorator(func: Callable) -> Callable:
@@ -71,13 +72,16 @@ def step(name: str | None = None, **step_metadata):
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input={"args": args, "kwargs": kwargs},
-                        output=result,
+                        input=None,  # LLM input (filled by tracer, not decorator)
+                        output=None,  # LLM output (filled by tracer, not decorator)
+                        result=result,  # User's function return value
                         action=None,  # Can be set later
                         reward=0.0,  # Can be set later (delayed)
                         metadata={
                             "step_name": step_name,
                             "function_name": func.__name__,
+                            "function_args": args,
+                            "function_kwargs": kwargs,
                             "execution_time_ms": execution_time_ms,
                             "llm_calls_count": len(sess.llm_calls),
                             "session_name": sess.name,
@@ -113,13 +117,16 @@ def step(name: str | None = None, **step_metadata):
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input={"args": args, "kwargs": kwargs},
-                        output=result,
+                        input=None,  # LLM input (filled by tracer, not decorator)
+                        output=None,  # LLM output (filled by tracer, not decorator)
+                        result=result,  # User's function return value
                         action=None,  # Can be set later
                         reward=0.0,  # Can be set later (delayed)
                         metadata={
                             "step_name": step_name,
                             "function_name": func.__name__,
+                            "function_args": args,
+                            "function_kwargs": kwargs,
                             "execution_time_ms": execution_time_ms,
                             "llm_calls_count": len(sess.llm_calls),
                             "session_name": sess.name,
@@ -279,8 +286,9 @@ class StepContext:
         # Create StepView
         self.step_view = StepView(
             id=self._step_id,
-            input=None,  # No automatic input capture in context manager
-            output=self._result,
+            input=None,  # LLM input (not captured in context manager)
+            output=None,  # LLM output (not captured in context manager)
+            result=self._result,  # User-set result via set_result()
             action=None,
             reward=0.0,
             metadata={

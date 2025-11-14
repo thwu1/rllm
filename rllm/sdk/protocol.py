@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -26,18 +28,20 @@ class StepView(BaseModel):
 
     Represents a semantic unit of work (which may contain multiple LLM traces).
     Provides a high-level view for reward assignment and action extraction.
+
+    Fields:
+        - input/output: LLM-level data (input to model, response from model) - filled by tracer
+        - result: User-defined function return value (set by @step decorator)
+        - action: Parsed action/answer (set manually after step creation)
+        - reward: Step reward (set manually, supports delayed assignment)
     """
     id: str
     action: str | None = None
-    output: dict | None = None
-    input: dict | None = None
+    output: dict | None = None  # LLM output (from traces)
+    input: dict | None = None  # LLM input (from traces)
+    result: Any = None  # User's function return value
     reward: float = 0.0
     metadata: dict | None = None
-
-    @property
-    def result(self):
-        """User-friendly alias for output - the actual return value of the step."""
-        return self.output
 
 
 class TrajectoryView(BaseModel):
