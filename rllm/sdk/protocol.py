@@ -27,24 +27,27 @@ class StepView(BaseModel):
     A view of a single step execution.
 
     Represents a semantic unit of work that may contain multiple LLM calls.
-    Provides a high-level view for reward assignment and action extraction.
+    Provides a high-level view for reward assignment.
 
     Fields:
-        - input/output: LLM-level data (input to model, response from model)
-          * Filled by tracer when converting Trace → StepView (single trace)
-          * Set to None by @step decorator (all LLM data in metadata['llm_traces'])
-        - result: User-defined function return value (set by @step decorator)
-        - action: Parsed action/answer (set manually after step creation)
+        - input/output: Function-level data (function arguments and return value)
+          * Set by @step decorator for function arguments/return
+          * Or filled by tracer when converting single Trace → StepView
+        - traces: All LLM calls made during this step
         - reward: Step reward (set manually, supports delayed assignment)
-        - metadata: Contains all LLM traces in 'llm_traces' field when using @step
+        - metadata: Additional tracking data
     """
     id: str
-    action: str | None = None
-    output: dict | None = None  # LLM output (from traces)
-    input: dict | None = None  # LLM input (from traces)
-    result: Any = None  # User's function return value
+    input: dict | None = None   # Function arguments or LLM input (from tracer)
+    output: Any = None          # Function return value or LLM output (from tracer)
+    traces: list[Trace] = Field(default_factory=list)  # All LLM calls
     reward: float = 0.0
     metadata: dict | None = None
+
+    @property
+    def result(self) -> Any:
+        """Alias for output (backward compatibility)."""
+        return self.output
 
 
 class TrajectoryView(BaseModel):
@@ -80,7 +83,7 @@ def trace_to_step_view(trace: Trace) -> StepView:
         id=trace.trace_id,
         input=trace.input,
         output=trace.output,
-        action=None,
+        traces=[trace],  # Include the trace itself
         reward=0.0,
         metadata=trace.metadata,
     )

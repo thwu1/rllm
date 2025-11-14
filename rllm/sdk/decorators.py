@@ -21,11 +21,11 @@ def step(name: str | None = None, **step_metadata):
     of the original return value.
 
     The StepView captures:
-    - result: User's function return value (accessible via .result)
-    - input/output: Set to None by @step decorator (use metadata['llm_traces'] for all LLM data)
-    - action: Can be set later for parsed results
+    - input: Function arguments (dict)
+    - output: Function return value (accessible via .result property)
+    - traces: All LLM calls made during step execution
     - reward: Can be set later (supports delayed reward assignment)
-    - metadata: Contains execution info, function args, and ALL LLM traces in 'llm_traces' field
+    - metadata: Contains execution info and additional tracking data
 
     Steps automatically register with parent @trajectory if one exists.
 
@@ -44,15 +44,23 @@ def step(name: str | None = None, **step_metadata):
 
         >>> step_view = await solve_problem("What is 2+2?")
         >>> print(step_view.result)  # "4" - function return value
-        >>> step_view.action = parse_answer(step_view.result)
-        >>> step_view.reward = 1.0  # Delayed reward assignment
+        >>> print(step_view.input)   # {"query": "What is 2+2?"}
+        >>> print(step_view.traces)  # [Trace(...)] - all LLM calls
+        >>> step_view.reward = 1.0   # Delayed reward assignment
     """
     def decorator(func: Callable) -> Callable:
         step_name = name or func.__name__
+        # Get function signature for capturing args/kwargs
+        sig = inspect.signature(func)
 
         if asyncio.iscoroutinefunction(func):
             @wraps(func)
             async def async_wrapper(*args, **kwargs) -> StepView:
+                # Capture function arguments
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                func_input = dict(bound_args.arguments)
+
                 # Create a session for this step
                 step_id = f"step_{uuid.uuid4().hex[:16]}"
                 start_time = time.time()
@@ -69,27 +77,17 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # All LLM calls are tracked in metadata['llm_traces']
-                    # input/output fields not used by @step decorator (set by tracer for single-trace steps)
-                    step_input = None
-                    step_output = None
-
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input=step_input,  # LLM input
-                        output=step_output,  # LLM output
-                        result=result,  # User's function return value
-                        action=None,  # Can be set later
-                        reward=0.0,  # Can be set later (delayed)
+                        input=func_input,      # Function arguments
+                        output=result,         # Function return value
+                        traces=sess.llm_calls, # All LLM calls
+                        reward=0.0,
                         metadata={
                             "step_name": step_name,
                             "function_name": func.__name__,
-                            "function_args": args,
-                            "function_kwargs": kwargs,
                             "execution_time_ms": execution_time_ms,
-                            "llm_calls_count": len(sess.llm_calls),
-                            "llm_traces": [trace.model_dump() for trace in sess.llm_calls],  # Store all traces
                             "session_name": sess.name,
                             **step_metadata
                         }
@@ -104,6 +102,11 @@ def step(name: str | None = None, **step_metadata):
         else:
             @wraps(func)
             def sync_wrapper(*args, **kwargs) -> StepView:
+                # Capture function arguments
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                func_input = dict(bound_args.arguments)
+
                 # Create a session for this step
                 step_id = f"step_{uuid.uuid4().hex[:16]}"
                 start_time = time.time()
@@ -120,27 +123,17 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # All LLM calls are tracked in metadata['llm_traces']
-                    # input/output fields not used by @step decorator (set by tracer for single-trace steps)
-                    step_input = None
-                    step_output = None
-
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input=step_input,  # LLM input
-                        output=step_output,  # LLM output
-                        result=result,  # User's function return value
-                        action=None,  # Can be set later
-                        reward=0.0,  # Can be set later (delayed)
+                        input=func_input,      # Function arguments
+                        output=result,         # Function return value
+                        traces=sess.llm_calls, # All LLM calls
+                        reward=0.0,
                         metadata={
                             "step_name": step_name,
                             "function_name": func.__name__,
-                            "function_args": args,
-                            "function_kwargs": kwargs,
                             "execution_time_ms": execution_time_ms,
-                            "llm_calls_count": len(sess.llm_calls),
-                            "llm_traces": [trace.model_dump() for trace in sess.llm_calls],  # Store all traces
                             "session_name": sess.name,
                             **step_metadata
                         }

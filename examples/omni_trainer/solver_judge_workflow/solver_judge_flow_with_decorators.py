@@ -185,13 +185,10 @@ class SolverJudgeWorkflowDecorated(Workflow):
         for solver_step in solver_steps:
             # The parsed answer is already in .result (from @step decorator)
             parsed_answer = solver_step.result
-
-            # Set action to the parsed answer
-            solver_step.action = parsed_answer
-            solutions.append(solver_step.action)
+            solutions.append(parsed_answer)
 
             # Delayed reward assignment
-            solver_step.reward = self.reward_function(task, solver_step.action).reward
+            solver_step.reward = self.reward_function(task, parsed_answer).reward
 
         # Step 2: Judge selects the best solution
         # Returns StepView with selected solution in .result (already parsed)
@@ -199,10 +196,9 @@ class SolverJudgeWorkflowDecorated(Workflow):
 
         # The selected solution is already in .result (from @step decorator)
         selected_solution = judge_step.result
-        judge_step.action = selected_solution
 
         # Evaluate the selected solution and set reward
-        reward_result = self.reward_function(task, judge_step.action)
+        reward_result = self.reward_function(task, selected_solution)
         judge_step.reward = reward_result.reward
 
         # Construct trajectory views manually (same as before)
@@ -257,15 +253,15 @@ class SolverJudgeWorkflowFullyDecorated(Workflow):
         solutions = []
         for solver_step in solver_steps:
             # Result is already parsed by the @step decorator
-            solver_step.action = solver_step.result
-            solver_step.reward = self.reward_function(task, solver_step.action).reward
-            solutions.append(solver_step.action)
+            parsed_answer = solver_step.result
+            solver_step.reward = self.reward_function(task, parsed_answer).reward
+            solutions.append(parsed_answer)
 
         # Judge solutions
         judge_step = await self.judge.judge_solutions(problem, solutions)
         # Result is already parsed by the @step decorator
-        judge_step.action = judge_step.result
-        judge_step.reward = self.reward_function(task, judge_step.action).reward
+        selected_solution = judge_step.result
+        judge_step.reward = self.reward_function(task, selected_solution).reward
 
         # Return trajectory views
         return [
@@ -292,14 +288,14 @@ async def run_solver_judge_pipeline(problem: str, reward_fn, n_solutions: int = 
     # Process and score solutions
     solutions = []
     for solver_step in solver_steps:
-        solver_step.action = solver._parse_solver_response(solver_step.result)
-        solver_step.reward = reward_fn({"question": problem}, solver_step.action).reward
-        solutions.append(solver_step.action)
+        parsed_answer = solver._parse_solver_response(solver_step.result)
+        solver_step.reward = reward_fn({"question": problem}, parsed_answer).reward
+        solutions.append(parsed_answer)
 
     # Judge solutions
     judge_step = await judge.judge_solutions(problem, solutions)
-    judge_step.action = judge._parse_judge_response(judge_step.result, solutions)
-    judge_step.reward = reward_fn({"question": problem}, judge_step.action).reward
+    selected_solution = judge._parse_judge_response(judge_step.result, solutions)
+    judge_step.reward = reward_fn({"question": problem}, selected_solution).reward
 
     # Return 0 - actual reward comes from reward_mode="sum"
     return 0.0
