@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections import defaultdict
 from typing import Any, Protocol, runtime_checkable
 
@@ -16,9 +17,14 @@ class SessionStorage(Protocol):
 
     Separates the concern of storing/retrieving traces from session context propagation.
     Different implementations can provide different storage strategies:
-    - InMemoryStorage: Fast, single-process, ephemeral
+    - InMemoryStorage: Thread-safe, single-process, ephemeral
     - SqliteSessionStorage: Durable, multi-process via shared SQLite file
     - PostgresStorage: Distributed, scalable
+
+    Thread-safety requirement:
+    - Implementations SHOULD be thread-safe if they might be shared across threads
+    - InMemoryStorage uses locks to ensure thread-safety
+    - SqliteSessionStorage uses SQLite's built-in locking
 
     All storage implementations must support querying by session_uid (the internal
     unique ID of each session context instance).
@@ -49,12 +55,17 @@ class SessionStorage(Protocol):
 
 class InMemoryStorage:
     """
-    In-memory storage for session traces.
+    Thread-safe in-memory storage for session traces.
 
-    Fast and simple, but:
-    - Only works within a single process
+    Features:
+    - Thread-safe: Uses locks to prevent race conditions
+    - Fast: In-memory storage with minimal overhead
+    - Simple: No external dependencies
+
+    Limitations:
+    - Only works within a single process (not multiprocessing-safe)
     - All data lost when process exits
-    - Not suitable for multiprocessing scenarios
+    - For multiprocessing scenarios, use SqliteSessionStorage
 
     This is the default storage when no explicit storage is provided,
     maintaining backward compatibility with the original behavior.
@@ -71,25 +82,49 @@ class InMemoryStorage:
     """
 
     def __init__(self):
-        """Initialize in-memory storage."""
+        """Initialize thread-safe in-memory storage."""
         self._traces: dict[str, list[Trace]] = defaultdict(list)
+        self._lock = threading.Lock()
 
     def add_trace(self, session_uid: str, trace: Trace) -> None:
-        """Add trace to in-memory storage."""
-        self._traces[session_uid].append(trace)
+        """
+        Add trace to in-memory storage (thread-safe).
+
+        Args:
+            session_uid: Unique ID of the session context
+            trace: Trace object to store
+        """
+        with self._lock:
+            self._traces[session_uid].append(trace)
 
     def get_traces(self, session_uid: str) -> list[Trace]:
-        """Get all traces for a session UID."""
-        return self._traces[session_uid].copy()
+        """
+        Get all traces for a session UID (thread-safe).
+
+        Args:
+            session_uid: Unique ID of the session context
+
+        Returns:
+            Copy of the trace list for this session
+        """
+        with self._lock:
+            return self._traces[session_uid].copy()
 
     def clear(self, session_uid: str) -> None:
-        """Clear all traces for a session UID."""
-        if session_uid in self._traces:
-            self._traces[session_uid].clear()
+        """
+        Clear all traces for a session UID (thread-safe).
+
+        Args:
+            session_uid: Unique ID of the session context
+        """
+        with self._lock:
+            if session_uid in self._traces:
+                self._traces[session_uid].clear()
 
     def __repr__(self):
-        total_traces = sum(len(traces) for traces in self._traces.values())
-        return f"InMemoryStorage(sessions={len(self._traces)}, total_traces={total_traces})"
+        with self._lock:
+            total_traces = sum(len(traces) for traces in self._traces.values())
+            return f"InMemoryStorage(sessions={len(self._traces)}, total_traces={total_traces})"
 
 
 class SqliteSessionStorage:
