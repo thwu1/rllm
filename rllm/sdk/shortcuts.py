@@ -182,12 +182,14 @@ def get_chat_client(
     # Create OpenAI client
     client = OpenAI(**openai_kwargs)
 
-    # Wrap with proxy tracked client (default)
-    # If use_proxy=False, pass base_url=None to disable metadata slug injection
+    # Wrap with proxy tracked client
+    # When use_proxy=False, behaves like normal OpenAI client (but with session tracking)
+    # When use_proxy=True, injects metadata slugs into URLs for proxy routing
     wrapper = ProxyTrackedChatClient(
         tracer=None,  # disable SDK-side logging; proxy handles tracing
         default_model=model,
-        base_url=base_url if use_proxy else None,
+        base_url=base_url,
+        use_proxy=use_proxy,
         client=client,
     )
 
@@ -277,12 +279,14 @@ def get_chat_client_async(
     # Create AsyncOpenAI client
     client = AsyncOpenAI(**openai_kwargs)
 
-    # Wrap with proxy tracked client (default)
-    # If use_proxy=False, pass base_url=None to disable metadata slug injection
+    # Wrap with proxy tracked client
+    # When use_proxy=False, behaves like normal OpenAI client (but with session tracking)
+    # When use_proxy=True, injects metadata slugs into URLs for proxy routing
     wrapper = ProxyTrackedAsyncChatClient(
         tracer=None,  # disable SDK-side logging; proxy handles tracing
         default_model=model,
-        base_url=base_url if use_proxy else None,
+        base_url=base_url,
+        use_proxy=use_proxy,
         client=client,
     )
 
