@@ -2,7 +2,7 @@
 """Standalone LiteLLM proxy launcher with reload endpoint.
 
 Example:
-    python scripts/litellm_proxy_server.py \
+    python -m rllm.sdk.proxy.litellm_server \
         --config /tmp/litellm_proxy_config_autogen.yaml \
         --host 127.0.0.1 --port 4000 \
         --db-path ~/.rllm/traces.db --project my-app \

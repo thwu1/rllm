@@ -8,10 +8,14 @@ This module provides utilities to:
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
-import tempfile
-import threading
+import resource
+import subprocess
+import sys
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -103,10 +107,8 @@ class VerlProxyManager:
         self._config_snapshot_path: str | None = None
         self._config_snapshot_path = self._snapshot_config_to_file()
 
-        # Proxy server state
-        self._server_thread: threading.Thread | None = None
-        self._config_file: str | None = None
-        self._is_running = False
+        # Subprocess state
+        self._proxy_process: subprocess.Popen | None = None
 
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
         """Ask LiteLLM proxy to flush the tracer queue.
@@ -241,7 +243,7 @@ class VerlProxyManager:
         inline_payload: bool = True,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """Ask an external LiteLLM proxy (started via scripts/litellm_proxy_server.py) to reload config.
+        """Ask an external LiteLLM proxy (started via launch_litellm.sh or python -m rllm.sdk.proxy.litellm_server) to reload config.
 
         Args:
             reload_url: Full URL to the reload endpoint (default: http://{host}:{port}/admin/reload).
@@ -293,154 +295,137 @@ class VerlProxyManager:
         base = f"http://{self.proxy_host}:{self.proxy_port}"
         return f"{base}/v1" if include_v1 else base
 
-    def write_config_file(self, path: str | None = None) -> str:
-        """Write LiteLLM config to a YAML file.
+    def start_proxy_subprocess(self, db_path: str | None = None, project: str | None = None) -> None:
+        """Start LiteLLM proxy as subprocess (no GIL contention).
 
         Args:
-            path: Optional path to write config. If None, creates a temp file.
-
-        Returns:
-            Path to the written config file
+            db_path: Path to SQLite database for tracer
+            project: Project name for tracer namespace
         """
-        if path is None:
-            fd, path = tempfile.mkstemp(suffix=".yaml", prefix="litellm_verl_")
-            os.close(fd)
-            self._config_file = path
-            logger.info(f"📄 Created temp config file: {path}")
-
-        logger.info(f"💾 Writing config with {len(self._config.get('model_list', []))} models to {path}")
-
-        with open(path, "w") as f:
-            yaml.dump(self._config, f, default_flow_style=False)
-
-        # Verify file was written
-        if os.path.exists(path):
-            file_size = os.path.getsize(path)
-            logger.info(f"✅ Wrote LiteLLM config to {path} ({file_size} bytes)")
-        else:
-            logger.error(f"❌ Failed to write config file: {path}")
-
-        return path
-
-    def start_proxy_server(self, config_path: str | None = None) -> None:
-        """Start the LiteLLM proxy server in a background thread.
-
-        Args:
-            config_path: Optional path to config file. If None, writes a temp file.
-
-        Note:
-            This is a basic implementation. For production, consider using
-            the full proxy setup from examples/proxy_demo/proxy_app.py with
-            middleware and callbacks.
-        """
-        if self._is_running:
-            logger.warning("⚠️ Proxy server is already running")
+        if self._proxy_process is not None:
+            logger.warning("Proxy subprocess already running")
             return
 
-        logger.info("🚀 Starting LiteLLM proxy server...")
+        if not self._config_snapshot_path or not os.path.exists(self._config_snapshot_path):
+            raise RuntimeError("Config snapshot not available. Cannot start proxy.")
 
-        if config_path is None:
-            logger.info("📝 No config path provided, creating temp file...")
-            config_path = self.write_config_file()
+        # Build command to run proxy server as module
+        cmd = [
+            sys.executable,
+            "-m",
+            "rllm.sdk.proxy.litellm_server",
+            "--config",
+            self._config_snapshot_path,
+            "--host",
+            self.proxy_host,
+            "--port",
+            str(self.proxy_port),
+        ]
 
-        logger.info(f"📂 Using config file: {config_path}")
+        # Only add admin token if one is provided
+        if self.admin_token:
+            cmd.extend(["--admin-token", self.admin_token])
 
-        # Import here to avoid hard dependency
-        try:
-            from contextlib import asynccontextmanager
+        if db_path:
+            cmd.extend(["--db-path", db_path])
+        if project:
+            cmd.extend(["--project", project])
 
-            import litellm
-            import uvicorn
-            from fastapi import FastAPI
-            from litellm.proxy.proxy_server import app as litellm_app
-            from litellm.proxy.proxy_server import initialize
-        except ImportError as e:
-            raise ImportError("LiteLLM proxy dependencies not installed. Install with: pip install litellm uvicorn fastapi") from e
+        # Prepare environment with aiohttp limits (same as launch_litellm.sh)
+        env = os.environ.copy()
+        env["AIOHTTP_CONNECTOR_LIMIT"] = "4096"
+        env["AIOHTTP_KEEPALIVE_TIMEOUT"] = "60"
 
-        logger.info(f"📝 Writing LiteLLM config to {config_path}")
-
-        # Verify config file exists and is valid
-        if not os.path.exists(config_path):
-            logger.error(f"❌ Config file does not exist: {config_path}")
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-
-        # Load config to verify and log
-        with open(config_path) as f:
-            config_data = yaml.safe_load(f)
-
-        logger.info(f"📋 Config loaded: {len(config_data.get('model_list', []))} models configured")
-        for idx, model in enumerate(config_data.get("model_list", [])):
-            logger.info(f"   Model {idx}: {model.get('model_name')} -> {model.get('litellm_params', {}).get('api_base')}")
-
-        # Setup LiteLLM
-        litellm.drop_params = True
-
-        # Add callbacks if tracer is provided
-        if self.tracer:
-            logger.info("🔍 Adding LiteLLM callbacks for tracing")
-            from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback, TracingCallback
-
-            litellm.callbacks.append(SamplingParametersCallback(add_return_token_ids=True))
-            litellm.callbacks.append(TracingCallback(self.tracer))
-
-        # Initialize LiteLLM with lifespan
-        @asynccontextmanager
-        async def lifespan(app: FastAPI):
-            logger.info(f"🚀 Initializing LiteLLM proxy with config: {config_path}")
-            # Pass the file path, not the dict!
-            await initialize(config=config_path, telemetry=False)
-            logger.info("✅ LiteLLM proxy initialized successfully")
-            yield
-            logger.info("🛑 Shutting down LiteLLM proxy")
-
-        # Create FastAPI app with lifespan
-        logger.info("🔧 Creating FastAPI app with lifespan")
-        app = FastAPI(lifespan=lifespan)
-
-        # Add metadata routing middleware
-        logger.info("🔌 Adding MetadataRoutingMiddleware")
-        from rllm.sdk.proxy.middleware import MetadataRoutingMiddleware
-
-        app.add_middleware(MetadataRoutingMiddleware)
-
-        # Mount LiteLLM
-        logger.info("📦 Mounting LiteLLM app")
-        app.mount("/", litellm_app)
-
-        # Start server in background thread
-        logger.info(f"🌐 Starting proxy server at {self.proxy_host}:{self.proxy_port}")
-
-        def run_server():
-            logger.info("🔄 Server thread started, launching uvicorn...")
+        # Function to set file descriptor limit in child process
+        def set_limits():
+            """Set resource limits for the proxy subprocess."""
             try:
-                uvicorn.run(
-                    app,
-                    host=self.proxy_host,
-                    port=self.proxy_port,
-                    log_level="info",
-                    access_log=self.proxy_access_log,
-                )
-            except Exception as e:
-                logger.exception(f"❌ Server thread failed: {e}")
+                # Set file descriptor limit to 65536 (same as launch_litellm.sh)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (65536, 65536))
+            except (ValueError, OSError) as e:
+                # Log but don't fail - some systems may not allow this
+                logger.warning(f"Could not set file descriptor limit: {e}")
 
-        self._server_thread = threading.Thread(target=run_server, daemon=True)
-        self._server_thread.start()
-        self._is_running = True
+        # Start subprocess
+        logger.info(f"Starting proxy subprocess: {' '.join(cmd)}")
+        self._proxy_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,  # Suppress stdout
+            stderr=subprocess.DEVNULL,  # Suppress stderr to avoid pipe blocking
+            env=env,  # Pass environment with aiohttp limits
+            preexec_fn=set_limits,  # Set resource limits in child process
+        )
 
-        # Give the server time to start up
-        import time
+        # Wait for server to start, then send config via reload
+        try:
+            self._wait_for_server_start(timeout=10.0)
+            logger.info("Proxy server started, sending configuration...")
+            self.reload_external_proxy(inline_payload=True)
+            logger.info("Proxy configuration loaded successfully")
+        except Exception:
+            # Cleanup on failure
+            self.shutdown_proxy()
+            raise
 
-        logger.info("⏳ Waiting 3 seconds for server to start...")
-        time.sleep(3.0)
+        # Register cleanup handler
+        atexit.register(self.shutdown_proxy)
 
-        logger.info(f"✅ LiteLLM proxy started at {self.get_proxy_url()}")
-        logger.info(f"📊 Proxy serving {len(self._server_addresses)} vLLM replicas:")
-        for idx, addr in enumerate(self._server_addresses):
-            logger.info(f"   [{idx}] {addr}")
+        logger.info(f"✅ Proxy subprocess ready (PID: {self._proxy_process.pid})")
 
-    def is_running(self) -> bool:
-        """Check if the proxy server is running."""
-        return self._is_running
+    def _wait_for_server_start(self, timeout: float = 10.0) -> None:
+        """Wait for proxy server process to start accepting connections.
+
+        The server starts but doesn't initialize LiteLLM until we call reload.
+        We just need to wait for the basic server to be listening.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Raises:
+            RuntimeError: If proxy process dies during startup
+            TimeoutError: If server doesn't start within timeout
+        """
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            # Check if process died
+            if self._proxy_process.poll() is not None:
+                exit_code = self._proxy_process.returncode
+                raise RuntimeError(f"Proxy process died during startup with exit code {exit_code}")
+
+            # Try to connect to the server (any endpoint will do)
+            try:
+                resp = requests.get(f"http://{self.proxy_host}:{self.proxy_port}/", timeout=0.5)
+                # If we get any response, server is up (even 404 is fine)
+                logger.info(f"Proxy server accepting connections")
+                return
+            except requests.RequestException:
+                pass
+
+            time.sleep(0.3)
+
+        raise TimeoutError(f"Proxy server did not start within {timeout}s")
+
+    def shutdown_proxy(self) -> None:
+        """Gracefully shutdown proxy subprocess."""
+        if self._proxy_process is None:
+            return
+
+        logger.info("Shutting down proxy subprocess...")
+
+        # Try graceful shutdown
+        self._proxy_process.terminate()
+        try:
+            self._proxy_process.wait(timeout=5.0)
+            logger.info("Proxy shutdown gracefully")
+        except subprocess.TimeoutExpired:
+            # Force kill if it doesn't respond
+            logger.warning("Proxy did not terminate gracefully, forcing kill")
+            self._proxy_process.kill()
+            self._proxy_process.wait()
+
+        self._proxy_process = None
 
     def __repr__(self) -> str:
-        return f"VerlProxyManager(model={self.model_name}, replicas={len(self._server_addresses)}, proxy={self.get_proxy_url()}, running={self._is_running})"
+        mode = "subprocess" if self._proxy_process else "external"
+        return f"VerlProxyManager(model={self.model_name}, replicas={len(self._server_addresses)}, proxy={self.get_proxy_url()}, mode={mode})"

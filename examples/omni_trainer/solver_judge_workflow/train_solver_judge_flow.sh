@@ -63,7 +63,6 @@ python3 -m examples.omni_trainer.solver_judge_workflow.train_solver_judge_flow \
     rllm.workflow.use_workflow=True \
     rllm.omni.proxy.host=127.0.0.1 \
     rllm.omni.proxy.port=4000 \
-    rllm.omni.proxy.auto_start=False \
     rllm.omni.store.path=/home/tianhao/.rllm/research-common-27.db
 
 pkill -9 -f 'ray::WorkerDict' 
