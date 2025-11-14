@@ -30,12 +30,14 @@ class SamplingParametersCallback(CustomLogger):
         # result = {**data, "logprobs": True}
         result = {**data}
 
+        # Extract litellm_params to check backend type
+        litellm_params = kwargs.get("litellm_params", {})
+
         # Only add return_token_ids if explicitly enabled AND model supports it
-        if self.add_return_token_ids and self._supports_token_ids(model):
+        if self.add_return_token_ids and self._supports_token_ids(model, litellm_params):
             result["return_token_ids"] = True
 
         # Inject metadata from request state if available
-        litellm_params = kwargs.get("litellm_params", {})
         proxy_server_request = litellm_params.get("proxy_server_request")
         if proxy_server_request:
             request_state = getattr(proxy_server_request, "state", None)
@@ -47,23 +49,24 @@ class SamplingParametersCallback(CustomLogger):
         return result
 
     @staticmethod
-    def _supports_token_ids(model: str) -> bool:
+    def _supports_token_ids(model: str, litellm_params: dict[str, Any] | None = None) -> bool:
         """Check if model supports return_token_ids parameter.
 
-        OpenAI, Anthropic, and most cloud providers don't support this.
-        vLLM and local/self-hosted models typically do.
+        Only vLLM backends support this. We detect vLLM by checking the
+        backend model type in litellm_params (configured by proxy_manager).
+
+        Args:
+            model: The model name from the request (unused, kept for compatibility)
+            litellm_params: LiteLLM parameters containing backend info
+
+        Returns:
+            True if backend is vLLM, False otherwise
         """
-        model_lower = model.lower()
-        # vLLM or self-hosted indicators
-        if any(x in model_lower for x in ["vllm", "localhost", "127.0.0.1", "http://"]):
-            return True
-        # OpenAI models - don't support
-        if any(x in model_lower for x in ["gpt-", "openai/", "o1-"]):
-            return False
-        # Anthropic models - don't support
-        if "claude" in model_lower or "anthropic/" in model_lower:
-            return False
-        # Default: assume cloud provider doesn't support
+        # Check if backend is vLLM (configured as hosted_vllm/* by proxy_manager)
+        if litellm_params:
+            backend_model = litellm_params.get("model", "")
+            if "vllm" in backend_model.lower() or "hosted_vllm" in backend_model.lower():
+                return True
         return False
 
 

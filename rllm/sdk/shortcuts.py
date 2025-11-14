@@ -92,6 +92,7 @@ def get_chat_client(
     organization: str | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    use_proxy: bool = True,
     **kwargs: Any,
 ):
     """Get a chat client.
@@ -131,6 +132,13 @@ def get_chat_client(
         >>> # OPENAI_API_KEY environment variable is used automatically
         >>> llm = get_chat_client(model="gpt-4")
 
+        Bypass proxy for direct OpenAI access (testing):
+        >>> llm = get_chat_client(
+        ...     api_key="sk-...",
+        ...     model="gpt-4",
+        ...     use_proxy=False  # Skip metadata slug injection
+        ... )
+
     Args:
         provider: Provider name (currently only "openai" is supported)
         api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
@@ -139,6 +147,9 @@ def get_chat_client(
         organization: OpenAI organization ID
         timeout: Request timeout in seconds
         max_retries: Maximum number of retries for failed requests
+        use_proxy: Whether to enable proxy features (metadata slug injection).
+                  Set to False to bypass proxy and use direct OpenAI access.
+                  Default: True
         **kwargs: Additional arguments passed to the OpenAI client
 
     Returns:
@@ -171,11 +182,14 @@ def get_chat_client(
     # Create OpenAI client
     client = OpenAI(**openai_kwargs)
 
-    # Wrap with proxy tracked client (default)
+    # Wrap with proxy tracked client
+    # When use_proxy=False, behaves like normal OpenAI client (but with session tracking)
+    # When use_proxy=True, injects metadata slugs into URLs for proxy routing
     wrapper = ProxyTrackedChatClient(
         tracer=None,  # disable SDK-side logging; proxy handles tracing
         default_model=model,
         base_url=base_url,
+        use_proxy=use_proxy,
         client=client,
     )
 
@@ -191,6 +205,7 @@ def get_chat_client_async(
     organization: str | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    use_proxy: bool = True,
     **kwargs: Any,
 ):
     """Get an async chat client.
@@ -214,6 +229,13 @@ def get_chat_client_async(
         ...         messages=[{"role": "user", "content": "Hello"}]
         ...     )
 
+        Bypass proxy for direct OpenAI access (testing):
+        >>> llm = get_chat_client_async(
+        ...     api_key="sk-...",
+        ...     model="gpt-4",
+        ...     use_proxy=False  # Skip metadata slug injection
+        ... )
+
     Args:
         provider: Provider name (currently only "openai" is supported)
         api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
@@ -222,6 +244,9 @@ def get_chat_client_async(
         organization: OpenAI organization ID
         timeout: Request timeout in seconds
         max_retries: Maximum number of retries for failed requests
+        use_proxy: Whether to enable proxy features (metadata slug injection).
+                  Set to False to bypass proxy and use direct OpenAI access.
+                  Default: True
         **kwargs: Additional arguments passed to the AsyncOpenAI client
 
     Returns:
@@ -254,11 +279,14 @@ def get_chat_client_async(
     # Create AsyncOpenAI client
     client = AsyncOpenAI(**openai_kwargs)
 
-    # Wrap with proxy tracked client (default)
+    # Wrap with proxy tracked client
+    # When use_proxy=False, behaves like normal OpenAI client (but with session tracking)
+    # When use_proxy=True, injects metadata slugs into URLs for proxy routing
     wrapper = ProxyTrackedAsyncChatClient(
         tracer=None,  # disable SDK-side logging; proxy handles tracing
         default_model=model,
         base_url=base_url,
+        use_proxy=use_proxy,
         client=client,
     )
 

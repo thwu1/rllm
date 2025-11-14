@@ -20,7 +20,7 @@ def main(config):
         question = kwargs["question"]
         client = get_chat_client(base_url="http://localhost:4000/v1", api_key="EMPTY")
         response = client.chat.completions.create(
-            model="vllm/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+            model="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
             messages=[
                 {"role": "user", "content": question},
             ],
