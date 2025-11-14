@@ -17,8 +17,8 @@ class SessionStorage(Protocol):
 
     Separates the concern of storing/retrieving traces from session context propagation.
     Different implementations can provide different storage strategies:
-    - InMemoryStorage: Thread-safe, single-process, ephemeral (keys by instance _uid)
-    - SqliteSessionStorage: Durable, multi-process via shared SQLite file (keys by session_id)
+    - InMemoryStorage: Thread-safe, single-process, ephemeral storage
+    - SqliteSessionStorage: Durable, multi-process via shared SQLite file
     - PostgresStorage: Distributed, scalable
 
     Thread-safety requirement:
@@ -26,16 +26,18 @@ class SessionStorage(Protocol):
     - InMemoryStorage uses locks to ensure thread-safety
     - SqliteSessionStorage uses SQLite's built-in locking
 
-    Storage backends use the session_uid_chain for tree hierarchy:
-    - InMemoryStorage: Stores trace under all UIDs in chain (tree queries work)
+    Tree hierarchy support:
+    Storage backends use session_uid_chain to enable parent sessions to
+    see all descendant traces:
+    - InMemoryStorage: Stores trace under all UIDs in chain
     - SqliteSessionStorage: Uses junction table with all UIDs in chain
 
-    The session_uid_chain enables tree hierarchy:
+    Example session hierarchy:
     - Root session: ["ctx_aaa"]
     - Child session: ["ctx_aaa", "ctx_bbb"]
     - Grandchild: ["ctx_aaa", "ctx_bbb", "ctx_ccc"]
 
-    Querying "ctx_aaa" returns traces from all descendants!
+    Querying "ctx_aaa" returns traces from all three sessions!
     """
 
     def add_trace(self, session_uid_chain: list[str], session_id: str, trace: Trace) -> None:

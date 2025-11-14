@@ -160,15 +160,39 @@ class ContextVarSession:
     @property
     def llm_calls(self) -> list[Trace]:
         """
-        Get all LLM calls made within this session.
+        Get all LLM calls made within this session and descendant sessions.
 
-        This queries the storage backend with both identifiers, allowing
-        storage implementations to choose their keying strategy:
-        - InMemoryStorage: keys by _uid for instance isolation
-        - SqliteSessionStorage: keys by session_id for cross-process sharing
+        Queries the storage backend using the session UID, which enables
+        tree hierarchy: parent sessions automatically see traces from all
+        nested child sessions.
+
+        For multi-process scenarios with SqliteSessionStorage, use
+        to_context()/from_context() to propagate the session hierarchy:
+
+        Example:
+            # Process 1 - parent session
+            storage = SqliteSessionStorage("traces.db")
+            with ContextVarSession(storage=storage) as parent:
+                llm.call()  # One trace
+
+                # Nested local session
+                with ContextVarSession() as child:
+                    llm.call()  # Another trace
+
+                # Parent sees both!
+                assert len(parent.llm_calls) == 2
+
+                # Send context to another process
+                context = parent.to_context()
+                send_to_process2(context)
+
+            # Process 2 - restore session hierarchy
+            context = receive_from_process1()
+            with ContextVarSession.from_context(context, storage) as remote:
+                llm.call()  # Parent in Process 1 will see this too!
 
         Returns:
-            List of Trace objects for this session
+            List of Trace objects for this session and all descendants
         """
         return self.storage.get_traces(self._uid, self.session_id)
 
