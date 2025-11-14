@@ -9,9 +9,9 @@ The SDK now provides `@step` and `@trajectory` decorators for building RL workfl
 1. **Session-based**: Everything uses `session()` under the hood
 2. **Simple formatting**: Just wraps session and formats `sess.llm_calls` into StepView fields
 3. **Decorator changes return**: `@step` returns `StepView`, `@trajectory` returns `TrajectoryView`
-4. **Context manager preserves return**: Use `step_context()` or `trajectory_context()` when you need the original return value
-5. **Delayed rewards**: Rewards can be assigned after step/trajectory creation
-6. **Automatic collection**: Steps auto-register with parent trajectories via session metadata
+4. **Delayed rewards**: Rewards can be assigned after step/trajectory creation
+5. **Automatic collection**: Steps auto-register with parent trajectories via session metadata
+6. **Symmetric design**: Both Step and Trajectory have `input`/`output`/`metadata` fields
 
 ## Architecture
 
@@ -244,31 +244,6 @@ traj = await workflow()
 traj.reward = custom_calculation()
 ```
 
-## Context Managers (when you need original return)
-
-```python
-from rllm.sdk import step_context, trajectory_context
-
-# Step context manager - preserves return value
-with step_context(name="solve") as ctx:
-    result = await some_function()  # Returns original value!
-    ctx.set_result(result)
-
-# Access step after
-print(ctx.step_view.result)
-ctx.step_view.reward = 1.0
-
-# Trajectory context manager - preserves return value
-with trajectory_context(name="workflow") as traj_ctx:
-    step1 = await solve()  # Returns StepView (still decorated)
-    step2 = await verify()
-    result = some_calculation()  # Can return anything
-
-# Access trajectory after
-print(traj_ctx.trajectory_view.steps)
-print(traj_ctx.trajectory_view.reward)
-```
-
 ## Implementation Details
 
 ### How Steps Register with Trajectories
@@ -373,14 +348,6 @@ Decorator that creates a trajectory from a function.
 - `.reward`: Calculated reward
 - `.metadata`: User-defined tracking data
 - `.result`: Last step's result (property)
-
-### `step_context(name=None, **metadata)`
-
-Context manager for step (preserves return value).
-
-### `trajectory_context(name="agent", reward_mode="sum", **metadata)`
-
-Context manager for trajectory (preserves return value).
 
 ## Testing
 
