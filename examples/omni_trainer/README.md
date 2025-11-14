@@ -24,29 +24,13 @@ bash scripts/install_verl.sh
   pip install ray==2.48.0
   ```
 
-### 2. Install Episodic
-
-Download and install [episodic](https://github.com/agentica-org/episodic):
-```bash
-cd rllm/sdk/episodic-sdk
-pip install -e .
-```
-
-### 3. Verify Dependencies
+### 2. Verify Dependencies
 
 Check that your websocket version is >= 15.0 (version 13.x will not work).
 
 ## Setup
 
-### 1. Launch the Context Store
-
-Start the episodic context store server:
-
-```bash
-episodic serve --db-path /tmp/episodic.db  # choose a local path for better performance
-```
-
-### 2. Deploy the LiteLLM Proxy
+### 1. Deploy the LiteLLM Proxy
 
 In a separate terminal, start the LiteLLM proxy server:
 
