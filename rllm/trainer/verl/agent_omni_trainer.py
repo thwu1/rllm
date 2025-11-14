@@ -143,7 +143,10 @@ class AgentOmniTrainer(RayPPOTrainer):
             "model_name": self.config.actor_rollout_ref.model.path,
             "proxy_host": self.config.rllm.omni.proxy.host,
             "proxy_port": self.config.rllm.omni.proxy.port,
+            "mode": self.config.rllm.omni.proxy.mode,
             "admin_token": self.config.rllm.omni.proxy.admin_token,
+            "db_path": self.config.rllm.omni.store.path,
+            "project": self.config.trainer.project_name,
         }
 
         self.agent_execution_engine = AgentOmniEngine(

@@ -8,8 +8,12 @@ This module provides utilities to:
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import subprocess
+import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -100,6 +104,9 @@ class VerlProxyManager:
         self._config = self._generate_litellm_config()
         self._config_snapshot_path: str | None = None
         self._config_snapshot_path = self._snapshot_config_to_file()
+
+        # Subprocess state
+        self._proxy_process: subprocess.Popen | None = None
 
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
         """Ask LiteLLM proxy to flush the tracer queue.
@@ -286,6 +293,112 @@ class VerlProxyManager:
         base = f"http://{self.proxy_host}:{self.proxy_port}"
         return f"{base}/v1" if include_v1 else base
 
+    def start_proxy_subprocess(self, db_path: str | None = None, project: str | None = None) -> None:
+        """Start LiteLLM proxy as subprocess (no GIL contention).
+
+        Args:
+            db_path: Path to SQLite database for tracer
+            project: Project name for tracer namespace
+        """
+        if self._proxy_process is not None:
+            logger.warning("Proxy subprocess already running")
+            return
+
+        if not self._config_snapshot_path or not os.path.exists(self._config_snapshot_path):
+            raise RuntimeError("Config snapshot not available. Cannot start proxy.")
+
+        # Build command
+        cmd = [
+            sys.executable,
+            "scripts/litellm_proxy_server.py",
+            "--config",
+            self._config_snapshot_path,
+            "--host",
+            self.proxy_host,
+            "--port",
+            str(self.proxy_port),
+            "--admin-token",
+            self.admin_token,
+        ]
+
+        if db_path:
+            cmd.extend(["--db-path", db_path])
+        if project:
+            cmd.extend(["--project", project])
+
+        # Start subprocess
+        logger.info(f"Starting proxy subprocess: {' '.join(cmd)}")
+        self._proxy_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,  # Suppress stdout
+            stderr=subprocess.PIPE,  # Capture stderr for error reporting
+        )
+
+        # Wait for proxy to be ready
+        try:
+            self._wait_for_proxy_ready(timeout=30.0)
+        except Exception:
+            # Cleanup on failure
+            self.shutdown_proxy()
+            raise
+
+        # Register cleanup handler
+        atexit.register(self.shutdown_proxy)
+
+        logger.info(f"✅ Proxy subprocess started (PID: {self._proxy_process.pid})")
+
+    def _wait_for_proxy_ready(self, timeout: float = 30.0) -> None:
+        """Poll proxy health endpoint until it responds.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Raises:
+            RuntimeError: If proxy process dies during startup
+            TimeoutError: If proxy doesn't become ready within timeout
+        """
+        health_url = f"http://{self.proxy_host}:{self.proxy_port}/health"
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            # Check if process died
+            if self._proxy_process.poll() is not None:
+                stderr = self._proxy_process.stderr.read().decode() if self._proxy_process.stderr else ""
+                raise RuntimeError(f"Proxy process died during startup: {stderr}")
+
+            # Check if ready
+            try:
+                resp = requests.get(health_url, timeout=1.0)
+                if resp.ok:
+                    logger.info(f"Proxy ready at {self.get_proxy_url()}")
+                    return
+            except requests.RequestException:
+                pass
+
+            time.sleep(0.5)
+
+        raise TimeoutError(f"Proxy did not become ready within {timeout}s")
+
+    def shutdown_proxy(self) -> None:
+        """Gracefully shutdown proxy subprocess."""
+        if self._proxy_process is None:
+            return
+
+        logger.info("Shutting down proxy subprocess...")
+
+        # Try graceful shutdown
+        self._proxy_process.terminate()
+        try:
+            self._proxy_process.wait(timeout=5.0)
+            logger.info("Proxy shutdown gracefully")
+        except subprocess.TimeoutExpired:
+            # Force kill if it doesn't respond
+            logger.warning("Proxy did not terminate gracefully, forcing kill")
+            self._proxy_process.kill()
+            self._proxy_process.wait()
+
+        self._proxy_process = None
 
     def __repr__(self) -> str:
-        return f"VerlProxyManager(model={self.model_name}, replicas={len(self._server_addresses)}, proxy={self.get_proxy_url()})"
+        mode = "subprocess" if self._proxy_process else "external"
+        return f"VerlProxyManager(model={self.model_name}, replicas={len(self._server_addresses)}, proxy={self.get_proxy_url()}, mode={mode})"
