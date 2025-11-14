@@ -187,7 +187,7 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
 
     Example:
         >>> @trajectory(name="solver", reward_mode="sum")
-        >>> async def solve_workflow(task: dict):
+        >>> async def solve_workflow(task: dict, n: int):
         ...     # All @step calls are auto-collected
         ...     step1 = await solve(task["question"])
         ...     step1.reward = calc_reward(step1.result)
@@ -195,16 +195,26 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
         ...     step2 = await verify(step1.result)
         ...     step2.reward = calc_reward(step2.result)
         ...
-        ...     return 0.0  # Not used when reward_mode="sum"
+        ...     return "final_answer"
 
-        >>> traj = await solve_workflow(task)
-        >>> print(traj.steps)  # [step1, step2]
+        >>> traj = await solve_workflow(task, n=3)
+        >>> print(traj.input)   # {"task": {...}, "n": 3}
+        >>> print(traj.output)  # "final_answer"
+        >>> print(traj.steps)   # [step1, step2]
         >>> print(traj.reward)  # sum of step rewards
     """
     def decorator(func: Callable) -> Callable:
+        # Get function signature for capturing args/kwargs
+        sig = inspect.signature(func)
+
         if asyncio.iscoroutinefunction(func):
             @wraps(func)
             async def async_wrapper(*args, **kwargs) -> TrajectoryView:
+                # Capture function arguments
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                func_input = dict(bound_args.arguments)
+
                 # Create a parent session for trajectory
                 with session(
                     _is_trajectory=True,  # Mark as trajectory session
@@ -226,13 +236,21 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
                     return TrajectoryView(
                         name=name,
                         steps=steps,
-                        reward=reward
+                        reward=reward,
+                        input=func_input,  # Function arguments
+                        output=result,     # Function return value
+                        metadata=traj_metadata if traj_metadata else None
                     )
 
             return async_wrapper
         else:
             @wraps(func)
             def sync_wrapper(*args, **kwargs) -> TrajectoryView:
+                # Capture function arguments
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                func_input = dict(bound_args.arguments)
+
                 # Create a parent session for trajectory
                 with session(
                     _is_trajectory=True,  # Mark as trajectory session
@@ -254,7 +272,10 @@ def trajectory(name: str = "agent", reward_mode: str = "return", **traj_metadata
                     return TrajectoryView(
                         name=name,
                         steps=steps,
-                        reward=reward
+                        reward=reward,
+                        input=func_input,  # Function arguments
+                        output=result,     # Function return value
+                        metadata=traj_metadata if traj_metadata else None
                     )
 
             return sync_wrapper
@@ -362,6 +383,8 @@ class TrajectoryContext:
         self.metadata = metadata
         self.trajectory_view: TrajectoryView | None = None
         self._session = None
+        self._input = None
+        self._output = None
 
     def __enter__(self):
         self._session = session(
@@ -380,18 +403,29 @@ class TrajectoryContext:
         steps = self._session.metadata['_collected_steps']
 
         # Calculate reward
-        reward = _calculate_trajectory_reward(self.reward_mode, None, steps)
+        reward = _calculate_trajectory_reward(self.reward_mode, self._output, steps)
 
         # Create TrajectoryView
         self.trajectory_view = TrajectoryView(
             name=self.name,
             steps=steps,
-            reward=reward
+            reward=reward,
+            input=self._input,
+            output=self._output,
+            metadata=self.metadata if self.metadata else None
         )
 
         # Exit session
         self._session.__exit__(exc_type, exc_val, exc_tb)
         return False
+
+    def set_input(self, input_data: dict):
+        """Set the input arguments for this trajectory."""
+        self._input = input_data
+
+    def set_output(self, output_data: Any):
+        """Set the output/return value for this trajectory."""
+        self._output = output_data
 
 
 # Convenience functions for context managers

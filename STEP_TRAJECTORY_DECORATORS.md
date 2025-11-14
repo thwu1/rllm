@@ -23,9 +23,21 @@ Mid-level:    @step → StepView (semantic unit, 0 or 1 LLM call)
 High-level:   @trajectory → TrajectoryView (collection of steps)
 ```
 
-## StepView Fields
+## Data Model: Symmetric Design
 
-`StepView` has distinct fields for different purposes:
+Both `StepView` and `TrajectoryView` follow the same pattern:
+
+| Field | StepView (LLM-level) | TrajectoryView (Function-level) |
+|---|---|---|
+| **input** | LLM request (dict/list) | Function arguments (dict) |
+| **output** | LLM response (dict) | Function return value (Any) |
+| **result** | Function return value (Any) | Last step's result (property) |
+| **action** | Parsed action (str, optional) | N/A |
+| **reward** | Step reward (float) | Trajectory reward (float) |
+| **metadata** | Execution info + traces (dict) | User-defined tracking (dict) |
+| **Other** | `id: str` | `name: str`, `steps: list[StepView]` |
+
+### StepView Fields
 
 - **`input` / `output`**: LLM-level data (input to model, response from model)
   - Automatically formatted from `sess.llm_calls` by `@step` decorator
@@ -43,6 +55,32 @@ High-level:   @trajectory → TrajectoryView (collection of steps)
 - **`reward`**: Step reward
   - Set manually (supports delayed assignment)
   - Used for RL training
+
+- **`metadata`**: Execution info, function args, LLM traces
+  - Automatically populated by `@step` decorator
+
+### TrajectoryView Fields
+
+- **`input`**: Function arguments
+  - Automatically captured by `@trajectory` decorator
+  - Dict of parameter names to values: `{"problem": "2+2", "n": 3}`
+
+- **`output`**: Function return value
+  - Automatically captured by `@trajectory` decorator
+  - Can be any type
+
+- **`steps`**: List of collected StepViews
+  - Steps auto-register with parent trajectory
+
+- **`reward`**: Trajectory reward
+  - Calculated based on `reward_mode` ("return", "sum", "last", "manual")
+
+- **`metadata`**: User-defined tracking data
+  - Passed via `**traj_metadata` in decorator
+  - Flexible for future extensions
+
+- **`result`** (property): Last step's result
+  - Convenience property, not stored
 
 **Two ways to create StepView:**
 
@@ -106,6 +144,10 @@ async def solve_workflow(problem: str) -> float:
 
 # Returns TrajectoryView (not float!)
 traj: TrajectoryView = await solve_workflow("2+2")
+
+# Access function input/output
+print(traj.input)   # {"problem": "2+2"}
+print(traj.output)  # 0.0 (function return value)
 
 # Access collected steps
 print(traj.steps)  # [step1, step2]
@@ -307,11 +349,12 @@ Decorator that creates a step from a function.
 
 **Returns:** `StepView` with:
 - `.id`: Unique step ID
-- `.input`: Function arguments
-- `.output` / `.result`: Function return value
+- `.input`: LLM input (dict/list, from trace)
+- `.output`: LLM output (dict, from trace)
+- `.result`: Function return value (Any)
 - `.action`: Parsed action (set manually)
-- `.reward`: Step reward (set manually or via reward_fn)
-- `.metadata`: Execution info + LLM traces
+- `.reward`: Step reward (set manually)
+- `.metadata`: Execution info + function args + LLM traces
 
 ### `@trajectory(name="agent", reward_mode="return", **metadata)`
 
@@ -320,13 +363,16 @@ Decorator that creates a trajectory from a function.
 **Parameters:**
 - `name`: Trajectory name
 - `reward_mode`: "return", "sum", "last", or "manual"
-- `**metadata`: Additional metadata
+- `**metadata`: Additional metadata (stored in `.metadata`)
 
 **Returns:** `TrajectoryView` with:
 - `.name`: Trajectory name
+- `.input`: Function arguments (dict)
+- `.output`: Function return value (Any)
 - `.steps`: List of collected StepViews
 - `.reward`: Calculated reward
-- `.result`: Last step's result
+- `.metadata`: User-defined tracking data
+- `.result`: Last step's result (property)
 
 ### `step_context(name=None, **metadata)`
 

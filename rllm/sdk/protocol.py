@@ -52,10 +52,20 @@ class TrajectoryView(BaseModel):
 
     Represents a collection of steps that form a complete workflow or episode.
     Used for RL training and workflow composition.
+
+    Fields:
+        - input: Function arguments (dict of args/kwargs from @trajectory decorator)
+        - output: Function return value (set by @trajectory decorator)
+        - steps: List of collected StepViews
+        - reward: Trajectory reward (calculated based on reward_mode)
+        - metadata: Additional tracking data (flexible for future use)
     """
     name: str = "agent"
     steps: list[StepView] = Field(default_factory=list)
     reward: float = 0.0
+    input: dict | None = None   # Function arguments
+    output: Any = None          # Function return value
+    metadata: dict | None = None  # Additional tracking data
 
     @property
     def result(self):

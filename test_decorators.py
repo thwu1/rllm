@@ -105,8 +105,12 @@ async def main():
     assert traj.steps[0].result == 15  # 10 + 5
     assert traj.steps[1].result == 30  # 15 * 2
     assert traj.reward == 2.0  # sum of step rewards (1.0 + 1.0)
+    assert traj.input == {"x": 10, "y": 5}  # Function arguments captured
+    assert traj.output == 0.0  # Function return value captured
     print(f"✓ Trajectory has {len(traj.steps)} steps")
     print(f"✓ Trajectory reward: {traj.reward}")
+    print(f"✓ Trajectory input: {traj.input}")
+    print(f"✓ Trajectory output: {traj.output}")
     print(f"✓ Final result: {traj.result}")  # Last step's result
     print()
 
