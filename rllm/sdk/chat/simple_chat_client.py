@@ -1,4 +1,4 @@
-"""Extremely small wrapper that logs chat completions via the episodic tracer."""
+"""Extremely small wrapper that logs chat completions via the tracer."""
 
 from __future__ import annotations
 

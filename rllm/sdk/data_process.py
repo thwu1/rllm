@@ -9,7 +9,7 @@ Traces are LLM call records created by the proxy and consumed by agent_omni_engi
 They flow through the following pipeline:
 
 1. **Created by**: TracingCallback in litellm_callbacks.py
-2. **Stored in**: Episodic Context Store via LLMTracer.log_llm_call()
+2. **Stored in**: Context Store via tracer.log_llm_call()
 3. **Retrieved by**: agent_omni_engine via context subscriber
 4. **Converted to**: Step objects via trace_to_step()
 
