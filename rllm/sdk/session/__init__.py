@@ -8,6 +8,11 @@ from rllm.sdk.session.contextvar import (
     get_current_session,
     get_current_session_id,
 )
+from rllm.sdk.session.storage import (
+    InMemoryStorage,
+    SessionStorage,
+    SqliteSessionStorage,
+)
 
 # Default session type (alias for convenience)
 SessionContext = ContextVarSession
@@ -23,4 +28,8 @@ __all__ = [
     "get_current_session_id",
     "get_current_metadata",
     "get_active_sessions",
+    # Storage
+    "SessionStorage",  # Protocol
+    "InMemoryStorage",  # Default in-memory storage
+    "SqliteSessionStorage",  # SQLite-backed storage
 ]

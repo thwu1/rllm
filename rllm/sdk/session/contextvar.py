@@ -3,9 +3,12 @@
 import contextvars
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rllm.sdk.protocol import StepProto, Trace, trace_to_step_proto
+
+if TYPE_CHECKING:
+    from rllm.sdk.session.storage import SessionStorage
 
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
@@ -40,29 +43,58 @@ def get_active_sessions() -> list["ContextVarSession"]:
 
 class ContextVarSession:
     """
-    Session implementation using Python contextvars.
+    Session implementation using Python contextvars with pluggable storage.
 
-    This is the default session implementation that uses contextvars
-    for thread-safe and async-safe context propagation.
+    This session implementation separates context propagation (session_id, metadata)
+    from trace storage. The storage backend can be plugged in to support different
+    deployment scenarios:
+
+    - **InMemoryStorage** (default): Fast, single-process, ephemeral
+    - **SqliteSessionStorage**: Durable, multi-process via shared SQLite file
+    - **Custom storage**: Implement SessionStorage protocol
 
     Features:
-    - Thread-safe and async-safe
-    - Automatic nested session isolation
-    - In-memory call storage
-    - Zero external dependencies
+    - Thread-safe and async-safe context propagation
+    - Automatic nested session isolation with metadata inheritance
+    - Pluggable storage backends
+    - Backward compatible with existing code
 
-    Example:
+    Example (in-memory, default):
         >>> from rllm.sdk.session import ContextVarSession
         >>> from rllm.sdk import get_chat_client
         >>>
         >>> llm = get_chat_client(api_key="...", model="gpt-4")
         >>>
+        >>> # Default: in-memory storage
         >>> with ContextVarSession() as session:
         ...     llm.chat.completions.create(...)
         ...     print(len(session.llm_calls))  # Immediate access
+
+    Example (SQLite, multi-process):
+        >>> from rllm.sdk.session import ContextVarSession
+        >>> from rllm.sdk.session.storage import SqliteSessionStorage
+        >>>
+        >>> storage = SqliteSessionStorage("traces.db")
+        >>>
+        >>> # Process 1
+        >>> with ContextVarSession(storage=storage, session_id="task-123") as session:
+        ...     llm.chat.completions.create(...)
+        >>>
+        >>> # Process 2 (can access same traces!)
+        >>> with ContextVarSession(storage=storage, session_id="task-123") as session:
+        ...     llm.chat.completions.create(...)
+        ...     print(session.llm_calls)  # Sees traces from both processes!
     """
 
-    def __init__(self, session_id: str | None = None, formatter: Callable[[dict], dict] | None = None, persistent_tracers: list | None = None, **metadata):
+    def __init__(
+        self,
+        session_id: str | None = None,
+        storage: "SessionStorage | None" = None,
+        formatter: Callable[[dict], dict] | None = None,
+        persistent_tracers: list | None = None,
+        _session_uid_chain: list[str] | None = None,
+        **metadata,
+    ):
         """
         Initialize contextvars-based session.
 
@@ -70,8 +102,11 @@ class ContextVarSession:
             session_id: Session ID (auto-generated if None). If None and there's an
                        existing session_id in the context (from a parent session),
                        that will be inherited instead of generating a new one.
-            formatter: Optional formatter to transform trace data
-            persistent_tracers: Optional list of persistent tracers
+            storage: Storage backend for traces. If None, uses InMemoryStorage (default).
+                    Pass SqliteSessionStorage for multi-process scenarios.
+            formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
+            persistent_tracers: Optional list of persistent tracers (deprecated, kept for compatibility)
+            _session_uid_chain: Internal parameter for context restoration (do not use directly)
             **metadata: Session metadata
         """
         # If session_id is not explicitly provided, check if there's one in the context
@@ -84,16 +119,36 @@ class ContextVarSession:
 
         # Generate new session_id only if none was provided and none exists in context
         self.session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+
         # Internal unique ID for this session context instance (different from session_id which can be inherited)
         # This allows tracking each unique session context even when session_id is shared
         self._uid = f"ctx_{uuid.uuid4().hex[:16]}"
+
+        # Build session UID chain for tree hierarchy support
+        if _session_uid_chain is not None:
+            # Restoring from serialized context (distributed case)
+            self._session_uid_chain = _session_uid_chain + [self._uid]
+        else:
+            # Check for parent session in current context (nested local case)
+            parent_session = get_current_session()
+            if parent_session is not None:
+                # Inherit parent's chain and append our UID
+                self._session_uid_chain = parent_session._session_uid_chain + [self._uid]
+            else:
+                # Root session - start new chain
+                self._session_uid_chain = [self._uid]
+
         self.metadata = metadata
         self.formatter = formatter or (lambda x: x)
 
-        # In-memory storage for THIS session's calls
-        self._calls: list[Trace] = []
+        # Storage backend (defaults to InMemoryStorage for backward compatibility)
+        if storage is None:
+            from rllm.sdk.session.storage import InMemoryStorage
 
-        # Optional persistent tracers
+            storage = InMemoryStorage()
+        self.storage = storage
+
+        # Optional persistent tracers (kept for backward compatibility)
         self._persistent_tracers = persistent_tracers or []
 
         # Context tokens for cleanup
@@ -104,17 +159,57 @@ class ContextVarSession:
 
     @property
     def llm_calls(self) -> list[Trace]:
-        """Get all LLM calls made within this session."""
-        return self._calls.copy()
+        """
+        Get all LLM calls made within this session and descendant sessions.
+
+        Queries the storage backend using the session UID, which enables
+        tree hierarchy: parent sessions automatically see traces from all
+        nested child sessions.
+
+        For multi-process scenarios with SqliteSessionStorage, use
+        to_context()/from_context() to propagate the session hierarchy:
+
+        Example:
+            # Process 1 - parent session
+            storage = SqliteSessionStorage("traces.db")
+            with ContextVarSession(storage=storage) as parent:
+                llm.call()  # One trace
+
+                # Nested local session
+                with ContextVarSession() as child:
+                    llm.call()  # Another trace
+
+                # Parent sees both!
+                assert len(parent.llm_calls) == 2
+
+                # Send context to another process
+                context = parent.to_context()
+                send_to_process2(context)
+
+            # Process 2 - restore session hierarchy
+            context = receive_from_process1()
+            with ContextVarSession.from_context(context, storage) as remote:
+                llm.call()  # Parent in Process 1 will see this too!
+
+        Returns:
+            List of Trace objects for this session and all descendants
+        """
+        return self.storage.get_traces(self._uid, self.session_id)
 
     @property
     def steps(self) -> list[StepProto]:
         """Get all steps within this session."""
-        return [trace_to_step_proto(trace) for trace in self._calls]
+        return [trace_to_step_proto(trace) for trace in self.llm_calls]
 
     def clear_calls(self) -> None:
-        """Clear all stored calls for this session."""
-        self._calls.clear()
+        """
+        Clear all stored calls for this session.
+
+        Only works with storage backends that support clearing (e.g., InMemoryStorage).
+        SQLite and other persistent storage may not support this operation.
+        """
+        if hasattr(self.storage, "clear"):
+            self.storage.clear(self._uid, self.session_id)
 
     def __enter__(self):
         """Enter session context - set up context variables."""
@@ -155,7 +250,65 @@ class ContextVarSession:
 
     def __len__(self) -> int:
         """Return number of calls in this session."""
-        return len(self._calls)
+        return len(self.llm_calls)
+
+    def to_context(self) -> dict:
+        """
+        Serialize session context for distributed propagation.
+
+        Returns a dictionary containing the session state needed to restore
+        the session in another process. This enables distributed tracing
+        across process boundaries.
+
+        Returns:
+            Dictionary with session_id, session_uid_chain (excluding current),
+            and metadata
+
+        Example:
+            >>> # Process 1
+            >>> with ContextVarSession(session_id="task-123") as session:
+            ...     context = session.to_context()
+            ...     send_to_remote_process(context)
+        """
+        return {
+            "session_id": self.session_id,
+            "session_uid_chain": self._session_uid_chain[:-1],  # Exclude current UID
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_context(
+        cls,
+        context: dict,
+        storage: "SessionStorage | None" = None,
+    ) -> "ContextVarSession":
+        """
+        Restore session from serialized context.
+
+        Creates a new session instance that continues the session hierarchy
+        from a parent process. The new session will inherit the parent's
+        session UID chain, enabling distributed tracing.
+
+        Args:
+            context: Dictionary from to_context() containing session state
+            storage: Storage backend to use (required for cross-process tracing)
+
+        Returns:
+            New ContextVarSession instance that continues the parent hierarchy
+
+        Example:
+            >>> # Process 2
+            >>> context = receive_from_process1()
+            >>> storage = SqliteSessionStorage("traces.db")
+            >>> with ContextVarSession.from_context(context, storage=storage) as session:
+            ...     llm.call()  # Traces visible to parent session in Process 1!
+        """
+        return cls(
+            session_id=context["session_id"],
+            _session_uid_chain=context["session_uid_chain"],
+            storage=storage,
+            **context.get("metadata", {}),
+        )
 
     def __repr__(self):
-        return f"ContextVarSession(session_id={self.session_id!r}, calls={len(self._calls)})"
+        return f"ContextVarSession(session_id={self.session_id!r}, _uid={self._uid!r}, chain_depth={len(self._session_uid_chain)}, storage={self.storage!r})"
