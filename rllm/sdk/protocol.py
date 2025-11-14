@@ -32,12 +32,11 @@ class StepView(BaseModel):
     Fields:
         - input/output: LLM-level data (input to model, response from model)
           * Filled by tracer when converting Trace → StepView (single trace)
-          * OR by @step decorator: populated only if exactly 1 LLM call
-          * For 0 or multiple calls: both None (check metadata['llm_traces'])
+          * Set to None by @step decorator (all LLM data in metadata['llm_traces'])
         - result: User-defined function return value (set by @step decorator)
         - action: Parsed action/answer (set manually after step creation)
         - reward: Step reward (set manually, supports delayed assignment)
-        - metadata: Always contains complete LLM trace list in metadata['llm_traces']
+        - metadata: Contains all LLM traces in 'llm_traces' field when using @step
     """
     id: str
     action: str | None = None

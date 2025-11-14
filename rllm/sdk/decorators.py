@@ -22,12 +22,10 @@ def step(name: str | None = None, **step_metadata):
 
     The StepView captures:
     - result: User's function return value (accessible via .result)
-    - input/output: LLM-level data (populated only for single LLM call)
-      * Exactly 1 LLM call: input/output populated from that call
-      * 0 or multiple calls: input/output = None (use metadata['llm_traces'])
+    - input/output: Set to None by @step decorator (use metadata['llm_traces'] for all LLM data)
     - action: Can be set later for parsed results
     - reward: Can be set later (supports delayed reward assignment)
-    - metadata: Execution info + function args + ALL LLM traces (always complete)
+    - metadata: Contains execution info, function args, and ALL LLM traces in 'llm_traces' field
 
     Steps automatically register with parent @trajectory if one exists.
 
@@ -71,14 +69,10 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # Format LLM calls into input/output
-                    # Only populate for single LLM call; use metadata['llm_traces'] for multiple
-                    if len(sess.llm_calls) == 1:
-                        step_input = sess.llm_calls[0].input
-                        step_output = sess.llm_calls[0].output
-                    else:
-                        step_input = None  # Multiple or zero calls - check metadata['llm_traces']
-                        step_output = None
+                    # All LLM calls are tracked in metadata['llm_traces']
+                    # input/output fields not used by @step decorator (set by tracer for single-trace steps)
+                    step_input = None
+                    step_output = None
 
                     # Create StepView
                     step_view = StepView(
@@ -126,14 +120,10 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # Format LLM calls into input/output
-                    # Only populate for single LLM call; use metadata['llm_traces'] for multiple
-                    if len(sess.llm_calls) == 1:
-                        step_input = sess.llm_calls[0].input
-                        step_output = sess.llm_calls[0].output
-                    else:
-                        step_input = None  # Multiple or zero calls - check metadata['llm_traces']
-                        step_output = None
+                    # All LLM calls are tracked in metadata['llm_traces']
+                    # input/output fields not used by @step decorator (set by tracer for single-trace steps)
+                    step_input = None
+                    step_output = None
 
                     # Create StepView
                     step_view = StepView(

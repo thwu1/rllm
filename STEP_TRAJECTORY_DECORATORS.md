@@ -40,10 +40,9 @@ Both `StepView` and `TrajectoryView` follow the same pattern:
 ### StepView Fields
 
 - **`input` / `output`**: LLM-level data (input to model, response from model)
-  - Automatically formatted from `sess.llm_calls` by `@step` decorator
-  - Only populated when exactly 1 LLM call (keeps semantics clear)
-  - For 0 or multiple calls: both are `None` (use `metadata['llm_traces']`)
-  - ALL LLM traces always stored in `metadata['llm_traces']` for complete inspection
+  - Set to `None` by `@step` decorator
+  - Populated by tracer when converting single Trace → StepView
+  - ALL LLM call data always available in `metadata['llm_traces']` (complete list)
 
 - **`result`**: User's function return value
   - Set by `@step` decorator
@@ -86,7 +85,7 @@ Both `StepView` and `TrajectoryView` follow the same pattern:
 **Two ways to create StepView:**
 
 1. **From Trace** (via `trace_to_step_view`): `input`/`output` have single trace LLM data, `result` is None
-2. **From Decorator** (via `@step`): `result` has function return, `input`/`output` formatted from `sess.llm_calls`
+2. **From Decorator** (via `@step`): `result` has function return, `input`/`output` are None (use `metadata['llm_traces']`)
 
 ## Usage
 
