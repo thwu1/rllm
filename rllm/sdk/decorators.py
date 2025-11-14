@@ -23,8 +23,8 @@ def step(name: str | None = None, **step_metadata):
     The StepView captures:
     - result: User's function return value (accessible via .result)
     - input/output: LLM-level data (formatted from sess.llm_calls)
-      * input = first trace's input, output = last trace's output
-      * None if no LLM calls
+      * A step should have at most one LLM call (0 or 1)
+      * input/output = trace input/output if present, None otherwise
     - action: Can be set later for parsed results
     - reward: Can be set later (supports delayed reward assignment)
     - metadata: Execution info + function args + all LLM traces
@@ -71,17 +71,18 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # Format LLM calls into input/output
-                    # For single LLM call: input = trace input, output = trace output
-                    # For multiple calls: input = first trace input, output = last trace output
+                    # A step should have at most one LLM call
+                    assert len(sess.llm_calls) in (0, 1), f"Step should have 0 or 1 LLM call, got {len(sess.llm_calls)}"
+
+                    # Format LLM call into input/output (0 or 1 call)
                     step_input = sess.llm_calls[0].input if sess.llm_calls else None
-                    step_output = sess.llm_calls[-1].output if sess.llm_calls else None
+                    step_output = sess.llm_calls[0].output if sess.llm_calls else None
 
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input=step_input,  # LLM input from first trace
-                        output=step_output,  # LLM output from last trace
+                        input=step_input,  # LLM input
+                        output=step_output,  # LLM output
                         result=result,  # User's function return value
                         action=None,  # Can be set later
                         reward=0.0,  # Can be set later (delayed)
@@ -123,17 +124,18 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # Format LLM calls into input/output
-                    # For single LLM call: input = trace input, output = trace output
-                    # For multiple calls: input = first trace input, output = last trace output
+                    # A step should have at most one LLM call
+                    assert len(sess.llm_calls) in (0, 1), f"Step should have 0 or 1 LLM call, got {len(sess.llm_calls)}"
+
+                    # Format LLM call into input/output (0 or 1 call)
                     step_input = sess.llm_calls[0].input if sess.llm_calls else None
-                    step_output = sess.llm_calls[-1].output if sess.llm_calls else None
+                    step_output = sess.llm_calls[0].output if sess.llm_calls else None
 
                     # Create StepView
                     step_view = StepView(
                         id=step_id,
-                        input=step_input,  # LLM input from first trace
-                        output=step_output,  # LLM output from last trace
+                        input=step_input,  # LLM input
+                        output=step_output,  # LLM output
                         result=result,  # User's function return value
                         action=None,  # Can be set later
                         reward=0.0,  # Can be set later (delayed)
@@ -299,15 +301,18 @@ class StepContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         execution_time_ms = (time.time() - self._start_time) * 1000
 
-        # Format LLM calls into input/output
+        # A step should have at most one LLM call
+        assert len(self._session.llm_calls) in (0, 1), f"Step should have 0 or 1 LLM call, got {len(self._session.llm_calls)}"
+
+        # Format LLM call into input/output (0 or 1 call)
         step_input = self._session.llm_calls[0].input if self._session.llm_calls else None
-        step_output = self._session.llm_calls[-1].output if self._session.llm_calls else None
+        step_output = self._session.llm_calls[0].output if self._session.llm_calls else None
 
         # Create StepView
         self.step_view = StepView(
             id=self._step_id,
-            input=step_input,  # LLM input from first trace
-            output=step_output,  # LLM output from last trace
+            input=step_input,  # LLM input
+            output=step_output,  # LLM output
             result=self._result,  # User-set result via set_result()
             action=None,
             reward=0.0,
