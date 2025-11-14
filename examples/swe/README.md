@@ -96,8 +96,8 @@ env = RepoEnv(env_args)
 
 # load agent
 agent_args = AgentArgs.from_yaml(Path('./src/r2egym/agenthub/config/r2egym/edit_non_fn_calling.yaml'))
-# define llm: ['claude-3-5-sonnet-20241022', 'gpt-4o', 'vllm/agentica-org/DeepSWE-Preview']
-agent_args.llm_name = 'vllm/agentica-org/DeepSWE-Preview'
+# define llm: ['claude-3-5-sonnet-20241022', 'gpt-4o', 'agentica-org/DeepSWE-Preview']
+agent_args.llm_name = 'agentica-org/DeepSWE-Preview'
 agent = Agent(name="EditingAgent", args=agent_args)
 
 # run the agent

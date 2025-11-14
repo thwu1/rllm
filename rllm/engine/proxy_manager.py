@@ -187,10 +187,10 @@ class VerlProxyManager:
         for idx, server_address in enumerate(self._server_addresses):
             # Each replica gets its own entry in the model list
             # LiteLLM will load balance across all entries with the same model_name
-            # Add "vllm/" prefix so SamplingParametersCallback knows to add return_token_ids
+            # SamplingParametersCallback will detect vLLM from litellm_params (hosted_vllm prefix)
             model_list.append(
                 {
-                    "model_name": f"vllm/{self.model_name}",
+                    "model_name": self.model_name,
                     "litellm_params": {
                         "model": f"hosted_vllm/{self.model_name}",
                         "api_base": f"http://{server_address}/v1",
