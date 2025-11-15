@@ -1,0 +1,33 @@
+# LiteLLM configuration for fast testing with OpenAI models
+#
+# This config allows you to test the full LiteLLM proxy integration
+# using inexpensive OpenAI models instead of deploying vLLM.
+#
+# Usage:
+#   export OPENAI_API_KEY="sk-..."
+#
+#   python -m rllm.sdk.proxy.litellm_server \
+#     --config examples/omni_trainer/litellm_openai_config.yaml \
+#     --host 127.0.0.1 \
+#     --port 4000 \
+#     --state-dir /tmp/litellm_proxy \
+#     --db-path /tmp/rllm_test.db \
+#     --project rllm-test \
+#     --admin-token my-secret
+
+model_list:
+  # Fast and cheap model for testing
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: gpt-3.5-turbo
+      api_key: ${OPENAI_API_KEY}
+
+  # Alternative: Even cheaper model
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+
+# Optional: Enable verbose logging for debugging
+# litellm_settings:
+#   set_verbose: true
