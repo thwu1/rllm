@@ -237,6 +237,9 @@ with restored:
 ```python
 class OTelSession(SessionProtocol):
     def __enter__(self):
+        # Ensure HTTP instrumentation is enabled (auto-init if needed)
+        _ensure_instrumentation()
+
         # Start OTel span
         self._span = self.tracer.start_span(f"session:{self.name}")
         self._span.__enter__()
@@ -338,48 +341,105 @@ def assemble_routing_metadata(extra=None):
 
 **Difficulty**: 🟡 **MEDIUM** (2 days)
 
+**Design Decision**: **Option C - Explicit init function with auto-init fallback**
+
+After evaluating multiple approaches (explicit manual setup, auto-setup on first use, explicit init, hybrid), we chose **Option C** for the following reasons:
+- Clear explicit intent when users want HTTP propagation
+- Single obvious initialization point for documentation
+- Forgiving auto-init fallback for development/testing
+- Avoids implicit side effects of auto-setup on first session creation
+
 **New Function in** `rllm/sdk/session/otel.py`:
 
 ```python
-def setup_otel_http_instrumentation():
-    """
-    Configure OpenTelemetry HTTP auto-instrumentation.
+# Module-level flag to track initialization
+_http_instrumentation_enabled = False
+_auto_init_warned = False
 
-    Call this once at application startup to enable automatic
-    baggage propagation for HTTP requests.
+def init_otel_distributed_tracing():
+    """
+    Initialize OpenTelemetry distributed tracing (HTTP/gRPC instrumentation).
+
+    Call this once at application startup to enable automatic baggage propagation
+    for HTTP/gRPC requests across microservices.
+
+    This is the **recommended** way to enable distributed tracing. If not called
+    explicitly, OTelSession will auto-initialize with a warning on first use.
 
     Example:
-        >>> from rllm.sdk.session.otel import setup_otel_http_instrumentation
-        >>> setup_otel_http_instrumentation()
+        >>> from rllm.sdk.session.otel import init_otel_distributed_tracing
         >>>
-        >>> # Now HTTP calls auto-propagate baggage!
+        >>> # Call once at startup
+        >>> init_otel_distributed_tracing()
+        >>>
+        >>> # Now all HTTP calls auto-propagate OTel baggage!
         >>> import requests
         >>> with OTelSession(experiment="v1"):
         ...     requests.post("http://service/api", ...)
         ...     # ✅ baggage header automatically injected!
     """
+    global _http_instrumentation_enabled
+
+    if _http_instrumentation_enabled:
+        logger.debug("OTel HTTP instrumentation already enabled, skipping")
+        return
+
     from opentelemetry.instrumentation.requests import RequestsInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
 
-    # Instrument requests library
+    # Set up tracer provider if not already configured
+    if not isinstance(trace.get_tracer_provider(), TracerProvider):
+        trace.set_tracer_provider(TracerProvider())
+
+    # Instrument HTTP libraries
     RequestsInstrumentor().instrument()
-
-    # Instrument httpx library
     HTTPXClientInstrumentor().instrument()
 
-    logger.info("OpenTelemetry HTTP instrumentation enabled")
+    _http_instrumentation_enabled = True
+    logger.info("OpenTelemetry distributed tracing initialized (HTTP/gRPC instrumentation enabled)")
+
+def _ensure_instrumentation():
+    """
+    Auto-initialize instrumentation if not already done (fallback with warning).
+
+    Called internally by OTelSession.__enter__() to ensure instrumentation is
+    enabled even if user forgot to call init_otel_distributed_tracing().
+    """
+    global _http_instrumentation_enabled, _auto_init_warned
+
+    if not _http_instrumentation_enabled:
+        if not _auto_init_warned:
+            logger.warning(
+                "OTel HTTP instrumentation not explicitly initialized. "
+                "Auto-initializing now. For production, call "
+                "init_otel_distributed_tracing() at startup."
+            )
+            _auto_init_warned = True
+        init_otel_distributed_tracing()
 ```
 
-**User Setup** (one-time, optional):
+**User Setup** (explicit, recommended):
 
 ```python
 # In main.py or __init__.py
-from rllm.sdk.session.otel import setup_otel_http_instrumentation
+from rllm.sdk.session.otel import init_otel_distributed_tracing
 
-# Enable HTTP auto-instrumentation for microservices
-setup_otel_http_instrumentation()
+# ✅ Recommended: Explicit initialization at startup
+init_otel_distributed_tracing()
 
 # Now OTelSession automatically propagates via HTTP headers!
+```
+
+**Auto-Init Fallback** (development/testing):
+
+```python
+# If user forgets to call init_otel_distributed_tracing():
+with OTelSession(experiment="v1") as session:
+    # ⚠️ Warning logged: "Auto-initializing OTel instrumentation..."
+    # Instrumentation is set up automatically on first use
+    requests.post("http://service/api", ...)  # Still works!
 ```
 
 **What This Enables**:
@@ -567,11 +627,11 @@ with OTelSession(experiment="v1"):
     llm.chat.completions.create(...)  # ✅ New, opt-in
 ```
 
-**2. HTTP auto-instrumentation** (optional):
+**2. HTTP auto-instrumentation** (recommended for microservices):
 ```python
-from rllm.sdk.session.otel import setup_otel_http_instrumentation
+from rllm.sdk.session.otel import init_otel_distributed_tracing
 
-setup_otel_http_instrumentation()  # ✅ New, opt-in, one-time setup
+init_otel_distributed_tracing()  # ✅ New, explicit init at startup (Option C)
 ```
 
 **3. Ray helpers** (optional):
@@ -676,9 +736,9 @@ __all__ = [
    ```python
    def test_http_propagation():
        """Test baggage propagates via HTTP headers."""
-       from rllm.sdk.session.otel import OTelSession, setup_otel_http_instrumentation
+       from rllm.sdk.session.otel import OTelSession, init_otel_distributed_tracing
 
-       setup_otel_http_instrumentation()
+       init_otel_distributed_tracing()
 
        with OTelSession(experiment="v1") as session:
            # Make HTTP request (mock server extracts baggage)
@@ -793,10 +853,12 @@ from rllm.sdk.session import OTelSession as session
 **Step 3: Enable HTTP instrumentation (for microservices)**
 ```python
 # In main.py or __init__.py
-from rllm.sdk.session.otel import setup_otel_http_instrumentation
+from rllm.sdk.session.otel import init_otel_distributed_tracing
 
-# One-time setup
-setup_otel_http_instrumentation()
+# ✅ Explicit initialization at startup (recommended for production)
+init_otel_distributed_tracing()
+
+# Note: If you forget this step, OTelSession will auto-initialize with a warning
 ```
 
 **Step 4: Update Ray code (if using Ray)**
@@ -992,11 +1054,11 @@ with OTelSession(experiment="v1", user="alice") as session:
 ```python
 # Service A (main.py)
 from rllm.sdk.session import OTelSession
-from rllm.sdk.session.otel import setup_otel_http_instrumentation
+from rllm.sdk.session.otel import init_otel_distributed_tracing
 import requests
 
-# One-time setup
-setup_otel_http_instrumentation()
+# ✅ Initialize OTel distributed tracing at startup
+init_otel_distributed_tracing()
 
 # Use OTelSession
 with OTelSession(experiment="v1", user="alice") as session:
