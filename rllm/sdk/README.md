@@ -1,159 +1,173 @@
-# RLLM SDK - Context-Based Session Tracking
+# RLLM SDK - Automatic LLM Trace Collection and RL Training
 
-Automatic session and metadata propagation for LLM tracing using Python's `contextvars`.
+Lightweight SDK for automatic LLM trace collection using session contexts and trajectory decorators.
 
 ## Installation
 
 The SDK is part of the `rllm` package:
 
 ```python
-from rllm.sdk import RLLMClient
+from rllm.sdk import session, get_chat_client, trajectory
 ```
 
 ## Quick Start
 
-### Before: Manual session_name passing
+### Basic Session Usage
 
 ```python
-def run_agent(test_set, session_name):
-    for task in test_set:
-        result = solve_task(task, session_name)
+from rllm.sdk import session, get_chat_client
 
-def solve_task(task, session_name):
-    tracer.log_llm_call(..., session_name=session_name)
+llm = get_chat_client(api_key="sk-...", model="gpt-4")
 
-run_agent(test_set, "session-123")  # Must pass everywhere!
+# Create a session to track all LLM calls
+with session(experiment="v1") as sess:
+    response = llm.chat.completions.create(
+        messages=[{"role": "user", "content": "Hello"}]
+    )
+    # Access all traces from this session
+    print(f"Collected {len(sess.llm_calls)} traces")
 ```
 
-### After: Automatic propagation
+### Trajectory Decorator
 
 ```python
-from rllm.sdk import RLLMClient
+from rllm.sdk import trajectory, get_chat_client_async
 
-client = RLLMClient()
+llm = get_chat_client_async(api_key="sk-...", model="gpt-4")
 
-def run_agent(test_set):
-    for task in test_set:
-        result = solve_task(task)  # No session_name!
+@trajectory(name="solver")
+async def solve_math_problem(problem: str):
+    # Each LLM call automatically becomes a step
+    response1 = await llm.chat.completions.create(
+        messages=[{"role": "user", "content": f"Solve: {problem}"}]
+    )
+    response2 = await llm.chat.completions.create(
+        messages=[{"role": "user", "content": "Is this correct?"}]
+    )
+    return response2.choices[0].message.content
 
-def solve_task(task):
-    tracer.log_llm_call(...)  # session_name auto-injected!
-
-with client.session("session-123"):
-    run_agent(test_set)  # Set once, propagates everywhere
+# Returns TrajectoryView instead of string
+traj = await solve_math_problem("What is 2+2?")
+print(f"Steps: {len(traj.steps)}")  # 2
+traj.steps[0].reward = 1.0  # Set rewards on each step
+traj.reward = sum(s.reward for s in traj.steps)
 ```
 
-## Features
+## Core Concepts
 
-### Simple Session
+### 1. Session Context
+Tracks all LLM calls within a context for debugging and analysis.
+
 ```python
-with client.session("my-session"):
-    tracer.log_llm_call(...)
-    # All traces get session_name="my-session"
+from rllm.sdk import session
+
+# Auto-generated session name
+with session(experiment="v1") as sess:
+    llm.chat.completions.create(...)
+    print(sess.llm_calls)  # List of Trace objects
 ```
 
-### Custom Metadata
+### 2. Metadata Inheritance
+Nested sessions automatically merge metadata.
+
 ```python
-with client.session("my-session", experiment="v1", user="alice"):
-    tracer.log_llm_call(...)
-    # All traces get session_name + metadata
+with session(experiment="v1"):
+    with session(task="math"):
+        # All traces get: {experiment: "v1", task: "math"}
+        llm.chat.completions.create(...)
 ```
 
-### Auto-Generated Session Name
+### 3. Storage Backends
+Choose between in-memory or persistent storage.
+
 ```python
-with client.session(experiment="v1"):
-    tracer.log_llm_call(...)
-    # session_name auto-generated
-```
+from rllm.sdk import session
+from rllm.sdk.session import SqliteSessionStorage
 
-### Nested Contexts (Metadata Inheritance)
-```python
-with client.session("outer", experiment="v1"):
-    tracer.log_llm_call(...)  # metadata: {experiment: "v1"}
+# In-memory (default)
+with session() as sess:
+    llm.call()
 
-    with client.session("inner", task="math"):
-        tracer.log_llm_call(...)  # metadata: {experiment: "v1", task: "math"}
-
-    tracer.log_llm_call(...)  # back to: {experiment: "v1"}
-```
-
-### Thread-Safe
-```python
-def thread1():
-    with client.session("thread-1"):
-        tracer.log_llm_call(...)  # Isolated context
-
-def thread2():
-    with client.session("thread-2"):
-        tracer.log_llm_call(...)  # Isolated context
-```
-
-## Implementation
-
-The SDK uses Python's `contextvars` for automatic context propagation:
-
-1. **Context Variables** (`rllm/sdk/context.py`): Thread-safe storage
-2. **Session Context Manager** (`rllm/sdk/session.py`): `__enter__`/`__exit__` handling
-
-### Files Created
-
-```
-rllm/sdk/
-├── __init__.py           # Package exports
-├── context.py            # Context variables (10 lines)
-├── session.py            # SessionContext class (20 lines)
-├── client.py             # RLLMClient (15 lines)
-├── test_context.py       # Unit tests
-├── test_tracer_integration.py  # Integration tests
-└── example_usage.py      # Usage examples
+# SQLite (persistent, multi-process)
+storage = SqliteSessionStorage("traces.db")
+with session(storage=storage) as sess:
+    llm.call()
 ```
 
 ## API Reference
 
-### RLLMClient
+### Core Functions
 
 ```python
-class RLLMClient:
-    def session(self, session_name: Optional[str] = None, **metadata) -> SessionContext:
-        """Create session context manager."""
+# Session management
+session(**metadata) -> SessionContext  # Auto-generates session name
+get_current_session() -> ContextVarSession | None
+get_current_metadata() -> dict
+
+# Chat clients
+get_chat_client(api_key, model, ...) -> ProxyTrackedChatClient
+get_chat_client_async(api_key, model, ...) -> ProxyTrackedAsyncChatClient
+
+# Decorators
+@trajectory(name: str, **metadata) -> Callable
 ```
 
-### Helper Functions
+### Data Models
 
 ```python
-def get_current_session() -> Optional[str]:
-    """Get current session_name from context."""
+# Low-level trace from a single LLM call
+class Trace:
+    trace_id: str
+    session_name: str
+    input: str | list | dict
+    output: str | dict
+    model: str
+    tokens: dict
+    ...
 
-def get_current_metadata() -> Dict[str, Any]:
-    """Get current metadata from context."""
+# Trace with reward field (auto-generated from traces)
+class StepView:
+    id: str
+    input: str | list | dict
+    output: str | dict
+    reward: float
+    ...
+
+# Collection of steps forming a trajectory
+class TrajectoryView:
+    name: str
+    steps: list[StepView]
+    reward: float
+    input: dict  # Function arguments
+    output: Any  # Function return value
 ```
 
-## Testing
+## Architecture
 
-Run tests:
-```bash
-pytest rllm/sdk/test_context.py -v
-pytest rllm/sdk/test_tracer_integration.py -v
 ```
-
-Run example:
-```bash
-python rllm/sdk/example_usage.py
-```
+rllm/sdk/
+├── __init__.py           # Public exports
+├── protocol.py           # Data models (Trace, StepView, TrajectoryView)
+├── decorators.py         # @trajectory decorator
+├── shortcuts.py          # session(), get_chat_client()
+├── session/
+│   ├── base.py           # SessionProtocol
+│   ├── contextvar.py     # ContextVarSession (default)
+│   └── storage.py        # InMemoryStorage, SqliteSessionStorage
+├── chat/
+│   ├── proxy_chat_client.py    # Proxy-enabled chat client
+│   └── simple_chat_client.py   # Simple chat client
+├── tracers/
+│   ├── base.py           # TracerProtocol
+│   ├── memory.py         # InMemorySessionTracer
+│   └── sqlite.py         # SqliteTracer
+└── store/
+    └── sqlite_store.py   # SQLite trace storage
 
 ## Design Principles
 
-1. **Minimal code**: ~38 lines of new code total
-2. **Clean imports**: No try/except, direct imports only
-3. **Thread-safe**: Each thread gets isolated context
-4. **Backward compatible**: Explicit session_name still works
-5. **Flexible**: Support arbitrary metadata keys
-
-## Benefits
-
-✅ **No function signature changes** - Don't modify existing code
-✅ **Automatic propagation** - Set once, available everywhere
-✅ **Thread-safe** - Each thread has isolated context
-✅ **Async-safe** - Works with async/await
-✅ **Composable** - Nested contexts merge metadata
-✅ **Flexible** - Arbitrary metadata keys supported
+1. **Minimal API surface**: Simple, focused functions
+2. **Context-based**: Uses Python's `contextvars` for automatic propagation
+3. **Pluggable storage**: Supports in-memory, SQLite, or custom backends
+4. **Type-safe**: Full type annotations with Pydantic models
+5. **Async-native**: First-class async/await support

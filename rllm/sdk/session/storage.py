@@ -5,92 +5,32 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import defaultdict
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from rllm.sdk.protocol import Trace
 
 
 @runtime_checkable
 class SessionStorage(Protocol):
-    """
-    Protocol for session storage backends.
+    """Protocol for session trace storage backends.
 
-    Separates the concern of storing/retrieving traces from session context propagation.
-    Different implementations can provide different storage strategies:
-    - InMemoryStorage: Thread-safe, single-process, ephemeral storage
-    - SqliteSessionStorage: Durable, multi-process via shared SQLite file
-    - PostgresStorage: Distributed, scalable
-
-    Thread-safety requirement:
-    - Implementations SHOULD be thread-safe if they might be shared across threads
-    - InMemoryStorage uses locks to ensure thread-safety
-    - SqliteSessionStorage uses SQLite's built-in locking
-
-    Tree hierarchy support:
-    Storage backends use session_uid_chain to enable parent sessions to
-    see all descendant traces:
-    - InMemoryStorage: Stores trace under all UIDs in chain
-    - SqliteSessionStorage: Uses junction table with all UIDs in chain
-
-    Example session hierarchy:
-    - Root session: ["ctx_aaa"]
-    - Child session: ["ctx_aaa", "ctx_bbb"]
-    - Grandchild: ["ctx_aaa", "ctx_bbb", "ctx_ccc"]
-
-    Querying "ctx_aaa" returns traces from all three sessions!
+    Implementations: InMemoryStorage (single-process), SqliteSessionStorage (multi-process).
+    Uses session_uid_chain for hierarchy support - parent sessions see all descendant traces.
     """
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
-        """
-        Add a trace to storage associated with a session hierarchy.
-
-        Args:
-            session_uid_chain: List of session UIDs from root to current (e.g., ["ctx_root", "ctx_child"])
-            session_name: User-visible session name (for logging/debugging)
-            trace: Trace object to store
-        """
+        """Add trace to storage under session hierarchy."""
         ...
 
     def get_traces(self, session_uid: str, session_name: str) -> list[Trace]:
-        """
-        Retrieve all traces for a session (includes all descendant sessions).
-
-        Args:
-            session_uid: Session UID to query (returns this session + all descendants)
-            session_name: User-visible session name (for logging/debugging)
-
-        Returns:
-            List of Trace objects for this session and all descendants
-        """
+        """Retrieve all traces for session (includes descendants)."""
         ...
 
 
 class InMemoryStorage:
-    """
-    Thread-safe in-memory storage for session traces.
+    """Thread-safe in-memory trace storage (default, single-process only).
 
-    Features:
-    - Thread-safe: Uses locks to prevent race conditions
-    - Fast: In-memory storage with minimal overhead
-    - Simple: No external dependencies
-
-    Limitations:
-    - Only works within a single process (not multiprocessing-safe)
-    - All data lost when process exits
-    - For multiprocessing scenarios, use SqliteSessionStorage
-
-    This is the default storage when no explicit storage is provided,
-    maintaining backward compatibility with the original behavior.
-
-    Example:
-        >>> from rllm.sdk.session import ContextVarSession
-        >>> from rllm.sdk.session.storage import InMemoryStorage
-        >>>
-        >>> storage = InMemoryStorage()
-        >>> with ContextVarSession(storage=storage) as session:
-        ...     # All traces stored in memory
-        ...     llm.chat.completions.create(...)
-        ...     print(session.llm_calls)  # Immediate access
+    Fast ephemeral storage. For multi-process use SqliteSessionStorage.
     """
 
     def __init__(self):
@@ -117,29 +57,12 @@ class InMemoryStorage:
                 self._traces[uid].append(trace)
 
     def get_traces(self, session_uid: str, session_name: str) -> list[Trace]:
-        """
-        Get all traces for a session UID (thread-safe).
-
-        Uses session_uid for instance-level isolation.
-
-        Args:
-            session_uid: Unique ID of the session context (used as storage key)
-            session_name: User-visible session name (ignored, for protocol compatibility)
-
-        Returns:
-            Copy of the trace list for this session
-        """
+        """Get all traces for session UID (thread-safe)."""
         with self._lock:
             return self._traces[session_uid].copy()
 
     def clear(self, session_uid: str, session_name: str) -> None:
-        """
-        Clear all traces for a session UID (thread-safe).
-
-        Args:
-            session_uid: Unique ID of the session context
-            session_name: User-visible session name (ignored, for protocol compatibility)
-        """
+        """Clear all traces for session UID (thread-safe)."""
         with self._lock:
             if session_uid in self._traces:
                 self._traces[session_uid].clear()
@@ -151,62 +74,22 @@ class InMemoryStorage:
 
 
 class SqliteSessionStorage:
-    """
-    SQLite-backed storage for session traces.
+    """SQLite-backed durable storage for multi-process trace sharing.
 
-    Uses SqliteTraceStore for durable, multi-process-safe trace storage.
-    Traces are stored asynchronously but retrieval is synchronous and uses
-    an asyncio helper to run the async query.
-
-    Features:
-    - Durable storage (survives process restarts)
-    - Multi-process safe (via shared SQLite file)
-    - Fast queries by session_uid (indexed junction table)
-    - Works across threads and processes
-
-    Example:
-        >>> from rllm.sdk.session import ContextVarSession
-        >>> from rllm.sdk.session.storage import SqliteSessionStorage
-        >>>
-        >>> storage = SqliteSessionStorage("traces.db")
-        >>> with ContextVarSession(storage=storage) as session:
-        ...     llm.chat.completions.create(...)
-        ...
-        ...     # Query from SQLite
-        ...     print(session.llm_calls)
-        >>>
-        >>> # In another process with same storage
-        >>> storage2 = SqliteSessionStorage("traces.db")
-        >>> # Can retrieve traces from first process!
+    Uses SqliteTraceStore with indexed junction tables for fast session_uid queries.
+    Async writes, sync reads via asyncio helpers.
     """
 
     def __init__(self, db_path: str | None = None):
-        """
-        Initialize SQLite session storage.
-
-        Args:
-            db_path: Path to SQLite database file. If None, uses default location
-                    (~/.rllm/traces.db or temp directory)
-        """
+        """Initialize SQLite storage (defaults to ~/.rllm/traces.db)."""
         from rllm.sdk.store import SqliteTraceStore
 
         self.store = SqliteTraceStore(db_path=db_path)
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
-        """
-        Add trace to SQLite storage (async operation, returns immediately).
+        """Add trace to SQLite (async, returns immediately).
 
-        Uses the session UID chain to store traces in the junction table,
-        enabling tree queries across process boundaries.
-
-        Note: This method queues the trace for async storage. The actual
-        storage happens in a background task. Use flush() or await close()
-        to ensure all traces are written.
-
-        Args:
-            session_uid_chain: List of session UIDs from root to current
-            session_name: User-visible session name (for logging/debugging)
-            trace: Trace object to store
+        Queues trace for background storage. Use flush() to ensure writes complete.
         """
         # Create an async task to store the trace
         # We need to run this in an event loop
@@ -264,7 +147,7 @@ class SqliteSessionStorage:
         """
         try:
             # Check if we're already in an async context
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             # We're in an async context, but this is a sync method being called
             # We need to run in a separate thread to avoid blocking
             import concurrent.futures
