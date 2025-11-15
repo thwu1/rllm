@@ -1,3 +1,5 @@
+"""Agent execution engine with omnidirectional workflow support and LiteLLM proxy integration."""
+
 import asyncio
 import functools
 import inspect
@@ -34,25 +36,18 @@ logger = logging.getLogger(__name__)
 
 class AgentOmniEngine:
     def __init__(self, agent_run_func: Callable, rollout_engine: RolloutEngine, config=None, n_parallel_tasks: int = 128, retry_limit: int = 3, raise_on_error: bool = True, proxy_config: dict | None = None, tracer: Optional["TracerProtocol"] = None, **kwargs):
-        """Initialize the AgentOmniEngine.
+        """Initialize AgentOmniEngine for workflow execution.
 
         Args:
-            agent_run_func: The agent function to run for each task.
-            rollout_engine: Engine for model inference and rollout.
-            config: Optional configuration object for training.
-            n_parallel_tasks: Number of parallel workflow instances to maintain.
-            retry_limit: Maximum number of retry attempts for failed tasks.
-            raise_on_error: Whether to raise exceptions on permanent failures.
-            proxy_config: Optional dict with proxy configuration:
-                - model_name: Model name to expose (required for VERL)
-                - proxy_host: Host to bind proxy (default: "127.0.0.1")
-                - proxy_port: Port to bind proxy (default: 4000)
-                - mode: Proxy mode - "external" (manual) or "subprocess" (auto-start) (default: "external")
-                - admin_token: Admin token for proxy API access (default: "my-shared-secret")
-                - db_path: Database path for tracer (only used in subprocess mode)
-                - project: Project name for tracer (only used in subprocess mode)
+            agent_run_func: Agent function to execute for each task.
+            rollout_engine: Model inference engine (supports VerlEngine).
+            config: Training configuration.
+            n_parallel_tasks: Max parallel workflow instances (default: 128).
+            retry_limit: Max retry attempts per task (default: 3).
+            raise_on_error: Raise on permanent failures (default: True).
+            proxy_config: LiteLLM proxy settings (model_name, host, port, mode, admin_token, db_path, project).
             tracer: Optional tracer for logging.
-            **kwargs: Additional keyword arguments.
+            **kwargs: Additional arguments.
         """
         self.rollout_engine = rollout_engine
         self.agent_run_func = agent_run_func
@@ -83,10 +78,7 @@ class AgentOmniEngine:
         self.store = SqliteTraceStore(db_path=self.config.rllm.omni.store.path)
 
     def _prepare_run_func_with_tracing(self, func):
-        """Wrap agent function with session context for tracing.
-
-        Uses _session_with_name to set explicit session name for internal tracking.
-        """
+        """Wrap agent function with session context for trace collection."""
         if inspect.iscoroutinefunction(func):
 
             async def wrapped_func_async(metadata, *args, **kwargs):
@@ -107,12 +99,7 @@ class AgentOmniEngine:
         return wrapped_func_sync
 
     def _setup_verl_proxy(self, proxy_config: dict, tracer: Optional["TracerProtocol"]) -> None:
-        """Setup LiteLLM proxy for VERL rollout engine.
-
-        Args:
-            proxy_config: Proxy configuration dict
-            tracer: Optional tracer instance
-        """
+        """Setup LiteLLM proxy for VERL rollout engine."""
         model_name = proxy_config.get("model_name")
         if not model_name:
             logger.warning("No model_name provided in proxy_config. Proxy manager will not be initialized. Provide proxy_config={'model_name': 'your-model'} to enable proxy.")
@@ -150,22 +137,13 @@ class AgentOmniEngine:
             raise ValueError(f"Unknown proxy mode: {proxy_mode}. Must be 'external' or 'subprocess'")
 
     def get_server_addresses(self) -> list[str] | None:
-        """Get all vLLM server addresses (for VERL engines).
-
-        Returns:
-            List of server addresses if using VERL, None otherwise.
-        """
+        """Get all vLLM server addresses (VERL only)."""
         if self.proxy_manager:
             return self.proxy_manager.get_server_addresses()
         return None
 
     async def initialize_pool(self):
-        """Initialize the workflow pool with parallel workflow instances.
-
-        Creates and populates the workflow queue with workflow instances
-        for parallel task processing. This method is idempotent and will
-        not recreate the pool if it already exists.
-        """
+        """Initialize workflow pool with parallel instances (idempotent)."""
         if self.agent_queue is not None:
             return
         self.agent_queue = asyncio.Queue(maxsize=self.n_parallel_tasks)
@@ -189,20 +167,7 @@ class AgentOmniEngine:
             return False, e, None
 
     async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, int, float, str]:
-        """Process a single task rollout with retry logic on exceptions.
-
-        Args:
-            task: Task dictionary containing the task specification.
-            task_id: Unique identifier for the task.
-            rollout_idx: Index of this rollout attempt for the task.
-            **kwargs: Additional arguments passed to the agent function.
-
-        Returns:
-            tuple[str, int, int, float]: Task ID, rollout index, retry attempt, and reward.
-
-        Raises:
-            Exception: If task fails permanently after retry_limit attempts and raise_on_error is True.
-        """
+        """Process single task with retry logic up to retry_limit attempts."""
         func = await self.agent_queue.get()
         try:
             for retry_attempt in range(1, self.retry_limit + 1):
@@ -222,16 +187,7 @@ class AgentOmniEngine:
             await self.agent_queue.put(func)
 
     async def _execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
-        """Run asynchronous workflow execution with retry logic for multiple tasks.
-
-        Args:
-            tasks: List of task dictionaries to process.
-            task_ids: Optional list of task identifiers. If None, UUIDs are generated.
-            **kwargs: Additional arguments passed to individual task processing.
-
-        Returns:
-            list[Episode]: List of completed episodes from all tasks.
-        """
+        """Execute multiple tasks asynchronously with retry logic and trace collection."""
         if self.agent_queue is None:
             await self.initialize_pool()
 
@@ -359,21 +315,7 @@ class AgentOmniEngine:
         raise Exception("Failed to execute tasks after 3 retries")
 
     async def flush_traces(self, timeout: float = 30.0) -> bool:
-        """Flush all traces to ensure they are persisted to storage.
-
-        This method sends a signal to the LiteLLM proxy, which then flushes
-        the tracer queue. All queued traces will be persisted before this
-        method returns.
-
-        This is useful for synchronization to ensure all traces are available
-        in storage before collecting them from the database.
-
-        Args:
-            timeout: Maximum time to wait for flush operation (default: 30.0 seconds)
-
-        Returns:
-            True if flush succeeds, False otherwise
-        """
+        """Flush all traces to storage via LiteLLM proxy (ensures persistence)."""
         if not self.proxy_manager:
             logger.warning("No proxy manager available, cannot flush traces")
             return False
@@ -389,15 +331,7 @@ class AgentOmniEngine:
         return success
 
     async def execute_tasks_verl(self, batch: "DataProto", **kwargs) -> "DataProto":
-        """Execute tasks from a Verl DataProto batch and return results.
-
-        Args:
-            batch: Verl DataProto containing tasks and metadata.
-            **kwargs: Additional arguments passed to execute_tasks.
-
-        Returns:
-            DataProto: Transformed results compatible with Verl training.
-        """
+        """Execute tasks from VERL batch and return training-ready DataProto."""
         free_cache_engine = self.config.actor_rollout_ref.rollout.free_cache_engine if self.config else False
         if free_cache_engine:
             # TODO: later probably should make the `wake_up` and `sleep` methods in base class to be async
@@ -421,15 +355,7 @@ class AgentOmniEngine:
         return self.transform_results_for_verl(episodes, task_ids)
 
     def transform_results_for_verl(self, episodes: list[Episode], task_ids: np.ndarray) -> "DataProto":
-        """Transform episode results into Verl-compatible DataProto format.
-
-        Args:
-            episodes: List of completed episodes from workflow execution.
-            task_ids: Array of task identifiers corresponding to episodes.
-
-        Returns:
-            DataProto: Formatted data ready for Verl training pipeline.
-        """
+        """Transform episodes into VERL-compatible DataProto for training."""
         # Local import to keep verl optional
         from verl import DataProto
         from verl.utils.torch_functional import pad_sequence_to_length

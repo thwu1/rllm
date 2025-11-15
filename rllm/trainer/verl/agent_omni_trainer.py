@@ -1,7 +1,10 @@
+"""PPO trainer for agent-based RL with omnidirectional workflow support."""
+
 import asyncio
 import math
 import os
 import threading
+import time
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -11,16 +14,10 @@ from pprint import pprint
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-
-from rllm.engine.agent_omni_engine import AgentOmniEngine
-from rllm.engine.rollout.verl_engine import VerlEngine
-from rllm.workflows.workflow import TerminationReason
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor
 from verl.single_controller.ray import RayWorkerGroup
-from verl.trainer.ppo.core_algos import (
-    agg_loss,
-)
+from verl.trainer.ppo.core_algos import agg_loss
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
@@ -35,9 +32,16 @@ from verl.trainer.ppo.ray_trainer import (
 )
 from verl.trainer.ppo.utils import Role, WorkerType
 from verl.utils.debug import marked_timer
+from verl.utils.tracking import Tracking
+
+from rllm.engine.agent_omni_engine import AgentOmniEngine
+from rllm.engine.rollout.verl_engine import VerlEngine
+from rllm.misc import colorful_print
+from rllm.workflows.workflow import TerminationReason
 
 
 class AgentOmniTrainer(RayPPOTrainer):
+    """PPO trainer for agent workflows with stepwise advantage and rejection sampling."""
     def __init__(
         self,
         config,
@@ -46,16 +50,24 @@ class AgentOmniTrainer(RayPPOTrainer):
         resource_pool_manager: ResourcePoolManager,
         ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
         agent_run_func: Callable = None,
-        # reward_fn=None,
-        # val_reward_fn=None,
-        # workflow_class=None,
-        # workflow_args=None,
     ):
-        super().__init__(config=config, tokenizer=tokenizer, role_worker_mapping=role_worker_mapping, resource_pool_manager=resource_pool_manager, ray_worker_group_cls=ray_worker_group_cls)
+        """Initialize AgentOmniTrainer.
 
-        # self.workflow_class = workflow_class
-        # self.workflow_args = workflow_args or {}
-        # self._validate_config()
+        Args:
+            config: Training configuration (hydra/OmegaConf).
+            tokenizer: Tokenizer for model input/output.
+            role_worker_mapping: Maps roles to worker types for VERL.
+            resource_pool_manager: Manages GPU resources across workers.
+            ray_worker_group_cls: Ray worker group class (default: RayWorkerGroup).
+            agent_run_func: Agent workflow function to execute during rollouts.
+        """
+        super().__init__(
+            config=config,
+            tokenizer=tokenizer,
+            role_worker_mapping=role_worker_mapping,
+            resource_pool_manager=resource_pool_manager,
+            ray_worker_group_cls=ray_worker_group_cls,
+        )
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
@@ -63,21 +75,8 @@ class AgentOmniTrainer(RayPPOTrainer):
 
         self.agent_run_func = agent_run_func
 
-    # def _validate_config(self):
-    #     assert self.workflow_class is not None, "workflow_class is required for agent workflow trainer"
-    #     assert self.config.actor_rollout_ref.hybrid_engine is True, "Only hybrid engine is supported"
-    #     assert self.config.actor_rollout_ref.rollout.mode == "async", "Only async rollout mode is supported"
-    #     assert self.use_rm is False, "Reward models are not supported. Rewards should be assigned using a reward function in the workflow or environment."
-    #     if self.config.rllm.rejection_sample.multiplier != 1:
-    #         assert self.config.rllm.rejection_sample.enable is True, "rejection sampling is disabled, but rejection_sample.multiplier is not 1"
-
-    #     # TODO: revisit whether this is now supported by Verl
-    #     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-    #         raise NotImplementedError("REMAX is not supported yet")
-
     def init_workers(self):
-        # Replace VERL's vLLM server class with our instrumented version
-        # We need to do this BEFORE super().init_workers() creates the servers
+        """Initialize workers with instrumented vLLM servers for distributed rollouts."""
         import ray
 
         from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServerBase, vLLMReplica
@@ -163,11 +162,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         asyncio.run_coroutine_threadsafe(self.agent_execution_engine.initialize_pool(), self._loop).result()
 
     def fit_agent(self):
-        """
-        The training loop of PPO. Adapted to train the underlying model of agent.
-        """
-        from verl.utils.tracking import Tracking
-
+        """Main PPO training loop for agent workflows with rejection sampling."""
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
@@ -176,12 +171,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         )
 
         self.global_steps = 0
-
-        # load checkpoint before doing anything
         self._load_checkpoint()
-
-        # perform validation before training
-        import time
 
         start_time = time.time()
         if self.config.trainer.get("val_before_train", True):
@@ -535,6 +525,7 @@ class AgentOmniTrainer(RayPPOTrainer):
                     return
 
     def _validate_agent(self):
+        """Run validation on test set and compute pass@k metrics."""
         is_correct_lst = []
         data_source_lst = []
         uid_lst = []
@@ -607,17 +598,15 @@ class AgentOmniTrainer(RayPPOTrainer):
         return metrics
 
     def generate_trajectories(self, batch, timing_raw=None, **kwargs):
-        """
-        Generates trajectories asynchronously using the agent execution engine's excute tasks method.
-        Post-processing is done in the engine as well.
+        """Generate trajectories using agent execution engine.
 
         Args:
-            batch: The input batch for trajectory generation
-            timing_raw: Dictionary to store timing information for profiling
-            **kwargs: Additional arguments to pass to trajectory_generator
+            batch: Input batch (DataProto) for trajectory generation.
+            timing_raw: Optional dict to store timing metrics.
+            **kwargs: Additional arguments passed to agent execution engine.
 
         Returns:
-            list: List of collected processed trajectories
+            DataProto: Processed trajectories ready for training.
         """
         if timing_raw is None:
             timing_raw = {}
@@ -629,9 +618,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         return final_gen_batch_output
 
     def _stepwise_advantage_broadcast(self, last_step_batch, non_last_step_batch):
-        """
-        Broadcast the advantage from last_step_batch to all other steps within the same episode and trajectory.
-        """
+        """Broadcast advantages from last steps to all earlier steps in trajectories."""
 
         # NOTE: Currently takes the average of advantages. For GRPO, advantage and returns is uniform for each token so this makes no difference.
         # NOTE: For simplicity, assumes advantage and return is the same, which also holds for GRPO variants
@@ -671,6 +658,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         non_last_step_batch.batch["returns"] = final_advantage
 
     def _pad_dataproto_to_world_size(self, batch):
+        """Pad batch to be divisible by world size for distributed training."""
         world_sizes = []
         if self.use_critic and self.critic_wg.world_size != 0:
             world_sizes.append(self.critic_wg.world_size)
@@ -705,14 +693,14 @@ class AgentOmniTrainer(RayPPOTrainer):
         return batch
 
     def _remove_padding(self, batch):
-        """Removes padded steps from the batch"""
+        """Remove padded steps from batch."""
         is_pad_step = batch.non_tensor_batch["is_pad_step"]
         non_pad_step_indices = np.where(is_pad_step == False)[0]
         batch = batch.select_idxs(non_pad_step_indices)  # This batch only has non_pad steps
         return batch
 
     def shutdown(self):
-        """A cleanup method to gracefully stop the background event loop."""
+        """Gracefully shutdown agent execution engine and background event loop."""
         if hasattr(self, "agent_execution_engine") and self.agent_execution_engine is not None:
             self.agent_execution_engine.shutdown()
             self.agent_execution_engine = None
@@ -722,15 +710,7 @@ class AgentOmniTrainer(RayPPOTrainer):
             self._thread.join()
 
     def visualize_trajectory_last_step(self, tensor_batch, sample_idx=0, max_samples=1):
-        """
-        Visualize last steps from a workflow rollout:
-        - detokenize prompts/responses
-        - show token usage mask
-        - show reward tokens (placed at the last response token)
-        - print Correct/Incorrect using `is_correct` from non_tensors
-        """
-        from rllm.misc import colorful_print
-
+        """Visualize trajectory last steps with color-coded tokens and rewards."""
         # Select only last steps if stepwise-advantage is enabled
         if "is_last_step" in tensor_batch.non_tensor_batch:
             is_last = tensor_batch.non_tensor_batch["is_last_step"]
