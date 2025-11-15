@@ -74,6 +74,11 @@ class TrajectoryView(BaseModel):
     output: Any = None  # Function return value
     metadata: dict | None = None  # Additional tracking data
 
+    @property
+    def result(self):
+        """Get the output from the trajectory (backward compatibility)."""
+        return self.output
+
 
 def trace_to_step_view(trace: Trace) -> StepView:
     """Convert a trace to a StepView (trace wrapper with reward field)."""
