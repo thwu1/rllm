@@ -82,7 +82,6 @@ class TracingCallback(CustomLogger):
     def __init__(self, tracer: SqliteTracer):
         super().__init__()
         self.tracer = tracer
-        # Track logged call IDs to prevent duplicates
 
     async def async_post_call_success_hook(
         self,
@@ -144,40 +143,3 @@ class TracingCallback(CustomLogger):
 
         # Return response unchanged
         return response
-
-    # def log_failure_event(self, kwargs: dict[str, Any], response_obj: ModelResponse | ModelResponseStream, start_time: float, end_time: float) -> None:
-    #     """Called after failed LLM completion (sync path).
-
-    #     This complements the success hook to capture error outcomes.
-    #     """
-    #     litellm_params = kwargs.get("litellm_params", {})
-    #     # Whitelist metadata keys to avoid noisy provider internals
-    #     raw_meta = litellm_params.get("metadata", {})
-    #     allowed = {"session_name", "job", "user_api_key_request_route"}
-    #     metadata = {k: v for k, v in raw_meta.items() if k in allowed}
-
-    #     model = kwargs.get("model", "unknown")
-    #     messages = kwargs.get("messages", [])
-
-    #     # Compute latency in milliseconds supporting datetime or float inputs
-    #     _delta = end_time - start_time
-    #     if isinstance(_delta, timedelta):
-    #         latency_ms = _delta.total_seconds() * 1000.0
-    #     else:
-    #         latency_ms = float(_delta) * 1000.0
-
-    #     error_info = {
-    #         "error": str(response_obj) if response_obj else "Unknown error",
-    #         "type": type(response_obj).__name__ if response_obj else "UnknownError",
-    #     }
-
-    #     self.tracer.log_llm_call(
-    #         name=f"proxy/{model}",
-    #         model=model,
-    #         input={"messages": messages},
-    #         output=error_info,
-    #         metadata={**metadata, "error": True},
-    #         session_name=metadata.get("session_name"),
-    #         latency_ms=latency_ms,
-    #         tokens={"prompt": 0, "completion": 0, "total": 0},
-    #     )

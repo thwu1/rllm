@@ -145,9 +145,6 @@ class SqliteTraceStore:
                 )
             """)
 
-            # Check if migration is needed (existing databases without created_at in junction table)
-            await self._migrate_if_needed(conn)
-
             # Create indexes for performance
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_uid ON trace_sessions(session_uid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_trace ON trace_sessions(trace_id)")
@@ -161,21 +158,6 @@ class SqliteTraceStore:
         finally:
             await conn.close()
 
-    async def _migrate_if_needed(self, conn: aiosqlite.Connection) -> None:
-        """Migrate existing databases to add created_at column to trace_sessions."""
-        try:
-            # Check if created_at column exists in trace_sessions
-            async with conn.execute("PRAGMA table_info(trace_sessions)") as cursor:
-                columns = await cursor.fetchall()
-                column_names = [col[1] for col in columns]
-
-                if "created_at" not in column_names:
-                    logger.info("[SqliteStore] Migrating trace_sessions table to add created_at column")
-                    await self._add_created_at_to_junction_table(conn)
-                    logger.info("[SqliteStore] Migration completed successfully")
-        except Exception as e:
-            logger.warning(f"[SqliteStore] Migration check failed: {e}")
-
     async def _add_created_at_to_junction_table(self, conn: aiosqlite.Connection) -> None:
         """
         Add created_at column to existing trace_sessions table and backfill data.
@@ -185,7 +167,6 @@ class SqliteTraceStore:
         try:
             # Step 1: Add the column (allows NULL initially for existing rows)
             await conn.execute("ALTER TABLE trace_sessions ADD COLUMN created_at REAL")
-            # logger.info("[SqliteStore] Added created_at column to trace_sessions")
 
             # Step 2: Backfill created_at from traces table in batches
             batch_size = 10000
@@ -217,13 +198,8 @@ class SqliteTraceStore:
 
                 total_updated += rows_updated
                 await conn.commit()
-                # logger.info(f"[SqliteStore] Migration progress: {total_updated} rows updated")
 
                 offset += batch_size
-
-            # logger.info(f"[SqliteStore] Backfilled created_at for {total_updated} junction table rows")
-
-            # Note: Composite index will be created by _init_database after migration completes
 
         except Exception as e:
             logger.exception(f"[SqliteStore] Failed to migrate trace_sessions table: {e}")
@@ -316,8 +292,6 @@ class SqliteTraceStore:
             if session_uids:
                 # import logging
 
-                # logger = logging.getLogger(__name__)
-                # logger.info(f"[SqliteStore.store] Inserting junction entries for trace_id={trace_id}, session_uids={session_uids}")
                 await conn.executemany(
                     "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
                     [(trace_id, uid, actual_created_at) for uid in session_uids],
@@ -471,9 +445,6 @@ class SqliteTraceStore:
             List of TraceContext objects matching the filters
         """
 
-        # logger = logging.getLogger(__name__)
-        # logger.info(f"[SqliteStore.query] Querying with session_uids={session_uids}, context_types={context_types}, namespaces={namespaces}, since={since}, limit={limit}")
-
         await self._ensure_initialized()
         conn = await self._connect()
         try:
@@ -533,12 +504,9 @@ class SqliteTraceStore:
                 params.append(limit)
 
             query = " ".join(query_parts)
-            # logger.info(f"[SqliteStore.query] Executing SQL: {query}")
-            # logger.info(f"[SqliteStore.query] With params: {params}")
 
             async with conn.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
-                # logger.info(f"[SqliteStore.query] Found {len(rows)} rows")
 
                 results = []
                 for row in rows:
