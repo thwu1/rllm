@@ -14,19 +14,68 @@ _SLUG_PREFIX = "rllm1:"
 
 
 def assemble_routing_metadata(extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Return the metadata dict that should be routed through the proxy slug."""
-    payload: dict[str, Any] = dict(get_current_metadata())
-    session_name = get_current_session_name()
-    if session_name and "session_name" not in payload:
-        payload["session_name"] = session_name
+    """Return the metadata dict that should be routed through the proxy slug.
 
-    # Add session UIDs from active sessions for trace association
-    active_sessions = get_active_sessions()
-    if active_sessions:
-        payload["session_uids"] = [s._uid for s in active_sessions]
+    Auto-detects session type (OTelSession vs ContextVarSession) and reads metadata
+    from the appropriate source (OTel baggage vs contextvars).
+    """
+    payload: dict[str, Any] = {}
 
+    # Try OTel first (check if OTelSession is active)
+    otel_session = None
+    try:
+        from rllm.sdk.session.otel import get_current_otel_session, get_otel_metadata
+
+        otel_session = get_current_otel_session()
+    except ImportError:
+        # OTel not installed
+        pass
+
+    if otel_session:
+        # OTelSession is active - read from OTel baggage
+        try:
+            from opentelemetry import baggage, context
+
+            ctx = context.get_current()
+
+            # Get session name
+            session_name = baggage.get_baggage("rllm_session_name", context=ctx)
+            if session_name:
+                payload["session_name"] = session_name
+
+            # Get session UID
+            session_uid = baggage.get_baggage("rllm_session_uid", context=ctx)
+
+            # Get all metadata from baggage
+            metadata = get_otel_metadata()
+            payload.update(metadata)
+
+            # Add session UIDs from active OTel sessions
+            from rllm.sdk.session.otel import get_active_otel_sessions
+
+            active_sessions = get_active_otel_sessions()
+            if active_sessions:
+                payload["session_uids"] = [s._uid for s in active_sessions]
+        except ImportError:
+            # OTel not fully available, fall through to ContextVarSession
+            otel_session = None
+
+    if not otel_session:
+        # ContextVarSession is active - use existing logic
+        payload = dict(get_current_metadata())
+        session_name = get_current_session_name()
+        if session_name and "session_name" not in payload:
+            payload["session_name"] = session_name
+
+        # Add session UIDs from active sessions for trace association
+        active_sessions = get_active_sessions()
+        if active_sessions:
+            payload["session_uids"] = [s._uid for s in active_sessions]
+
+    # Merge extra metadata
     if extra:
         payload.update(dict(extra))
+
     return payload
 
 
