@@ -42,48 +42,15 @@ def get_active_sessions() -> list["ContextVarSession"]:
 
 
 class ContextVarSession:
-    """
-    Session implementation using Python contextvars with pluggable storage.
+    """Context-based session with pluggable storage for LLM trace collection.
 
-    This session implementation separates context propagation (session_name, metadata)
-    from trace storage. The storage backend can be plugged in to support different
-    deployment scenarios:
+    Features thread-safe context propagation, nested sessions with metadata inheritance,
+    and pluggable storage (InMemoryStorage default, SqliteSessionStorage for multi-process).
 
-    - **InMemoryStorage** (default): Fast, single-process, ephemeral
-    - **SqliteSessionStorage**: Durable, multi-process via shared SQLite file
-    - **Custom storage**: Implement SessionStorage protocol
-
-    Features:
-    - Thread-safe and async-safe context propagation
-    - Automatic nested session isolation with metadata inheritance
-    - Pluggable storage backends
-    - Backward compatible with existing code
-
-    Example (in-memory, default):
-        >>> from rllm.sdk.session import ContextVarSession
-        >>> from rllm.sdk import get_chat_client
-        >>>
-        >>> llm = get_chat_client(api_key="...", model="gpt-4")
-        >>>
-        >>> # Default: in-memory storage
+    Example:
         >>> with ContextVarSession() as session:
         ...     llm.chat.completions.create(...)
-        ...     print(len(session.llm_calls))  # Immediate access
-
-    Example (SQLite, multi-process):
-        >>> from rllm.sdk.session import ContextVarSession
-        >>> from rllm.sdk.session.storage import SqliteSessionStorage
-        >>>
-        >>> storage = SqliteSessionStorage("traces.db")
-        >>>
-        >>> # Process 1
-        >>> with ContextVarSession(storage=storage, name="task-123") as session:
-        ...     llm.chat.completions.create(...)
-        >>>
-        >>> # Process 2 (can access same traces!)
-        >>> with ContextVarSession(storage=storage, name="task-123") as session:
-        ...     llm.chat.completions.create(...)
-        ...     print(session.llm_calls)  # Sees traces from both processes!
+        ...     print(len(session.llm_calls))
     """
 
     def __init__(
@@ -159,40 +126,10 @@ class ContextVarSession:
 
     @property
     def llm_calls(self) -> list[Trace]:
-        """
-        Get all LLM calls made within this session and descendant sessions.
+        """Get all LLM traces from this session and nested child sessions.
 
-        Queries the storage backend using the session UID, which enables
-        tree hierarchy: parent sessions automatically see traces from all
-        nested child sessions.
-
-        For multi-process scenarios with SqliteSessionStorage, use
-        to_context()/from_context() to propagate the session hierarchy:
-
-        Example:
-            # Process 1 - parent session
-            storage = SqliteSessionStorage("traces.db")
-            with ContextVarSession(storage=storage) as parent:
-                llm.call()  # One trace
-
-                # Nested local session
-                with ContextVarSession() as child:
-                    llm.call()  # Another trace
-
-                # Parent sees both!
-                assert len(parent.llm_calls) == 2
-
-                # Send context to another process
-                context = parent.to_context()
-                send_to_process2(context)
-
-            # Process 2 - restore session hierarchy
-            context = receive_from_process1()
-            with ContextVarSession.from_context(context, storage) as remote:
-                llm.call()  # Parent in Process 1 will see this too!
-
-        Returns:
-            List of Trace objects for this session and all descendants
+        Parent sessions automatically see traces from nested children via session UID hierarchy.
+        For multi-process scenarios, use to_context()/from_context() for hierarchy propagation.
         """
         return self.storage.get_traces(self._uid, self.name)
 
@@ -202,12 +139,7 @@ class ContextVarSession:
         return [trace_to_step_view(trace) for trace in self.llm_calls]
 
     def clear_calls(self) -> None:
-        """
-        Clear all stored calls for this session.
-
-        Only works with storage backends that support clearing (e.g., InMemoryStorage).
-        SQLite and other persistent storage may not support this operation.
-        """
+        """Clear all traces for this session (InMemoryStorage only)."""
         if hasattr(self.storage, "clear"):
             self.storage.clear(self._uid, self.name)
 
@@ -253,22 +185,9 @@ class ContextVarSession:
         return len(self.llm_calls)
 
     def to_context(self) -> dict:
-        """
-        Serialize session context for distributed propagation.
+        """Serialize session context for cross-process propagation.
 
-        Returns a dictionary containing the session state needed to restore
-        the session in another process. This enables distributed tracing
-        across process boundaries.
-
-        Returns:
-            Dictionary with name, session_uid_chain (excluding current),
-            and metadata
-
-        Example:
-            >>> # Process 1
-            >>> with ContextVarSession(name="task-123") as session:
-            ...     context = session.to_context()
-            ...     send_to_remote_process(context)
+        Returns dict with name, session_uid_chain (for hierarchy), and metadata.
         """
         return {
             "name": self.name,
@@ -282,26 +201,9 @@ class ContextVarSession:
         context: dict,
         storage: "SessionStorage | None" = None,
     ) -> "ContextVarSession":
-        """
-        Restore session from serialized context.
+        """Restore session from serialized context (for cross-process tracing).
 
-        Creates a new session instance that continues the session hierarchy
-        from a parent process. The new session will inherit the parent's
-        session UID chain, enabling distributed tracing.
-
-        Args:
-            context: Dictionary from to_context() containing session state
-            storage: Storage backend to use (required for cross-process tracing)
-
-        Returns:
-            New ContextVarSession instance that continues the parent hierarchy
-
-        Example:
-            >>> # Process 2
-            >>> context = receive_from_process1()
-            >>> storage = SqliteSessionStorage("traces.db")
-            >>> with ContextVarSession.from_context(context, storage=storage) as session:
-            ...     llm.call()  # Traces visible to parent session in Process 1!
+        Creates new session that continues parent hierarchy via inherited UID chain.
         """
         return cls(
             name=context["name"],
