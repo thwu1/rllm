@@ -7,24 +7,24 @@ import uuid
 from functools import wraps
 from typing import Any, Callable
 
-from rllm.sdk.protocol import StepView, TrajectoryView
+from rllm.sdk.protocol import StepGroupView, TrajectoryView
 from rllm.sdk.session import get_active_sessions, get_current_session
 from rllm.sdk.shortcuts import session
 
 
 def step(name: str | None = None, **step_metadata):
     """
-    Decorator to mark a function as a step.
+    Decorator to mark a function as a step group.
 
-    Creates a session internally for this step and returns a StepView.
-    The decorator **changes the return value** - it returns StepView instead
+    Creates a session internally for this step and returns a StepGroupView.
+    The decorator **changes the return value** - it returns StepGroupView instead
     of the original return value.
 
-    The StepView captures:
+    The StepGroupView captures:
     - input: Function arguments (dict)
     - output: Function return value (accessible via .result property)
-    - traces: All LLM calls made during step execution
-    - reward: Can be set later (supports delayed reward assignment)
+    - traces: All LLM calls made during step execution (list[Trace])
+    - reward: Step group reward (assigned to all training Steps in this group)
     - metadata: Contains execution info and additional tracking data
 
     Steps automatically register with parent @trajectory if one exists.
@@ -34,7 +34,7 @@ def step(name: str | None = None, **step_metadata):
         **step_metadata: Additional metadata to attach to the step
 
     Returns:
-        Decorator that wraps the function to return StepView
+        Decorator that wraps the function to return StepGroupView
 
     Example:
         >>> @step(name="solve")
@@ -42,11 +42,11 @@ def step(name: str | None = None, **step_metadata):
         ...     response = await llm.chat.completions.create(...)
         ...     return response.choices[0].message.content
 
-        >>> step_view = await solve_problem("What is 2+2?")
-        >>> print(step_view.result)  # "4" - function return value
-        >>> print(step_view.input)   # {"query": "What is 2+2?"}
-        >>> print(step_view.traces)  # [Trace(...)] - all LLM calls
-        >>> step_view.reward = 1.0   # Delayed reward assignment
+        >>> step_group = await solve_problem("What is 2+2?")
+        >>> print(step_group.result)  # "4" - function return value
+        >>> print(step_group.input)   # {"query": "What is 2+2?"}
+        >>> print(step_group.traces)  # [Trace(...)] - all LLM calls
+        >>> step_group.reward = 1.0   # Assigned to all training Steps
     """
     def decorator(func: Callable) -> Callable:
         step_name = name or func.__name__
@@ -55,7 +55,7 @@ def step(name: str | None = None, **step_metadata):
 
         if asyncio.iscoroutinefunction(func):
             @wraps(func)
-            async def async_wrapper(*args, **kwargs) -> StepView:
+            async def async_wrapper(*args, **kwargs) -> StepGroupView:
                 # Capture function arguments
                 bound_args = sig.bind(*args, **kwargs)
                 bound_args.apply_defaults()
@@ -77,8 +77,8 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # Create StepView
-                    step_view = StepView(
+                    # Create StepGroupView
+                    step_group = StepGroupView(
                         id=step_id,
                         input=func_input,      # Function arguments
                         output=result,         # Function return value
@@ -94,14 +94,14 @@ def step(name: str | None = None, **step_metadata):
                     )
 
                     # Register with parent trajectory (if exists)
-                    _register_step_with_trajectory(step_view)
+                    _register_step_with_trajectory(step_group)
 
-                    return step_view
+                    return step_group
 
             return async_wrapper
         else:
             @wraps(func)
-            def sync_wrapper(*args, **kwargs) -> StepView:
+            def sync_wrapper(*args, **kwargs) -> StepGroupView:
                 # Capture function arguments
                 bound_args = sig.bind(*args, **kwargs)
                 bound_args.apply_defaults()
@@ -123,8 +123,8 @@ def step(name: str | None = None, **step_metadata):
                     # Calculate execution time
                     execution_time_ms = (time.time() - start_time) * 1000
 
-                    # Create StepView
-                    step_view = StepView(
+                    # Create StepGroupView
+                    step_group = StepGroupView(
                         id=step_id,
                         input=func_input,      # Function arguments
                         output=result,         # Function return value
@@ -140,9 +140,9 @@ def step(name: str | None = None, **step_metadata):
                     )
 
                     # Register with parent trajectory (if exists)
-                    _register_step_with_trajectory(step_view)
+                    _register_step_with_trajectory(step_group)
 
-                    return step_view
+                    return step_group
 
             return sync_wrapper
 
@@ -265,13 +265,13 @@ def trajectory(name: str = "agent", **traj_metadata):
 
 # Helper functions
 
-def _register_step_with_trajectory(step_view: StepView):
+def _register_step_with_trajectory(step_group: StepGroupView):
     """
-    Register a step with its parent trajectory (if exists).
+    Register a step group with its parent trajectory (if exists).
 
     Uses get_active_sessions() to walk up the session stack and find
     the parent trajectory session. This is the ONLY way to communicate
-    between steps and trajectories - via session metadata.
+    between step groups and trajectories - via session metadata.
     """
     sessions_stack = get_active_sessions()
 
@@ -280,8 +280,8 @@ def _register_step_with_trajectory(step_view: StepView):
     for sess in reversed(sessions_stack[:-1]):
         # Check if this is a trajectory session
         if sess.metadata.get('_is_trajectory'):
-            # Found parent trajectory - add step to its collection
+            # Found parent trajectory - add step group to its collection
             collected_steps = sess.metadata.get('_collected_steps')
             if collected_steps is not None:
-                collected_steps.append(step_view)
+                collected_steps.append(step_group)
             break

@@ -4,7 +4,7 @@ from rllm.sdk.decorators import (
     step,
     trajectory,
 )
-from rllm.sdk.protocol import StepView, Trace, TrajectoryView
+from rllm.sdk.protocol import StepGroupView, StepView, Trace, TrajectoryView
 from rllm.sdk.session import (
     ContextVarSession,
     InMemoryStorage,
@@ -25,10 +25,11 @@ from rllm.sdk.tracers import (
 __all__ = [
     # Protocol / Data Models
     "Trace",  # Low-level LLM call trace
-    "StepView",  # High-level step view (semantic unit)
-    "TrajectoryView",  # Collection of steps forming a workflow
+    "StepGroupView",  # Semantic step group (contains multiple traces)
+    "StepView",  # Backward compat alias for StepGroupView
+    "TrajectoryView",  # Collection of step groups forming a workflow
     # Decorators
-    "step",  # Decorator to mark function as a step (returns StepView)
+    "step",  # Decorator to mark function as a step group (returns StepGroupView)
     "trajectory",  # Decorator to mark function as trajectory (returns TrajectoryView)
     # Sessions
     "SessionContext",  # Default (alias for ContextVarSession)
