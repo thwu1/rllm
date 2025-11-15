@@ -6,7 +6,7 @@ from functools import wraps
 from typing import Any, Callable
 
 from rllm.sdk.protocol import StepView, TrajectoryView, trace_to_step_view
-from rllm.sdk.shortcuts import session
+from rllm.sdk.shortcuts import _session_with_name
 
 
 def trajectory(name: str = "agent", **traj_metadata):
@@ -56,7 +56,7 @@ def trajectory(name: str = "agent", **traj_metadata):
                 func_input = dict(bound_args.arguments)
 
                 # Create a session for trajectory
-                with session(name=name, **traj_metadata) as traj_sess:
+                with _session_with_name(name=name, **traj_metadata) as traj_sess:
                     # Run the function
                     result = await func(*args, **kwargs)
 
@@ -82,7 +82,7 @@ def trajectory(name: str = "agent", **traj_metadata):
                 func_input = dict(bound_args.arguments)
 
                 # Create a session for trajectory
-                with session(name=name, **traj_metadata) as traj_sess:
+                with _session_with_name(name=name, **traj_metadata) as traj_sess:
                     # Run the function
                     result = func(*args, **kwargs)
 
