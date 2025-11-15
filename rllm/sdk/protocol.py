@@ -36,14 +36,12 @@ class StepView(BaseModel):
         - id: Trace ID
         - input: LLM input (from trace)
         - output: LLM output (from trace)
-        - traces: List containing exactly one Trace
         - reward: Step reward (assigned to training Step)
-        - metadata: Additional tracking data
+        - metadata: Additional tracking data (can include model, tokens, latency, etc.)
     """
     id: str
     input: str | list | dict | None = None  # LLM input
     output: str | dict | None = None        # LLM output
-    traces: list[Trace] = Field(default_factory=list)  # Always exactly 1 trace
     reward: float = 0.0
     metadata: dict | None = None
 
@@ -78,9 +76,8 @@ def trace_to_step_view(trace: Trace) -> StepView:
     """Convert a trace to a StepView (trace wrapper with reward field)."""
     return StepView(
         id=trace.trace_id,
-        input=trace.input,   # LLM input
-        output=trace.output, # LLM output
-        traces=[trace],
+        input=trace.input,
+        output=trace.output,
         reward=0.0,
         metadata=trace.metadata,
     )
