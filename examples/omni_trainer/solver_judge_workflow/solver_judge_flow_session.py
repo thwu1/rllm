@@ -2,11 +2,11 @@ import asyncio
 import re
 import uuid
 
-from rllm.agents.agent import Episode, Trajectory
+from rllm.agents.agent import Trajectory
 from rllm.engine import RolloutEngine
 from rllm.rewards.reward_fn import RewardFunction
-from rllm.sdk import get_chat_client_async, session
-from rllm.sdk.protocol import TrajectoryProto
+from rllm.sdk import StepView, get_chat_client_async, session
+from rllm.sdk.protocol import TrajectoryView
 from rllm.workflows.workflow import Workflow
 
 
@@ -14,7 +14,7 @@ class Solver:
     def __init__(self, **kwargs):
         self.client = get_chat_client_async(base_url="http://localhost:4000/v1", api_key="EMPTY", model="Qwen/Qwen3-4B-Instruct-2507")
 
-    async def generate_solution(self, problem: str) -> Trajectory:
+    async def generate_solution(self, problem: str) -> StepView:
         with session(agent="solver", groupby_key=str(uuid.uuid4())) as sess:
             messages = [{"role": "user", "content": f"{problem}. Output the final answer within <answer>...</answer>"}]
             response = await self.client.chat.completions.create(
@@ -99,7 +99,7 @@ class SolverJudgeWorkflow(Workflow):
         self.solver = Solver()
         self.judge = Judge()
 
-    async def run(self, task: dict, uid: str, **kwargs) -> Episode:
+    async def run(self, task: dict, uid: str, **kwargs) -> list[TrajectoryView]:
         self.reset(task, uid)
         problem = task["question"]
 
@@ -119,4 +119,4 @@ class SolverJudgeWorkflow(Workflow):
         reward_result = self.reward_function(task, judge_step.action)
         judge_step.reward = reward_result.reward
 
-        return [TrajectoryProto(name="solver", steps=[solver_step]) for solver_step in solver_steps] + [TrajectoryProto(name="judge", steps=[judge_step])]
+        return [TrajectoryView(name="solver", steps=[solver_step]) for solver_step in solver_steps] + [TrajectoryView(name="judge", steps=[judge_step])]

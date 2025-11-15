@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -20,27 +22,76 @@ class Trace(BaseModel):
     tags: list[str] | None = None
 
 
-class StepProto(BaseModel):
+class StepView(BaseModel):
+    """
+    A view of a single step (one LLM call).
+
+    Each trace in a trajectory is automatically converted to a StepView.
+    StepView is essentially a trace wrapper that adds a reward field.
+
+    Hierarchy:
+        TrajectoryView → StepView (1 trace each)
+
+    Fields:
+        - id: Trace ID
+        - input: LLM input (from trace)
+        - output: LLM output (from trace)
+        - reward: Step reward (assigned to training Step)
+        - metadata: Additional tracking data (can include model, tokens, latency, etc.)
+    """
+
     id: str
-    action: str | None = None
-    output: dict | None = None
-    input: dict | None = None
+    input: str | list | dict | None = None  # LLM input
+    output: str | dict | None = None  # LLM output
+    action: Any | None = None
     reward: float = 0.0
     metadata: dict | None = None
 
 
-class TrajectoryProto(BaseModel):
+class TrajectoryView(BaseModel):
+    """
+    A view of a trajectory execution.
+
+    Represents a collection of steps (each step = 1 trace) that form a workflow.
+    Each trace in the trajectory is automatically converted to a StepView.
+
+    Hierarchy:
+        TrajectoryView → StepView (1 trace each)
+
+    Fields:
+        - name: Trajectory name
+        - steps: List of StepViews (auto-generated from traces)
+        - reward: Trajectory reward (set manually)
+        - input: Function arguments (dict)
+        - output: Function return value (Any)
+        - metadata: Additional tracking data
+    """
+
     name: str = "agent"
-    steps: list[StepProto] = Field(default_factory=list)
+    steps: list[StepView] = Field(default_factory=list)
     reward: float = 0.0
+    input: dict | None = None  # Function arguments
+    output: Any = None  # Function return value
+    metadata: dict | None = None  # Additional tracking data
+
+    @property
+    def result(self):
+        """Get the output from the trajectory (backward compatibility)."""
+        return self.output
 
 
-def trace_to_step_proto(trace: Trace) -> StepProto:
-    return StepProto(
+def trace_to_step_view(trace: Trace) -> StepView:
+    """Convert a trace to a StepView (trace wrapper with reward field)."""
+    return StepView(
         id=trace.trace_id,
         input=trace.input,
         output=trace.output,
-        action=None,
         reward=0.0,
         metadata=trace.metadata,
     )
+
+
+# Backward compatibility aliases
+StepProto = StepView
+TrajectoryProto = TrajectoryView
+trace_to_step_proto = trace_to_step_view

@@ -19,7 +19,7 @@ from rllm.engine.rollout import ModelOutput, RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
 from rllm.sdk.data_process import group_steps, trace_to_step
-from rllm.sdk.protocol import TrajectoryProto
+from rllm.sdk.protocol import TrajectoryView
 from rllm.sdk.shortcuts import _session_with_name
 from rllm.sdk.store.sqlite_store import SqliteTraceStore
 from rllm.workflows.workflow import TerminationReason
@@ -212,7 +212,7 @@ class AgentOmniEngine:
                     colorful_print(f"[{uid}] Rollout completed with reward: {float(output)}", fg="green" if float(output) > 0 else "yellow")
                     return task_id, rollout_idx, retry_attempt, float(output), session_uid
                 elif success and isinstance(output, list):
-                    assert all(isinstance(t, TrajectoryProto) for t in output), "Must be a list of TrajectoryProto"
+                    assert all(isinstance(t, TrajectoryView) for t in output), "Must be a list of TrajectoryView"
                     return task_id, rollout_idx, retry_attempt, output, session_uid
                 if retry_attempt < self.retry_limit:
                     print(f"[{uid}] Rollout failed on attempt {retry_attempt}/{self.retry_limit}, retrying...")
