@@ -54,24 +54,10 @@ class ReloadPayload(BaseModel):
         return values
 
 
-class TracerSignalPayload(BaseModel):
-    """Request body for batch-end tracer signals."""
-
-    token: str = Field(..., description="Unique identifier for the batch completion marker.")
-
-
 class FlushTracerPayload(BaseModel):
     """Request body for flushing tracer queue."""
 
     timeout: float = Field(default=30.0, description="Maximum time to wait for flush operation in seconds.")
-
-
-class RewardPayload(BaseModel):
-    """Request body for publishing reward scores."""
-
-    context_id: str = Field(..., description="Unique identifier for the context (e.g., trace ID, step ID, or session ID).")
-    reward: float = Field(..., description="Reward score to assign to this context.")
-    metadata: dict | None = Field(default=None, description="Optional metadata associated with the reward.")
 
 
 class LiteLLMProxyRuntime:
@@ -146,16 +132,6 @@ class LiteLLMProxyRuntime:
         except Exception:
             pass
 
-    async def emit_tracer_signal(self, token: str) -> None:
-        if not self._tracer:
-            raise RuntimeError("Tracer is not configured on this proxy")
-        # Debug: show tracer identity when emitting signal
-        try:
-            logging.info("Emitting tracer signal via tracer_id=%s token=%s", hex(id(self._tracer)), token)
-        except Exception:
-            pass
-        await self._tracer.store_signal(token, context_type="trace_batch_end")
-
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
         """Flush the tracer queue and return success status.
 
@@ -189,24 +165,6 @@ class LiteLLMProxyRuntime:
         except Exception:
             pass
         return success
-
-    async def publish_reward(self, context_id: str, reward: float, metadata: dict | None = None) -> None:
-        """Publish a reward score to the context store.
-
-        Args:
-            context_id: Unique identifier for the context (trace ID, step ID, or session ID).
-            reward: Reward score to assign.
-            metadata: Optional metadata associated with the reward.
-        """
-        if not self._tracer:
-            raise RuntimeError("Tracer is not configured on this proxy")
-
-        # Store reward as a signal in the context store
-        reward_data = {"reward": reward, **(metadata or {})}
-
-        logging.info("Publishing reward=%s for context_id=%s metadata=%s", reward, context_id, metadata)
-
-        await self._tracer.store_signal(context_id=context_id, context_type="reward", data=reward_data, tags=["reward"])
 
     @staticmethod
     def _count_models(config_path: Path) -> int:
@@ -279,17 +237,6 @@ def main() -> None:
             logging.exception("Reload failed")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
-    @litellm_app.post("/admin/tracer-signal", dependencies=[Depends(_require_token)])
-    async def tracer_signal(payload: TracerSignalPayload):
-        try:
-            await runtime.emit_tracer_signal(payload.token)
-            return {"status": "queued", "token": payload.token}
-        except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-        except Exception as exc:
-            logging.exception("Tracer signal failed")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
-
     @litellm_app.post("/admin/flush-tracer", dependencies=[Depends(_require_token)])
     async def flush_tracer(payload: FlushTracerPayload | None = None):
         """Flush the tracer queue to ensure all traces are persisted.
@@ -326,35 +273,6 @@ def main() -> None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         except Exception as exc:
             logging.exception("Flush tracer failed")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
-
-    @litellm_app.post("/admin/publish-reward", dependencies=[Depends(_require_token)])
-    async def publish_reward(payload: RewardPayload):
-        """Publish a reward score for a specific context.
-
-        This endpoint allows external services to publish reward scores that can be
-        associated with LLM traces, steps, or sessions. The reward is stored in the
-        context store with context_type="reward" and can be retrieved later.
-
-        Example:
-            ```bash
-            curl -X POST http://localhost:4000/admin/publish-reward \\
-                -H "Authorization: Bearer my-shared-secret" \\
-                -H "Content-Type: application/json" \\
-                -d '{
-                    "context_id": "task_123:0:1_solver_step0",
-                    "reward": 1.0,
-                    "metadata": {"is_correct": true, "step_type": "solver"}
-                }'
-            ```
-        """
-        try:
-            await runtime.publish_reward(context_id=payload.context_id, reward=payload.reward, metadata=payload.metadata)
-            return {"status": "published", "context_id": payload.context_id, "reward": payload.reward}
-        except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-        except Exception as exc:
-            logging.exception("Publish reward failed")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
     def _shutdown_handler(*_: int) -> None:

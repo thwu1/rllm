@@ -24,19 +24,16 @@ class Trace(BaseModel):
 
 class StepView(BaseModel):
     """
-    A view of a single step (one LLM call).
+    A concise view of a single LLM call (trace) with reward.
 
-    Each trace in a trajectory is automatically converted to a StepView.
     StepView is essentially a trace wrapper that adds a reward field.
 
-    Hierarchy:
-        TrajectoryView → StepView (1 trace each)
-
     Fields:
-        - id: Trace ID
+        - id: Trace ID, unique per trace, can be used to retrieve the full trace from the store
         - input: LLM input (from trace)
-        - output: LLM output (from trace)
-        - reward: Step reward (assigned to training Step)
+        - output: LLM response (from trace)
+        - action: Parsed action (set manually by user)
+        - reward: Step reward
         - metadata: Additional tracking data (can include model, tokens, latency, etc.)
     """
 
@@ -50,9 +47,9 @@ class StepView(BaseModel):
 
 class TrajectoryView(BaseModel):
     """
-    A view of a trajectory execution.
+    A view of a trajectory.
 
-    Represents a collection of steps (each step = 1 trace) that form a workflow.
+    Represents a collection of steps (each step = 1 trace)
     Each trace in the trajectory is automatically converted to a StepView.
 
     Hierarchy:
@@ -89,9 +86,3 @@ def trace_to_step_view(trace: Trace) -> StepView:
         reward=0.0,
         metadata=trace.metadata,
     )
-
-
-# Backward compatibility aliases
-StepProto = StepView
-TrajectoryProto = TrajectoryView
-trace_to_step_proto = trace_to_step_view
