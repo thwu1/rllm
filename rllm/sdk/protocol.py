@@ -39,9 +39,11 @@ class StepView(BaseModel):
         - reward: Step reward (assigned to training Step)
         - metadata: Additional tracking data (can include model, tokens, latency, etc.)
     """
+
     id: str
     input: str | list | dict | None = None  # LLM input
-    output: str | dict | None = None        # LLM output
+    output: str | dict | None = None  # LLM output
+    action: Any | None = None
     reward: float = 0.0
     metadata: dict | None = None
 
@@ -64,11 +66,12 @@ class TrajectoryView(BaseModel):
         - output: Function return value (Any)
         - metadata: Additional tracking data
     """
+
     name: str = "agent"
     steps: list[StepView] = Field(default_factory=list)
     reward: float = 0.0
-    input: dict | None = None   # Function arguments
-    output: Any = None          # Function return value
+    input: dict | None = None  # Function arguments
+    output: Any = None  # Function return value
     metadata: dict | None = None  # Additional tracking data
 
 
