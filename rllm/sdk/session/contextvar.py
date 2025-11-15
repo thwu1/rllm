@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from rllm.sdk.protocol import StepProto, Trace, trace_to_step_proto
+from rllm.sdk.protocol import StepView, Trace, trace_to_step_view
 
 if TYPE_CHECKING:
     from rllm.sdk.session.storage import SessionStorage
@@ -197,9 +197,9 @@ class ContextVarSession:
         return self.storage.get_traces(self._uid, self.name)
 
     @property
-    def steps(self) -> list[StepProto]:
+    def steps(self) -> list[StepView]:
         """Get all steps within this session."""
-        return [trace_to_step_proto(trace) for trace in self.llm_calls]
+        return [trace_to_step_view(trace) for trace in self.llm_calls]
 
     def clear_calls(self) -> None:
         """

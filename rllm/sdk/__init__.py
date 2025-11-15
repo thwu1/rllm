@@ -1,5 +1,7 @@
 """RLLM SDK for automatic LLM trace collection and RL training."""
 
+from rllm.sdk.decorators import trajectory
+from rllm.sdk.protocol import StepView, Trace, TrajectoryView
 from rllm.sdk.session import (
     ContextVarSession,
     InMemoryStorage,
@@ -18,6 +20,12 @@ from rllm.sdk.tracers import (
 )
 
 __all__ = [
+    # Protocol / Data Models
+    "Trace",  # Low-level LLM call trace
+    "StepView",  # Trace wrapper with reward field (auto-generated from traces)
+    "TrajectoryView",  # Collection of steps forming a workflow
+    # Decorators
+    "trajectory",  # Decorator to mark function as trajectory (returns TrajectoryView)
     # Sessions
     "SessionContext",  # Default (alias for ContextVarSession)
     "ContextVarSession",  # Explicit contextvars-based session
