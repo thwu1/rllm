@@ -4,6 +4,55 @@
 
 Before deploying expensive vLLM infrastructure, you can quickly validate your entire training pipeline using **inexpensive OpenAI models through the LiteLLM proxy**. This approach tests the complete system including proxy integration.
 
+## Standalone Tracer Tests
+
+Before running full training, you can test the tracer independently:
+
+### Test 1: SqliteTracer (No Proxy Needed)
+
+Test the tracer component alone without any server:
+
+```bash
+python examples/omni_trainer/test_tracer.py --db-path /tmp/test_tracer.db
+```
+
+**Tests:**
+- ✅ Basic trace logging
+- ✅ Session context integration
+- ✅ Queue processing and background worker
+- ✅ Flush mechanism
+- ✅ SQLite persistence
+- ✅ Concurrent sessions
+- ✅ Trace retrieval
+
+**Time:** < 1 minute | **Cost:** Free
+
+### Test 2: Proxy Tracer Integration
+
+Test the tracer through the LiteLLM proxy (requires running proxy):
+
+```bash
+# 1. Start proxy first
+export OPENAI_API_KEY="sk-..."
+cd examples/omni_trainer
+./start_proxy_openai.sh
+
+# 2. In another terminal, run test
+python examples/omni_trainer/test_proxy_tracer.py \
+    --proxy-url http://localhost:4000 \
+    --db-path /tmp/rllm_test.db
+```
+
+**Tests:**
+- ✅ Proxy server health
+- ✅ Chat completion requests
+- ✅ Trace collection through proxy callbacks
+- ✅ Proxy flush endpoint
+- ✅ Trace persistence to SQLite
+- ✅ Concurrent requests
+
+**Time:** 1-2 minutes | **Cost:** ~$0.01-0.02
+
 ## What It Tests
 
 **✅ Full system validation:**
@@ -163,23 +212,42 @@ model_list:
 
 ---
 
-## Recommended Workflow
+## Recommended Testing Workflow
 
-1. **Start with OpenAI testing** (`train_*_openai.py`)
-   - Validates full proxy integration
-   - Tests trace collection and flush
-   - Small cost (~$0.10), quick turnaround (2-5 min)
-   - Catches 95% of potential issues!
+### Step 1: Test Tracer Standalone (< 1 min, Free)
 
-2. **Fix any issues found**
-   - Configuration errors
-   - Storage problems
-   - Proxy integration bugs
+```bash
+python examples/omni_trainer/test_tracer.py --db-path /tmp/test_tracer.db
+```
 
-3. **Deploy vLLM for production**
-   - Now confident everything works
-   - Only model backend changes
-   - Full training with your actual models
+Validates: SQLite storage, queue processing, flush mechanism
+
+### Step 2: Test Proxy Tracer Integration (1-2 min, ~$0.02)
+
+```bash
+# Start proxy
+export OPENAI_API_KEY="sk-..."
+./start_proxy_openai.sh
+
+# Test proxy integration
+python examples/omni_trainer/test_proxy_tracer.py
+```
+
+Validates: Proxy callbacks, trace collection, flush endpoint
+
+### Step 3: Full Training Test (2-5 min, ~$0.10)
+
+```bash
+python -m examples.omni_trainer.simple_math.train_hendrycks_math_openai \
+    data.train_batch_size=4 \
+    trainer.total_epochs=1
+```
+
+Validates: Complete training pipeline end-to-end
+
+### Step 4: Deploy vLLM for Production
+
+Now you're confident everything works!
 
 ---
 
