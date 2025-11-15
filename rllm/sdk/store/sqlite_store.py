@@ -11,6 +11,8 @@ from typing import Any
 
 import aiosqlite
 
+from rllm.sdk.session import get_active_sessions
+
 logger = logging.getLogger(__name__)
 
 
@@ -157,53 +159,6 @@ class SqliteTraceStore:
         finally:
             await conn.close()
 
-    async def _add_created_at_to_junction_table(self, conn: aiosqlite.Connection) -> None:
-        """
-        Add created_at column to existing trace_sessions table and backfill data.
-
-        Uses a batched approach for large tables to avoid locking issues.
-        """
-        try:
-            # Step 1: Add the column (allows NULL initially for existing rows)
-            await conn.execute("ALTER TABLE trace_sessions ADD COLUMN created_at REAL")
-
-            # Step 2: Backfill created_at from traces table in batches
-            batch_size = 10000
-            offset = 0
-            total_updated = 0
-
-            while True:
-                # Update a batch of rows
-                async with conn.execute(
-                    """
-                    UPDATE trace_sessions
-                    SET created_at = (
-                        SELECT t.created_at
-                        FROM traces t
-                        WHERE t.id = trace_sessions.trace_id
-                    )
-                    WHERE trace_sessions.rowid IN (
-                        SELECT rowid FROM trace_sessions
-                        WHERE created_at IS NULL
-                        LIMIT ?
-                    )
-                    """,
-                    (batch_size,),
-                ) as cursor:
-                    rows_updated = cursor.rowcount
-
-                if rows_updated == 0:
-                    break
-
-                total_updated += rows_updated
-                await conn.commit()
-
-                offset += batch_size
-
-        except Exception as e:
-            logger.exception(f"[SqliteStore] Failed to migrate trace_sessions table: {e}")
-            raise
-
     def _get_active_session_uids(self) -> list[str]:
         """
         Get session UIDs from active sessions.
@@ -212,8 +167,6 @@ class SqliteTraceStore:
             List of session UIDs (one per active session, outer → inner)
         """
         try:
-            from rllm.sdk.session import get_active_sessions
-
             sessions = get_active_sessions()
             return [sess._uid for sess in sessions]
         except Exception:
@@ -289,8 +242,6 @@ class SqliteTraceStore:
             # The composite index on (session_uid, created_at) enables fast time-bounded queries
             # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
             if session_uids:
-                # import logging
-
                 await conn.executemany(
                     "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
                     [(trace_id, uid, actual_created_at) for uid in session_uids],
@@ -578,10 +529,6 @@ class SqliteTraceStore:
             # 1. Composite index (idx_trace_sessions_uid_time) → O(log n) lookup + range scan
             # 2. Filter on junction table's created_at (no need to join first)
             # 3. Join to traces only for matching rows → O(k) where k = result set size
-            #
-            # Key optimization: Filter by time on the junction table (ts.created_at)
-            # instead of the main table (t.created_at), allowing the composite index
-            # to be fully utilized without joining first.
             if since is not None:
                 # Use composite index for both session_uid and time filtering
                 query = """
