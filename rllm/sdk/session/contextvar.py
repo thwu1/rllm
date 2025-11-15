@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from rllm.sdk.protocol import StepView, Trace, trace_to_step_view
+from rllm.sdk.session.storage import InMemoryStorage
 
 if TYPE_CHECKING:
     from rllm.sdk.session.storage import SessionStorage
@@ -110,8 +111,6 @@ class ContextVarSession:
 
         # Storage backend (defaults to InMemoryStorage for backward compatibility)
         if storage is None:
-            from rllm.sdk.session.storage import InMemoryStorage
-
             storage = InMemoryStorage()
         self.storage = storage
 

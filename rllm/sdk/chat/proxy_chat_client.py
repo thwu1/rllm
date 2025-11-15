@@ -13,6 +13,7 @@ from openai.types.completion import Completion
 
 from rllm.sdk.chat.simple_chat_client import _SimpleTrackedChatClientBase
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
+from rllm.sdk.session import get_current_metadata
 from rllm.sdk.tracers import InMemorySessionTracer
 
 
@@ -47,8 +48,6 @@ class _ScopedClientMixin:
         Uses the shared InMemorySessionTracer to avoid code duplication.
         """
         # Get context metadata and merge with call-specific metadata
-        from rllm.sdk.session import get_current_metadata
-
         context_metadata = get_current_metadata()
         merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
 

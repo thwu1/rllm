@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from rllm.sdk.protocol import Trace
+from rllm.sdk.session import get_active_sessions, get_current_metadata, get_current_session_name
 from rllm.sdk.store import SqliteTraceStore
 
 logger = logging.getLogger(__name__)
@@ -267,13 +268,9 @@ class SqliteTracer:
 
         # Get session_name from context if not provided
         if session_name is None:
-            from rllm.sdk.session import get_current_session_name
-
             session_name = get_current_session_name()
 
         # Merge context metadata with call-specific metadata
-        from rllm.sdk.session import get_active_sessions, get_current_metadata
-
         context_meta = get_current_metadata()
         final_metadata = {**context_meta, **(metadata or {})}
 
