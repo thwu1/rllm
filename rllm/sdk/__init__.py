@@ -5,12 +5,14 @@ from rllm.sdk.protocol import StepView, Trace, TrajectoryView
 from rllm.sdk.session import (
     ContextVarSession,
     InMemoryStorage,
+    OTelSession,
     SessionContext,
     SessionStorage,
     SqliteSessionStorage,
     get_current_metadata,
     get_current_session,
     get_current_session_name,
+    init_otel_distributed_tracing,
 )
 from rllm.sdk.shortcuts import get_chat_client, get_chat_client_async, session
 from rllm.sdk.tracers import (
@@ -29,9 +31,11 @@ __all__ = [
     # Sessions
     "SessionContext",  # Default (alias for ContextVarSession)
     "ContextVarSession",  # Explicit contextvars-based session
+    "OTelSession",  # OpenTelemetry-based session for distributed tracing
     "get_current_session",  # Get current session instance
     "get_current_session_name",  # Get current session name
     "get_current_metadata",  # Get current metadata
+    "init_otel_distributed_tracing",  # Initialize OTel HTTP instrumentation
     # Session Storage
     "SessionStorage",  # Storage protocol
     "InMemoryStorage",  # Default in-memory storage

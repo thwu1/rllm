@@ -24,17 +24,60 @@ logger = logging.getLogger(__name__)
 
 
 class MetadataRoutingMiddleware(BaseHTTPMiddleware):
-    """Extract metadata from URL slugs, rewrite path, and inject metadata into body."""
+    """Extract metadata from URL slugs and OTel baggage, rewrite path, and inject metadata into body.
+
+    Supports two metadata extraction methods:
+    1. URL slug: /meta/{slug}/v1/... (existing method)
+    2. OTel baggage: Via W3C baggage HTTP header (new method)
+
+    When both are present, OTel baggage takes precedence.
+    """
 
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         metadata: dict[str, Any] = {}
 
+        # Method 1: Extract from URL slug (existing)
         extracted = extract_metadata_from_path(request.url.path)
         if extracted is not None:
             clean_path, metadata = extracted
             logger.debug("MetadataRoutingMiddleware: decoded slug path=%s clean=%s metadata=%s", request.url.path, clean_path, metadata)
             request.scope["path"] = clean_path
             request.scope["raw_path"] = clean_path.encode("utf-8")
+
+        # Method 2: Extract from OTel baggage header (new)
+        try:
+            from opentelemetry import baggage, context
+            from opentelemetry.propagate import extract
+
+            # Extract W3C baggage from HTTP headers
+            carrier = dict(request.headers)
+            otel_ctx = extract(carrier)  # Extracts traceparent + baggage
+
+            # Read rllm_* baggage entries
+            otel_metadata: dict[str, Any] = {}
+            session_name = baggage.get_baggage("rllm_session_name", context=otel_ctx)
+            if session_name:
+                otel_metadata["session_name"] = session_name
+
+            session_uid = baggage.get_baggage("rllm_session_uid", context=otel_ctx)
+            if session_uid:
+                otel_metadata["session_uids"] = [session_uid]
+
+            # Get all metadata keys
+            metadata_keys_str = baggage.get_baggage("rllm_metadata_keys", context=otel_ctx) or ""
+            for key in metadata_keys_str.split(","):
+                if key.strip():
+                    value = baggage.get_baggage(f"rllm_{key}", context=otel_ctx)
+                    if value is not None:
+                        otel_metadata[key] = value
+
+            # Merge: baggage takes precedence over URL slug
+            if otel_metadata:
+                metadata = {**metadata, **otel_metadata}
+                logger.debug("MetadataRoutingMiddleware: extracted OTel baggage metadata=%s", otel_metadata)
+        except ImportError:
+            # OTel not installed, skip baggage extraction
+            pass
 
         # Store metadata in request state for callbacks to access
         request.state.rllm_metadata = metadata

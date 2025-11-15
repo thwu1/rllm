@@ -76,6 +76,10 @@ dependencies = [
     "wrapt",
     "asgiref>=3.7.0",  # Async/sync conversion utilities
 
+    # OpenTelemetry core (for OTelSession distributed tracing)
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+
     # Development and testing
     "pytest",
     "pre-commit",
@@ -103,6 +107,12 @@ strands = [
 tinker = [
     "tinker",
     "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git#egg=tinker-cookbook",
+]
+
+otel = [
+    # Optional HTTP/gRPC instrumentation for OTelSession distributed tracing
+    "opentelemetry-instrumentation-requests>=0.41b0",
+    "opentelemetry-instrumentation-httpx>=0.41b0",
 ]
 
 [tool.ruff]
