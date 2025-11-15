@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from rllm.sdk.protocol import Trace
+from rllm.sdk.session import get_active_sessions
 
 
 class InMemorySessionTracer:
@@ -134,8 +135,6 @@ class InMemorySessionTracer:
               only works within sessions.
         """
         # Get all active sessions (outer → inner)
-        from rllm.sdk.session import get_active_sessions
-
         sessions = get_active_sessions()
 
         if not sessions:
