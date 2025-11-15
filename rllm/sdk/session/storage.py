@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import logging
 import threading
 from collections import defaultdict
 from typing import Protocol, runtime_checkable
 
 from rllm.sdk.protocol import Trace
-
-logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -103,6 +99,8 @@ class SqliteSessionStorage:
             loop.create_task(self._async_add_trace(session_uid_chain, trace))
         except RuntimeError:
             # No running loop, use asyncio.run() in a thread to avoid blocking
+            import threading
+
             def _run_async():
                 asyncio.run(self._async_add_trace(session_uid_chain, trace))
 
@@ -126,6 +124,9 @@ class SqliteSessionStorage:
                 session_uids=session_uid_chain,  # Pass full chain to junction table!
             )
         except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
             logger.exception(f"Failed to store trace {trace.trace_id}: {e}")
 
     def get_traces(self, session_uid: str, session_name: str) -> list[Trace]:
@@ -149,6 +150,8 @@ class SqliteSessionStorage:
             asyncio.get_running_loop()
             # We're in an async context, but this is a sync method being called
             # We need to run in a separate thread to avoid blocking
+            import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(asyncio.run, self._async_get_traces(session_uid))
                 return future.result()
@@ -177,6 +180,9 @@ class SqliteSessionStorage:
 
             return traces
         except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
             logger.exception(f"Failed to retrieve traces for session UID {session_uid}: {e}")
             return []
 

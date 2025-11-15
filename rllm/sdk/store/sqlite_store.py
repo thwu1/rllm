@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import time
 from typing import Any
 
@@ -64,6 +62,9 @@ class SqliteTraceStore:
             db_path: Path to SQLite database file. If None, uses default location
                     (~/.rllm/traces.db or temp directory)
         """
+        import os
+        import tempfile
+
         if db_path is None:
             db_dir = os.path.expanduser("~/.rllm")
             if not os.path.exists(db_dir):
