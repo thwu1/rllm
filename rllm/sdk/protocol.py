@@ -22,84 +22,71 @@ class Trace(BaseModel):
     tags: list[str] | None = None
 
 
-class StepGroupView(BaseModel):
+class StepView(BaseModel):
     """
-    A view of a semantic step group.
+    A view of a single step (one LLM call).
 
-    Represents a semantic unit of work that may contain multiple LLM calls (traces).
-    Each trace becomes a training Step with tokens/logprobs.
-    Provides a high-level view for reward assignment across all traces in the group.
+    Each trace in a trajectory is automatically converted to a StepView.
+    StepView is essentially a trace wrapper that adds a reward field.
 
     Hierarchy:
-        TrajectoryView → StepGroupView → Trace/Step (training)
+        TrajectoryView → StepView (1 trace each)
 
     Fields:
-        - id: Unique identifier for this step group
-        - input: Function arguments (dict)
-        - output: Function return value (Any)
-        - traces: All LLM calls made during this step group (list[Trace])
-        - reward: Step group reward (assigned to all training Steps in this group)
+        - id: Trace ID
+        - input: LLM input (from trace)
+        - output: LLM output (from trace)
+        - traces: List containing exactly one Trace
+        - reward: Step reward (assigned to training Step)
         - metadata: Additional tracking data
     """
     id: str
-    input: dict | None = None   # Function arguments
-    output: Any = None          # Function return value
-    traces: list[Trace] = Field(default_factory=list)  # All LLM calls
+    input: str | list | dict | None = None  # LLM input
+    output: str | dict | None = None        # LLM output
+    traces: list[Trace] = Field(default_factory=list)  # Always exactly 1 trace
     reward: float = 0.0
     metadata: dict | None = None
-
-    @property
-    def result(self) -> Any:
-        """Alias for output (backward compatibility)."""
-        return self.output
 
 
 class TrajectoryView(BaseModel):
     """
     A view of a trajectory execution.
 
-    Represents a collection of step groups that form a complete workflow or episode.
-    Used for RL training and workflow composition.
+    Represents a collection of steps (each step = 1 trace) that form a workflow.
+    Each trace in the trajectory is automatically converted to a StepView.
 
     Hierarchy:
-        TrajectoryView → StepGroupView → Trace/Step (training)
+        TrajectoryView → StepView (1 trace each)
 
     Fields:
         - name: Trajectory name
-        - steps: List of collected StepGroupViews (semantic units)
+        - steps: List of StepViews (auto-generated from traces)
         - reward: Trajectory reward (set manually)
         - input: Function arguments (dict)
         - output: Function return value (Any)
         - metadata: Additional tracking data
     """
     name: str = "agent"
-    steps: list[StepGroupView] = Field(default_factory=list)
+    steps: list[StepView] = Field(default_factory=list)
     reward: float = 0.0
     input: dict | None = None   # Function arguments
     output: Any = None          # Function return value
     metadata: dict | None = None  # Additional tracking data
 
-    @property
-    def result(self):
-        """Get the result from the last step group, or None if no steps."""
-        return self.steps[-1].result if self.steps else None
 
-
-def trace_to_step_group_view(trace: Trace) -> StepGroupView:
-    """Convert a low-level Trace to a high-level StepGroupView (single-trace group)."""
-    return StepGroupView(
+def trace_to_step_view(trace: Trace) -> StepView:
+    """Convert a trace to a StepView (trace wrapper with reward field)."""
+    return StepView(
         id=trace.trace_id,
-        input=trace.input,
-        output=trace.output,
-        traces=[trace],  # Include the trace itself
+        input=trace.input,   # LLM input
+        output=trace.output, # LLM output
+        traces=[trace],
         reward=0.0,
         metadata=trace.metadata,
     )
 
 
 # Backward compatibility aliases
-StepView = StepGroupView  # Old name
-StepProto = StepGroupView  # Even older name
+StepProto = StepView
 TrajectoryProto = TrajectoryView
-trace_to_step_view = trace_to_step_group_view  # Old function name
-trace_to_step_proto = trace_to_step_group_view  # Even older function name
+trace_to_step_proto = trace_to_step_view
