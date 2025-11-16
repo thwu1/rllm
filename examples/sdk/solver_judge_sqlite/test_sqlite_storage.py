@@ -126,12 +126,18 @@ Each number can be used at most once."""
     print("Step 1: Running solver...")
     print("-" * 80)
     solution, solver_sess = await solver.solve(problem)
+
+    # Wait a bit for async SQLite writes to complete
+    await asyncio.sleep(0.5)
     print()
 
     # Run judge
     print("Step 2: Running judge...")
     print("-" * 80)
     judgment, judge_sess = await judge.judge(problem, solution)
+
+    # Wait a bit for async SQLite writes to complete
+    await asyncio.sleep(0.5)
     print()
 
     # Verify storage
@@ -191,6 +197,10 @@ async def test_cross_process_simulation():
 
     problem = "Using numbers [1, 2, 3, 4], find an expression that equals 10."
     solution, sess1 = await solver1.solve(problem)
+
+    # Wait for async SQLite writes to complete
+    await asyncio.sleep(0.5)
+
     session_uid = sess1._uid
     print(f"Process 1 session UID: {session_uid}")
     print(f"Process 1 wrote {len(sess1.llm_calls)} trace(s)")
