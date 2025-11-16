@@ -25,7 +25,7 @@ import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from litellm.proxy.proxy_server import app as litellm_app
 from litellm.proxy.proxy_server import initialize
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field
 
 from rllm.sdk.proxy.litellm_callbacks import SamplingParametersCallback, TracingCallback
 from rllm.sdk.proxy.middleware import MetadataRoutingMiddleware
@@ -35,23 +35,9 @@ from rllm.sdk.tracers import SqliteTracer
 class ReloadPayload(BaseModel):
     """Request body for /admin/reload."""
 
-    config_yaml: str | None = Field(
-        default=None,
+    config_yaml: str = Field(
         description="Inline LiteLLM config YAML (written to state_dir before reload).",
     )
-    config_path: str | None = Field(
-        default=None,
-        description="Existing LiteLLM config path. Only needed when reusing on-disk file.",
-    )
-
-    @root_validator(skip_on_failure=True)
-    def _validate_choice(cls, values: dict[str, str | None]) -> dict[str, str | None]:
-        yaml_blob, path = values.get("config_yaml"), values.get("config_path")
-        if not yaml_blob and not path:
-            raise ValueError("Provide config_yaml or config_path.")
-        if yaml_blob and path:
-            raise ValueError("Choose config_yaml or config_path, not both.")
-        return values
 
 
 class FlushTracerPayload(BaseModel):
@@ -75,12 +61,9 @@ class LiteLLMProxyRuntime:
         logging.info("LiteLLM proxy server ready. Waiting for /admin/reload to configure backends.")
 
     async def reload(self, payload: ReloadPayload) -> Path:
-        if payload.config_yaml:
-            self._state_dir.mkdir(parents=True, exist_ok=True)
-            target = self._state_dir / "litellm_proxy_config_autogen.yaml"
-            target.write_text(payload.config_yaml)
-        else:
-            target = Path(payload.config_path).expanduser().resolve()  # type: ignore[arg-type]
+        self._state_dir.mkdir(parents=True, exist_ok=True)
+        target = self._state_dir / "litellm_proxy_config_autogen.yaml"
+        target.write_text(payload.config_yaml)
 
         # Only verify health if this is a reload (not first-time initialization)
         await self._apply_config(target)
@@ -111,13 +94,6 @@ class LiteLLMProxyRuntime:
             self._current_config = config_path
             num_models = self._count_models(config_path)
             logging.info("LiteLLM initialized (models=%d)", num_models)
-            # Debug: show installed callbacks and tracer identity
-            try:
-                callback_names = [type(cb).__name__ for cb in getattr(litellm, "callbacks", [])]
-                logging.info("LiteLLM callbacks installed: %s", callback_names)
-                logging.info("Proxy tracer id: %s", hex(id(self._tracer)) if self._tracer else None)
-            except Exception:
-                pass
 
     def _install_callbacks(self) -> None:
         callbacks = [cb for cb in getattr(litellm, "callbacks", []) if not isinstance(cb, SamplingParametersCallback | TracingCallback)]
@@ -125,12 +101,6 @@ class LiteLLMProxyRuntime:
         if self._tracer:
             callbacks.append(TracingCallback(self._tracer))
         litellm.callbacks = callbacks
-        # Debug: log callback list at install-time
-        try:
-            names = [type(cb).__name__ for cb in litellm.callbacks]
-            logging.info("_install_callbacks -> callbacks=%s tracer_id=%s", names, hex(id(self._tracer)) if self._tracer else None)
-        except Exception:
-            pass
 
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
         """Flush the tracer queue and return success status.
@@ -146,10 +116,6 @@ class LiteLLMProxyRuntime:
         """
         if not self._tracer:
             raise RuntimeError("Tracer is not configured on this proxy")
-        try:
-            logging.info("Flushing tracer queue tracer_id=%s timeout=%s", hex(id(self._tracer)), timeout)
-        except Exception:
-            pass
         # Run synchronous flush in thread pool to avoid blocking the event loop
         result = await asyncio.to_thread(self._tracer.flush, timeout=timeout)
 
@@ -157,22 +123,16 @@ class LiteLLMProxyRuntime:
         # Only False explicitly indicates failure
         success = result is not False
 
-        try:
-            if success:
-                logging.info("Tracer flush succeeded tracer_id=%s (result=%s)", hex(id(self._tracer)), result)
-            else:
-                logging.warning("Tracer flush failed or timed out tracer_id=%s", hex(id(self._tracer)))
-        except Exception:
-            pass
+        if success:
+            logging.info("Tracer flush succeeded tracer_id=%s (result=%s)", hex(id(self._tracer)), result)
+        else:
+            logging.warning("Tracer flush failed or timed out tracer_id=%s", hex(id(self._tracer)))
         return success
 
     @staticmethod
     def _count_models(config_path: Path) -> int:
-        try:
-            data = yaml.safe_load(config_path.read_text()) or {}
-            return len(data.get("model_list", []))
-        except Exception:
-            return -1
+        data = yaml.safe_load(config_path.read_text()) or {}
+        return len(data.get("model_list", []))
 
     @property
     def config_path(self) -> str:

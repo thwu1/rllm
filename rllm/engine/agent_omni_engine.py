@@ -136,27 +136,20 @@ class AgentOmniEngine:
 
         print(f"Initialized VerlProxyManager with {len(self.proxy_manager.get_server_addresses())} vLLM replicas. Proxy endpoint: {self.rollout_engine_endpoint}")
 
+        # Build config once per setup so both modes stay in sync
+        config_payload = self.proxy_manager.build_proxy_config()
+
         # Start proxy based on mode
         if proxy_mode == "subprocess":
             # Start subprocess, wait for server, then reload config
             db_path = proxy_config.get("db_path")
             project = proxy_config.get("project", "rllm-agent-omni")
-            self.proxy_manager.start_proxy_subprocess(db_path=db_path, project=project)
+            self.proxy_manager.start_proxy_subprocess(config=config_payload, db_path=db_path, project=project)
         elif proxy_mode == "external":
             # Reload external proxy with the generated configuration
-            self.proxy_manager.reload_external_proxy(inline_payload=True)
+            self.proxy_manager.reload_proxy_config(config=config_payload)
         else:
             raise ValueError(f"Unknown proxy mode: {proxy_mode}. Must be 'external' or 'subprocess'")
-
-    def get_server_addresses(self) -> list[str] | None:
-        """Get all vLLM server addresses from proxy manager.
-
-        Returns:
-            List of vLLM server URLs if using VERL with proxy, None otherwise.
-        """
-        if self.proxy_manager:
-            return self.proxy_manager.get_server_addresses()
-        return None
 
     async def initialize_pool(self):
         """Initialize pool with agent rollout functions.
