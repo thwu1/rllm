@@ -91,23 +91,22 @@ class SqliteSessionStorage:
         self.store = SqliteTraceStore(db_path=db_path)
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
-        """Add trace to SQLite (async, returns immediately).
+        """Add trace to SQLite (blocks until write completes).
 
-        Queues trace for background storage. Use flush() to ensure writes complete.
+        This method ensures the trace is fully written to the database before returning,
+        providing the same synchronous semantics as InMemoryStorage.
         """
-        # Create an async task to store the trace
-        # We need to run this in an event loop
         try:
-            loop = asyncio.get_running_loop()
-            # If we're in an async context, schedule the coroutine
-            loop.create_task(self._async_add_trace(session_uid_chain, trace))
+            # Check if we're already in an async context
+            asyncio.get_running_loop()
+            # We're in an async context, but this is a sync method being called
+            # We need to run in a separate thread to avoid blocking the event loop
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, self._async_add_trace(session_uid_chain, trace))
+                future.result()  # Wait for write to complete
         except RuntimeError:
-            # No running loop, use asyncio.run() in a thread to avoid blocking
-            def _run_async():
-                asyncio.run(self._async_add_trace(session_uid_chain, trace))
-
-            thread = threading.Thread(target=_run_async, daemon=True)
-            thread.start()
+            # No running loop, safe to use asyncio.run()
+            asyncio.run(self._async_add_trace(session_uid_chain, trace))
 
     async def _async_add_trace(self, session_uid_chain: list[str], trace: Trace) -> None:
         """Async helper to store trace to SQLite.
