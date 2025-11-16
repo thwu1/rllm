@@ -1,6 +1,6 @@
 import hydra
 
-from examples.omni_trainer.solver_judge_workflow.solver_judge_flow_decorator import SolverJudgeWorkflowDecorated
+from examples.sdk.solver_judge.solver_judge_flow_session import SolverJudgeWorkflow
 from rllm.data.dataset import DatasetRegistry
 from rllm.rewards.countdown_reward import countdown_reward_fn
 from rllm.trainer.agent_trainer import AgentTrainer
@@ -8,7 +8,7 @@ from rllm.trainer.agent_trainer import AgentTrainer
 
 async def run_workflow(**kwargs) -> float:
     task = kwargs
-    workflow = SolverJudgeWorkflowDecorated(rollout_engine=None, executor=None, n_solutions=2, reward_function=countdown_reward_fn)
+    workflow = SolverJudgeWorkflow(rollout_engine=None, executor=None, n_solutions=2, reward_function=countdown_reward_fn)
     return await workflow.run(task, "")
 
 
