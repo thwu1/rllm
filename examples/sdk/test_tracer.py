@@ -103,7 +103,7 @@ def test_multiple_traces(tracer: SqliteTracer):
     print(f"  - Worker thread alive: {tracer._worker_thread.is_alive() if tracer._worker_thread else False}")
 
 
-def test_flush_mechanism(tracer: SqliteTracer):
+async def test_flush_mechanism(tracer: SqliteTracer):
     """Test the flush mechanism."""
     print("\n" + "=" * 60)
     print("TEST 4: Flush Mechanism")
@@ -114,7 +114,8 @@ def test_flush_mechanism(tracer: SqliteTracer):
 
     print("Flushing tracer (waiting for all traces to persist)...")
     start_time = time.time()
-    success = tracer.flush(timeout=30.0)
+    # Use asyncio.to_thread to call synchronous flush from async context
+    success = await asyncio.to_thread(tracer.flush, 30.0)
     elapsed = time.time() - start_time
 
     queue_size_after = tracer._store_queue.qsize()
@@ -152,8 +153,9 @@ async def test_trace_retrieval(tracer: SqliteTracer):
         )
 
     # Flush to ensure trace is persisted
+    # Use asyncio.to_thread to call synchronous flush from async context
     print("Flushing traces...")
-    tracer.flush(timeout=10.0)
+    await asyncio.to_thread(tracer.flush, 10.0)
 
     # Retrieve traces by session UID
     print(f"Retrieving traces for session: {session_uid}")
@@ -205,8 +207,9 @@ async def test_concurrent_sessions(tracer: SqliteTracer):
     print(f"  - Session UIDs: {len(session_uids)}")
 
     # Flush and verify
+    # Use asyncio.to_thread to call synchronous flush from async context
     print("Flushing traces...")
-    tracer.flush(timeout=30.0)
+    await asyncio.to_thread(tracer.flush, 30.0)
 
     # Count traces for each session
     for i, session_uid in enumerate(session_uids):
@@ -278,7 +281,7 @@ async def main():
     results.append(("Multiple Traces", True))
 
     # Test 4: Flush mechanism
-    flush_success = test_flush_mechanism(tracer)
+    flush_success = await test_flush_mechanism(tracer)
     results.append(("Flush Mechanism", flush_success))
 
     # Test 5: Trace retrieval
