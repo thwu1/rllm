@@ -15,7 +15,6 @@ import resource
 import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -26,7 +25,7 @@ from rllm.engine.rollout import RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 
 if TYPE_CHECKING:
-    from rllm.sdk.tracers import TracerProtocol
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +66,6 @@ class VerlProxyManager:
         proxy_host: str = "127.0.0.1",
         proxy_port: int = 4000,
         admin_token: str | None = None,
-        tracer: "TracerProtocol | None" = None,
         auto_instrument_vllm: bool = True,
         proxy_access_log: bool = False,
     ):
@@ -89,7 +87,6 @@ class VerlProxyManager:
         self.model_name = model_name
         self.proxy_host = proxy_host
         self.proxy_port = proxy_port
-        self.tracer = tracer
         self.auto_instrument_vllm = auto_instrument_vllm
         self.proxy_access_log = proxy_access_log
         self.admin_token = admin_token
@@ -395,9 +392,9 @@ class VerlProxyManager:
 
             # Try to connect to the server (any endpoint will do)
             try:
-                resp = requests.get(f"http://{self.proxy_host}:{self.proxy_port}/", timeout=0.5)
+                requests.get(f"http://{self.proxy_host}:{self.proxy_port}/", timeout=0.5)
                 # If we get any response, server is up (even 404 is fine)
-                logger.info(f"Proxy server accepting connections")
+                logger.info("Proxy server accepting connections")
                 return
             except requests.RequestException:
                 pass

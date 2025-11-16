@@ -128,7 +128,6 @@ class AgentOmniEngine:
             model_name=model_name,
             proxy_host=proxy_host,
             proxy_port=proxy_port,
-            tracer=tracer,
             admin_token=admin_token,
             proxy_access_log=False,
         )
