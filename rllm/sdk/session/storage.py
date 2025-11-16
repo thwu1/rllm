@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
 import threading
 from collections import defaultdict
 from typing import Protocol, runtime_checkable
+
+from asgiref.sync import async_to_sync
 
 from rllm.sdk.protocol import Trace
 
@@ -84,7 +85,8 @@ class SqliteSessionStorage:
     - Sync: `add_trace()`, `get_traces()` - block until complete
     - Async: `async_add_trace()`, `async_get_traces()` - await directly
 
-    Use async methods in async contexts for better performance (no ThreadPoolExecutor overhead).
+    Sync methods use asgiref.sync.async_to_sync for safe async-to-sync conversion.
+    For optimal performance in async contexts, use async methods directly.
     """
 
     def __init__(self, db_path: str | None = None):
@@ -92,31 +94,6 @@ class SqliteSessionStorage:
         from rllm.sdk.store import SqliteTraceStore
 
         self.store = SqliteTraceStore(db_path=db_path)
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
-        self._executor_lock = threading.Lock()
-
-    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Get or create the thread pool executor (lazy initialization).
-
-        Only creates the executor on first use of sync methods. If only async
-        methods are used, no executor is created, avoiding thread overhead.
-
-        Returns:
-            ThreadPoolExecutor with single worker thread for serialized DB access.
-        """
-        if self._executor is None:
-            with self._executor_lock:
-                # Double-check after acquiring lock
-                if self._executor is None:
-                    self._executor = concurrent.futures.ThreadPoolExecutor(
-                        max_workers=1, thread_name_prefix="sqlite_storage"
-                    )
-        return self._executor
-
-    def __del__(self):
-        """Clean up executor on deletion."""
-        if self._executor is not None:
-            self._executor.shutdown(wait=True)
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
         """Add trace to SQLite (synchronous, blocks until write completes).
@@ -124,19 +101,11 @@ class SqliteSessionStorage:
         This method ensures the trace is fully written to the database before returning,
         providing the same synchronous semantics as InMemoryStorage.
 
-        For async contexts, prefer using `async_add_trace()` to avoid ThreadPoolExecutor overhead.
+        For async contexts, prefer using `async_add_trace()` to avoid conversion overhead.
+
+        Note: Uses asgiref.sync.async_to_sync for safe async-to-sync conversion.
         """
-        try:
-            # Check if we're already in an async context
-            asyncio.get_running_loop()
-            # We're in an async context, but this is a sync method being called
-            # We need to run in a separate thread to avoid blocking the event loop
-            executor = self._get_executor()
-            future = executor.submit(asyncio.run, self.async_add_trace(session_uid_chain, trace))
-            future.result()  # Wait for write to complete
-        except RuntimeError:
-            # No running loop, safe to use asyncio.run()
-            asyncio.run(self.async_add_trace(session_uid_chain, trace))
+        async_to_sync(self.async_add_trace)(session_uid_chain, trace)
 
     async def async_add_trace(self, session_uid_chain: list[str], trace: Trace) -> None:
         """Add trace to SQLite (asynchronous, awaitable).
@@ -170,8 +139,7 @@ class SqliteSessionStorage:
         Uses session_uid to query the junction table, returning all traces
         stored under this UID (including descendant sessions in the tree).
 
-        This method runs the async query synchronously using asyncio.run().
-        For async contexts, prefer using `async_get_traces()` to avoid ThreadPoolExecutor overhead.
+        For async contexts, prefer using `async_get_traces()` to avoid conversion overhead.
 
         Args:
             session_uid: Unique session context UID (used as storage key)
@@ -179,18 +147,10 @@ class SqliteSessionStorage:
 
         Returns:
             List of Trace objects for this session and all descendants
+
+        Note: Uses asgiref.sync.async_to_sync for safe async-to-sync conversion.
         """
-        try:
-            # Check if we're already in an async context
-            asyncio.get_running_loop()
-            # We're in an async context, but this is a sync method being called
-            # We need to run in a separate thread to avoid blocking
-            executor = self._get_executor()
-            future = executor.submit(asyncio.run, self.async_get_traces(session_uid))
-            return future.result()
-        except RuntimeError:
-            # No running loop, safe to use asyncio.run()
-            return asyncio.run(self.async_get_traces(session_uid))
+        return async_to_sync(self.async_get_traces)(session_uid)
 
     async def async_get_traces(self, session_uid: str) -> list[Trace]:
         """Retrieve all traces for a session from SQLite (asynchronous, awaitable).
