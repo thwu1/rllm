@@ -184,8 +184,12 @@ class AgentOmniEngine:
                 bound_func = functools.partial(func, metadata, **task, **kwargs)
                 output, session_uid = await loop.run_in_executor(self.executor, bound_func)
                 return True, output, session_uid
-        except Exception as e:
-            return False, e, None
+        except Exception:
+            import traceback
+
+            error_tb = traceback.format_exc()
+            logger.error(f"[{task_id}:{rollout_idx}:{attempt_idx}] Rollout failed: {error_tb}")
+            return False, error_tb, None
 
     async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, int, float, str]:
         """Process single task rollout with automatic retry on failure.
@@ -473,17 +477,7 @@ class AgentOmniEngine:
             for trajectory in episode.trajectories:
                 name = trajectory.name
                 # Construct trajectory_id from task_id and trajectory name
-                # Format: "{task_id}_{trajectory_name}"
                 # Example: "abc123_solver", "abc123_judge"
-                #
-                # IMPORTANT: trajectory_id does NOT contain rollout_idx or retry_attempt!
-                # This means:
-                # - Multiple rollouts of the same task will have identical trajectory_ids
-                # - Multiple trajectories in the same episode can have the same trajectory_id
-                #   (e.g., in solver-judge workflow with 2 solvers, both have "task_id_solver")
-                # - trajectory_id shares a common prefix (task_id) for all trajectories of a task
-                #
-                # The rollout information is only in episode.id (format: "task_id:rollout_idx:retry_attempt")
                 trajectory_id = f"{task_ids[i]}_{name}"  # e.g., "1234567890_solver"
 
                 if len(trajectory.steps) == 0:
@@ -548,7 +542,6 @@ class AgentOmniEngine:
                         # Construct step_id from trajectory_id and step index
                         # Format: "{trajectory_id}_step{step_idx}"
                         # Example: "abc123_solver_step0", "abc123_judge_step1"
-                        # Since trajectory_id doesn't contain rollout info, step_id doesn't either
                         step_ids.append(f"{trajectory_id}_step{step_idx}")  # e.g., "1234567890_solver_step0"
 
                     n_steps = len(trajectory.steps)
@@ -635,7 +628,6 @@ class AgentOmniEngine:
                 # episode_ids: Format "task_id:rollout_idx:retry_attempt" (e.g., "abc123:0:1")
                 "episode_ids": np.array(episode_ids),
                 # trajectory_ids: Format "task_id_trajectory_name" (e.g., "abc123_solver")
-                # Does NOT contain rollout_idx - shared across rollouts of the same task
                 # Multiple trajectories can have the same trajectory_id
                 "trajectory_ids": np.array(trajectory_ids),
                 # step_ids: Format "task_id_trajectory_name_step{idx}" (e.g., "abc123_solver_step0")
