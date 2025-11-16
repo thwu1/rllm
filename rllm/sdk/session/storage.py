@@ -92,6 +92,31 @@ class SqliteSessionStorage:
         from rllm.sdk.store import SqliteTraceStore
 
         self.store = SqliteTraceStore(db_path=db_path)
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._executor_lock = threading.Lock()
+
+    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Get or create the thread pool executor (lazy initialization).
+
+        Only creates the executor on first use of sync methods. If only async
+        methods are used, no executor is created, avoiding thread overhead.
+
+        Returns:
+            ThreadPoolExecutor with single worker thread for serialized DB access.
+        """
+        if self._executor is None:
+            with self._executor_lock:
+                # Double-check after acquiring lock
+                if self._executor is None:
+                    self._executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1, thread_name_prefix="sqlite_storage"
+                    )
+        return self._executor
+
+    def __del__(self):
+        """Clean up executor on deletion."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
         """Add trace to SQLite (synchronous, blocks until write completes).
@@ -106,9 +131,9 @@ class SqliteSessionStorage:
             asyncio.get_running_loop()
             # We're in an async context, but this is a sync method being called
             # We need to run in a separate thread to avoid blocking the event loop
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self.async_add_trace(session_uid_chain, trace))
-                future.result()  # Wait for write to complete
+            executor = self._get_executor()
+            future = executor.submit(asyncio.run, self.async_add_trace(session_uid_chain, trace))
+            future.result()  # Wait for write to complete
         except RuntimeError:
             # No running loop, safe to use asyncio.run()
             asyncio.run(self.async_add_trace(session_uid_chain, trace))
@@ -160,9 +185,9 @@ class SqliteSessionStorage:
             asyncio.get_running_loop()
             # We're in an async context, but this is a sync method being called
             # We need to run in a separate thread to avoid blocking
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self.async_get_traces(session_uid))
-                return future.result()
+            executor = self._get_executor()
+            future = executor.submit(asyncio.run, self.async_get_traces(session_uid))
+            return future.result()
         except RuntimeError:
             # No running loop, safe to use asyncio.run()
             return asyncio.run(self.async_get_traces(session_uid))
