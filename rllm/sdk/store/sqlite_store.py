@@ -135,12 +135,11 @@ class SqliteTraceStore:
             """)
 
             # Create junction table for session context mapping
-            # Note: created_at and session_name are denormalized here for query performance
+            # Note: created_at is denormalized here for query performance
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS trace_sessions (
                     trace_id TEXT NOT NULL,
                     session_uid TEXT NOT NULL,
-                    session_name TEXT,
                     created_at REAL NOT NULL,
                     PRIMARY KEY (trace_id, session_uid),
                     FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
@@ -152,8 +151,6 @@ class SqliteTraceStore:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_trace ON trace_sessions(trace_id)")
             # Composite index for efficient time-bounded session queries (created after migration)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_uid_time ON trace_sessions(session_uid, created_at DESC)")
-            # Composite index for efficient session_name queries with time filtering
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_name_time ON trace_sessions(session_name, created_at DESC)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_type ON traces(context_type)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_namespace ON traces(namespace)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at)")
@@ -234,9 +231,6 @@ class SqliteTraceStore:
                 row = await cursor.fetchone()
                 actual_created_at = row[0] if row else now
 
-            # Extract session_name from data for denormalization
-            session_name = data.get("session_name")
-
             # Delete existing junction entries for this trace
             await conn.execute("DELETE FROM trace_sessions WHERE trace_id = ?", (trace_id,))
 
@@ -245,12 +239,12 @@ class SqliteTraceStore:
             # Example: If trace is logged in outer + inner session:
             #   - trace_id="tr_123" → session_uid="ctx_outer" (row 1)
             #   - trace_id="tr_123" → session_uid="ctx_inner" (row 2)
-            # The composite indexes enable fast queries by session_uid OR session_name with time filtering
+            # The composite index on (session_uid, created_at) enables fast time-bounded queries
             # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
             if session_uids:
                 await conn.executemany(
-                    "INSERT INTO trace_sessions (trace_id, session_uid, session_name, created_at) VALUES (?, ?, ?, ?)",
-                    [(trace_id, uid, session_name, actual_created_at) for uid in session_uids],
+                    "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
+                    [(trace_id, uid, actual_created_at) for uid in session_uids],
                 )
 
             await conn.commit()
@@ -317,9 +311,6 @@ class SqliteTraceStore:
                     row = await cursor.fetchone()
                     actual_created_at = row[0] if row else now
 
-                # Extract session_name from data for denormalization
-                session_name = data.get("session_name")
-
                 # Delete existing junction entries
                 await conn.execute("DELETE FROM trace_sessions WHERE trace_id = ?", (trace_id,))
 
@@ -327,8 +318,8 @@ class SqliteTraceStore:
                 # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
                 if session_uids:
                     await conn.executemany(
-                        "INSERT INTO trace_sessions (trace_id, session_uid, session_name, created_at) VALUES (?, ?, ?, ?)",
-                        [(trace_id, uid, session_name, actual_created_at) for uid in session_uids],
+                        "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
+                        [(trace_id, uid, actual_created_at) for uid in session_uids],
                     )
 
                 # Create TraceContext for return
@@ -584,54 +575,5 @@ class SqliteTraceStore:
                 )
 
             return results
-        finally:
-            await conn.close()
-
-    async def get_session_uids_by_name(
-        self,
-        session_name: str,
-        since: float | None = None,
-    ) -> list[str]:
-        """
-        Get all session UIDs associated with a given session name.
-
-        This allows retrieving traces by session name in two steps:
-        1. Get session UIDs for the session name
-        2. Use get_by_session_uid() to retrieve traces
-
-        Uses the denormalized session_name column in trace_sessions for fast lookups
-        via the composite index (session_name, created_at DESC).
-
-        Args:
-            session_name: Session name to query (e.g., "math_solving")
-            since: Optional timestamp filter
-
-        Returns:
-            List of unique session UIDs that have traces with this session name
-        """
-        await self._ensure_initialized()
-        conn = await self._connect()
-        try:
-            # Efficient query using the denormalized session_name column
-            # Uses idx_trace_sessions_name_time composite index (session_name, created_at DESC)
-            if since is not None:
-                query = """
-                    SELECT DISTINCT session_uid FROM trace_sessions
-                    WHERE session_name = ?
-                      AND created_at >= ?
-                    ORDER BY created_at DESC
-                """
-                params = [session_name, since]
-            else:
-                query = """
-                    SELECT DISTINCT session_uid FROM trace_sessions
-                    WHERE session_name = ?
-                    ORDER BY created_at DESC
-                """
-                params = [session_name]
-
-            async with conn.execute(query, params) as cursor:
-                rows = await cursor.fetchall()
-                return [row[0] for row in rows]
         finally:
             await conn.close()
