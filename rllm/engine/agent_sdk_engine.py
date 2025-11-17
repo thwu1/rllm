@@ -64,7 +64,7 @@ class AgentSdkEngine:
 
         self.n_parallel_tasks = n_parallel_tasks
         self.executor = ThreadPoolExecutor(max_workers=self.n_parallel_tasks)
-        self.agent_queue = None
+        self.sema = asyncio.Semaphore(self.n_parallel_tasks)
 
         # Initialize proxy manager for VERL engines
         self.proxy_manager: VerlProxyManager | None = None
@@ -152,16 +152,16 @@ class AgentSdkEngine:
             raise ValueError(f"Unknown proxy mode: {proxy_mode}. Must be 'external' or 'subprocess'")
 
     async def initialize_pool(self):
-        """Initialize pool with agent rollout functions.
+        """Initialize semaphore for controlling concurrent task execution.
 
-        Creates asyncio queue populated with wrapped agent functions for parallel execution.
+        Creates asyncio semaphore to limit parallel execution.
         Idempotent - safe to call multiple times (returns early if already initialized).
         """
-        if self.agent_queue is not None:
-            return
-        self.agent_queue = asyncio.Queue(maxsize=self.n_parallel_tasks)
-        for _ in range(self.n_parallel_tasks):
-            self.agent_queue.put_nowait(self.wrapped_agent_run_func)
+        # if self.sema is not None:
+        #     return
+        # Use a semaphore instead of queue to control concurrency without deadlock
+        # self.sema = asyncio.Semaphore(self.n_parallel_tasks)
+        pass
 
     async def _execute_with_exception_handling(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
         # Format: "{task_id}:{rollout_idx}:{attempt_idx}"
@@ -186,7 +186,8 @@ class AgentSdkEngine:
     async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, **kwargs) -> tuple[str, int, int, float, str]:
         """Process single task rollout with automatic retry on failure.
 
-        Acquires agent function from pool, executes task, retries up to retry_limit on failure.
+        Executes task with retry logic, using wrapped agent function.
+        Semaphore controls concurrency to prevent resource exhaustion.
         Session name format: "{task_id}:{rollout_idx}:{retry_attempt}".
 
         Args:
@@ -201,8 +202,9 @@ class AgentSdkEngine:
         Raises:
             Exception: If task fails permanently after retry_limit attempts.
         """
-        func = await self.agent_queue.get()
-        try:
+        # Use semaphore to control concurrent executions and prevent deadlock
+        async with self.sema:  # agent_queue is now a Semaphore
+            func = self.wrapped_agent_run_func
             for retry_attempt in range(1, self.retry_limit + 1):
                 uid = f"{task_id}:{rollout_idx}:{retry_attempt}"
                 success, output, session_uid = await self._execute_with_exception_handling(func, task=task, task_id=task_id, rollout_idx=rollout_idx, attempt_idx=retry_attempt, **kwargs)
@@ -216,8 +218,6 @@ class AgentSdkEngine:
                     print(f"[{uid}] Rollout failed on attempt {retry_attempt}/{self.retry_limit}, retrying...")
                     continue
                 raise Exception(f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts: {output}")
-        finally:
-            await self.agent_queue.put(func)
 
     async def _execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs) -> list[Episode]:
         """Execute multiple tasks asynchronously with retry logic and trace collection.
@@ -233,7 +233,7 @@ class AgentSdkEngine:
         Returns:
             List of Episode objects with trajectories and rewards.
         """
-        if self.agent_queue is None:
+        if self.sema is None:
             await self.initialize_pool()
 
         if task_ids is None:
