@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Standalone test for LiteLLM proxy tracer integration with OpenAI.
+"""Comprehensive test for LiteLLM proxy tracer integration with OpenAI.
 
-This test:
+This is the single comprehensive test file that validates the complete
+proxy + tracer integration pipeline.
+
+Test coverage:
 1. Starts LiteLLM proxy server using ProxyManager base class
-2. Configures it with OpenAI models
-3. Tests trace collection through proxy
-4. Validates flush mechanism
-5. Cleans up automatically
+2. Tests basic chat completion with OpenAI models
+3. Tests multiple requests within a single session
+4. Tests concurrent sessions running in parallel
+5. Tests trace persistence and flush mechanism
+6. Validates trace retrieval from SQLite database
+7. Automatically cleans up all resources
 
-No manual proxy startup needed!
+No manual proxy startup needed - everything is automated!
 
 Prerequisites:
     export OPENAI_API_KEY="sk-..."
@@ -18,7 +23,8 @@ Usage:
 
 Example:
     python examples/sdk/test_proxy_tracer_standalone.py \
-        --db-path /tmp/test_proxy.db
+        --db-path /tmp/test_proxy.db \
+        --proxy-port 4000
 """
 
 import argparse
@@ -105,10 +111,46 @@ async def test_multiple_requests(proxy_manager: ProxyManager):
         return session_uid
 
 
+async def test_concurrent_sessions(proxy_manager: ProxyManager):
+    """Test concurrent requests from multiple sessions."""
+    print("\n" + "=" * 60)
+    print("TEST 3: Concurrent Sessions")
+    print("=" * 60)
+
+    proxy_url = proxy_manager.get_proxy_url(include_v1=True)
+    client = get_chat_client_async(base_url=proxy_url, api_key="EMPTY")
+
+    async def run_session(session_name: str, request_count: int):
+        """Run multiple requests in a single session."""
+        with session(test=session_name) as sess:
+            session_uid = sess._uid
+            for i in range(request_count):
+                await client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": f"{session_name}: {i}"}],
+                    max_tokens=5,
+                )
+            return session_uid
+
+    # Run 3 concurrent sessions with 2 requests each
+    print("Running 3 concurrent sessions...")
+    session_uids = await asyncio.gather(
+        run_session("session_1", 2),
+        run_session("session_2", 2),
+        run_session("session_3", 2),
+    )
+
+    print(f"✓ Completed {len(session_uids)} concurrent sessions")
+    for i, uid in enumerate(session_uids, 1):
+        print(f"  - Session {i}: {uid}")
+
+    return session_uids
+
+
 async def test_trace_persistence(db_path: str, session_uid: str, proxy_manager: ProxyManager):
     """Test trace persistence after flush."""
     print("\n" + "=" * 60)
-    print("TEST 3: Trace Persistence")
+    print("TEST 4: Trace Persistence")
     print("=" * 60)
 
     # Flush tracer
@@ -171,6 +213,7 @@ async def run_all_tests(db_path: str, proxy_port: int, admin_token: str):
         print("✓ Proxy started successfully")
 
         results = []
+        session_uid_1 = None
 
         # Test 1: Basic request
         try:
@@ -188,7 +231,15 @@ async def run_all_tests(db_path: str, proxy_port: int, admin_token: str):
             print(f"✗ Test failed: {e}")
             results.append(("Multiple Requests", False))
 
-        # Test 3: Trace persistence (use session from test 1)
+        # Test 3: Concurrent sessions
+        try:
+            concurrent_uids = await test_concurrent_sessions(proxy_manager)
+            results.append(("Concurrent Sessions", len(concurrent_uids) == 3))
+        except Exception as e:
+            print(f"✗ Test failed: {e}")
+            results.append(("Concurrent Sessions", False))
+
+        # Test 4: Trace persistence (use session from test 1)
         try:
             if session_uid_1:
                 persist_ok = await test_trace_persistence(db_path, session_uid_1, proxy_manager)
