@@ -54,16 +54,16 @@ python3 -m examples.sdk.solver_judge_sqlite.train_sqlite \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='solver-judge-workflow-sqlite' \
-    trainer.experiment_name='omni-solver-judge-sqlite-test' \
+    trainer.experiment_name='sdk-solver-judge-sqlite-test' \
     trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=200 \
     trainer.test_freq=10 \
     trainer.total_epochs=100 \
-    rllm.omni.proxy.host=127.0.0.1 \
-    rllm.omni.proxy.port=4000 \
-    rllm.omni.proxy.mode=subprocess \
-    rllm.omni.store.path=./traces_sqlite_test.db
+    rllm.sdk.proxy.host=127.0.0.1 \
+    rllm.sdk.proxy.port=4000 \
+    rllm.sdk.proxy.mode=subprocess \
+    rllm.sdk.store.path=./traces_sqlite_test.db
 
 pkill -9 -f 'ray::WorkerDict'

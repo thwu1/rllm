@@ -1,4 +1,4 @@
-"""PPO trainer for agent-based RL with omnidirectional workflow support."""
+"""PPO trainer for agent-based RL with SDK workflow support."""
 
 import asyncio
 import math
@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from rllm.engine.agent_omni_engine import AgentOmniEngine
+from rllm.engine.agent_sdk_engine import AgentSdkEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
 from rllm.workflows.workflow import TerminationReason
@@ -40,7 +40,7 @@ from verl.utils.debug import marked_timer
 from verl.utils.tracking import Tracking
 
 
-class AgentOmniTrainer(RayPPOTrainer):
+class AgentSdkTrainer(RayPPOTrainer):
     """PPO trainer for agent workflows with stepwise advantage and rejection sampling."""
 
     def __init__(
@@ -52,7 +52,7 @@ class AgentOmniTrainer(RayPPOTrainer):
         ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
         agent_run_func: Callable = None,
     ):
-        """Initialize AgentOmniTrainer.
+        """Initialize AgentSdkTrainer.
 
         Args:
             config: Training configuration (hydra/OmegaConf).
@@ -141,15 +141,15 @@ class AgentOmniTrainer(RayPPOTrainer):
         # Setup proxy config for VERL engine
         proxy_config = {
             "model_name": self.config.actor_rollout_ref.model.path,
-            "proxy_host": self.config.rllm.omni.proxy.host,
-            "proxy_port": self.config.rllm.omni.proxy.port,
-            "mode": self.config.rllm.omni.proxy.mode,
-            "admin_token": self.config.rllm.omni.proxy.admin_token,
-            "db_path": self.config.rllm.omni.store.path,
+            "proxy_host": self.config.rllm.sdk.proxy.host,
+            "proxy_port": self.config.rllm.sdk.proxy.port,
+            "mode": self.config.rllm.sdk.proxy.mode,
+            "admin_token": self.config.rllm.sdk.proxy.admin_token,
+            "db_path": self.config.rllm.sdk.store.path,
             "project": self.config.trainer.project_name,
         }
 
-        self.agent_execution_engine = AgentOmniEngine(
+        self.agent_execution_engine = AgentSdkEngine(
             agent_run_func=self.agent_run_func,
             rollout_engine=rollout_engine,
             config=self.config,
