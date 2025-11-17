@@ -66,7 +66,12 @@ def _get_forwarded_env_vars():
 def get_ppo_ray_runtime_env():
     env = PPO_RAY_RUNTIME_ENV["env_vars"].copy()
     env.update(_get_forwarded_env_vars())
-    return {
-        "env_vars": env,
-        "worker_process_setup_hook": PPO_RAY_RUNTIME_ENV["worker_process_setup_hook"],
-    }
+
+    runtime_env = {"env_vars": env}
+
+    # Allow disabling the worker hook via environment variable
+    # Set RLLM_DISABLE_WORKER_HOOK=1 to disable the verl patch hook
+    if os.environ.get("RLLM_DISABLE_WORKER_HOOK", "0") != "1":
+        runtime_env["worker_process_setup_hook"] = PPO_RAY_RUNTIME_ENV["worker_process_setup_hook"]
+
+    return runtime_env
