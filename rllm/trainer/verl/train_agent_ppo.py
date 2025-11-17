@@ -12,7 +12,7 @@ import ray
 from omegaconf import OmegaConf
 
 from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPING
-from rllm.trainer.verl.agent_omni_trainer import AgentOmniTrainer
+from rllm.trainer.verl.agent_sdk_trainer import AgentSdkTrainer
 from rllm.trainer.verl.agent_ppo_trainer import AgentPPOTrainer
 
 # Local application imports
@@ -159,8 +159,8 @@ class TaskRunner:
 
         # if config.rllm.workflow.use_workflow:
         if agent_run_func is not None:
-            print("IMPORTANT: Using AgentOmniTrainer")
-            trainer = AgentOmniTrainer(
+            print("IMPORTANT: Using AgentSdkTrainer")
+            trainer = AgentSdkTrainer(
                 config=config,
                 tokenizer=tokenizer,
                 role_worker_mapping=role_worker_mapping,
