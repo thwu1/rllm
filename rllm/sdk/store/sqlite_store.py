@@ -577,3 +577,51 @@ class SqliteTraceStore:
             return results
         finally:
             await conn.close()
+
+    async def get_session_uids_by_name(
+        self,
+        session_name: str,
+        since: float | None = None,
+    ) -> list[str]:
+        """
+        Get all session UIDs associated with a given session name.
+
+        This allows retrieving traces by session name in two steps:
+        1. Get session UIDs for the session name
+        2. Use get_by_session_uid() to retrieve traces
+
+        Args:
+            session_name: Session name to query (e.g., "math_solving")
+            since: Optional timestamp filter
+
+        Returns:
+            List of unique session UIDs that have traces with this session name
+        """
+        await self._ensure_initialized()
+        conn = await self._connect()
+        try:
+            # Query to find all session_uids where traces have this session_name
+            # Uses JSON extraction to filter by session_name in the data field
+            if since is not None:
+                query = """
+                    SELECT DISTINCT ts.session_uid FROM traces t
+                    INNER JOIN trace_sessions ts ON t.id = ts.trace_id
+                    WHERE json_extract(t.data, '$.session_name') = ?
+                      AND ts.created_at >= ?
+                    ORDER BY ts.created_at DESC
+                """
+                params = [session_name, since]
+            else:
+                query = """
+                    SELECT DISTINCT ts.session_uid FROM traces t
+                    INNER JOIN trace_sessions ts ON t.id = ts.trace_id
+                    WHERE json_extract(t.data, '$.session_name') = ?
+                    ORDER BY ts.created_at DESC
+                """
+                params = [session_name]
+
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+        finally:
+            await conn.close()
