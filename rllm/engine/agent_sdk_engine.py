@@ -14,12 +14,12 @@ import torch
 from tqdm import tqdm
 
 from rllm.agents.agent import Episode, Trajectory
-from rllm.engine.proxy_manager import VerlProxyManager
 from rllm.engine.rollout import ModelOutput, RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
 from rllm.sdk.data_process import group_steps, trace_to_step
 from rllm.sdk.protocol import TrajectoryView
+from rllm.sdk.proxy.proxy_manager import VerlProxyManager
 from rllm.sdk.shortcuts import _session_with_name
 from rllm.sdk.store.sqlite_store import SqliteTraceStore
 from rllm.workflows.workflow import TerminationReason

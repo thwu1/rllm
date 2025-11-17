@@ -99,7 +99,7 @@ class AgentSdkTrainer(RayPPOTrainer):
                 from pathlib import Path
 
                 # Get the path to vllm_instrumentation.py relative to this file
-                instrumentation_path = Path(__file__).parent.parent.parent / "engine" / "vllm_instrumentation.py"
+                instrumentation_path = Path(__file__).parent.parent.parent / "patches" / "vllm_instrumentation.py"
 
                 spec = importlib.util.spec_from_file_location("rllm_vllm_instrumentation_isolated", str(instrumentation_path))
                 vllm_instrumentation = importlib.util.module_from_spec(spec)
