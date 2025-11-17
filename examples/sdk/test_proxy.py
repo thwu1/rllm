@@ -32,10 +32,37 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
-from rllm.engine.proxy_manager import ProxyManager
 from rllm.sdk import get_chat_client_async, session
+from rllm.sdk.proxy.proxy_manager import ProxyManager
 from rllm.sdk.store import SqliteTraceStore
+
+
+def _format_trace_summary(trace: Any) -> str:
+    """Return a human-readable summary for a trace context."""
+
+    data: dict[str, Any] = trace.data
+    trace_id = trace.id
+    model = data["model"]
+    tokens = data["tokens"]
+    latency_ms = data["latency_ms"]
+    input_messages = data["input"]["messages"]
+    output_choices = data["output"]["choices"]
+
+    input_text = input_messages[-1]["content"]
+    output_text = output_choices[0]["message"]["content"]
+    token_text = f"prompt={tokens['prompt']}, completion={tokens['completion']}"
+
+    lines = [
+        f"    Trace ID: {trace_id}",
+        f"    Model: {model}",
+        f"    Latency: {latency_ms:.2f} ms",
+        f"    Tokens: {token_text}",
+        f"    Input: {input_text}",
+        f"    Output: {output_text}",
+    ]
+    return "\n".join(lines)
 
 
 def create_openai_config() -> dict:
@@ -79,11 +106,11 @@ async def test_basic_request(proxy_manager: ProxyManager):
             max_tokens=5,
         )
 
-        print(f"✓ Request successful")
+        print("✓ Request successful")
         print(f"  - Response ID: {response.id}")
         print(f"  - Content: {response.choices[0].message.content}")
 
-        return response.id, sess._uid
+        return response.id, sess._uid, 1
 
 
 async def test_multiple_requests(proxy_manager: ProxyManager):
@@ -99,16 +126,18 @@ async def test_multiple_requests(proxy_manager: ProxyManager):
         session_uid = sess._uid
         print(f"Session UID: {session_uid}")
 
+        request_count = 0
         for i in range(3):
             response = await client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": f"Count: {i}"}],
                 max_tokens=5,
             )
-            print(f"  - Request {i+1}: {response.id}")
+            request_count += 1
+            print(f"  - Request {i + 1}: {response.id}")
 
-        print(f"✓ Completed 3 requests")
-        return session_uid
+        print(f"✓ Completed {request_count} requests")
+        return session_uid, request_count
 
 
 async def test_concurrent_sessions(proxy_manager: ProxyManager):
@@ -124,54 +153,77 @@ async def test_concurrent_sessions(proxy_manager: ProxyManager):
         """Run multiple requests in a single session."""
         with session(test=session_name) as sess:
             session_uid = sess._uid
+            completed = 0
             for i in range(request_count):
                 await client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[{"role": "user", "content": f"{session_name}: {i}"}],
                     max_tokens=5,
                 )
-            return session_uid
+                completed += 1
+            return session_uid, completed
 
     # Run 3 concurrent sessions with 2 requests each
     print("Running 3 concurrent sessions...")
-    session_uids = await asyncio.gather(
+    session_stats = await asyncio.gather(
         run_session("session_1", 2),
         run_session("session_2", 2),
         run_session("session_3", 2),
     )
 
-    print(f"✓ Completed {len(session_uids)} concurrent sessions")
-    for i, uid in enumerate(session_uids, 1):
-        print(f"  - Session {i}: {uid}")
+    print(f"✓ Completed {len(session_stats)} concurrent sessions")
+    for i, (uid, count) in enumerate(session_stats, 1):
+        print(f"  - Session {i}: {uid} ({count} requests)")
 
-    return session_uids
+    return session_stats
 
 
-async def test_trace_persistence(db_path: str, session_uid: str, proxy_manager: ProxyManager):
-    """Test trace persistence after flush."""
+async def test_trace_persistence(
+    db_path: str,
+    proxy_manager: ProxyManager,
+    expected_counts: dict[str, int],
+    sample_session_uid: str | None,
+):
+    """Verify all session traces are persisted and counts match expected calls."""
+
     print("\n" + "=" * 60)
     print("TEST 4: Trace Persistence")
     print("=" * 60)
 
-    # Flush tracer
+    if not expected_counts:
+        print("No session expectations recorded; skipping trace validation.")
+        return False
+
     print("Flushing tracer...")
     result = await proxy_manager.flush_tracer(timeout=30.0)
     print(f"✓ Flush result: {result}")
 
-    # Check database
-    await asyncio.sleep(1.0)  # Give SQLite a moment
-
     store = SqliteTraceStore(db_path=db_path)
-    traces = await store.get_by_session_uid(session_uid)
+    validation_passed = True
 
-    if traces:
-        print(f"✓ Found {len(traces)} trace(s) in database")
-        for i, trace in enumerate(traces, 1):
-            print(f"  - Trace {i}: {trace.id}")
-        return True
-    else:
-        print("✗ No traces found")
-        return False
+    for session_uid, expected in expected_counts.items():
+        traces = await store.get_by_session_uid(session_uid)
+        actual = len(traces)
+        status = "✓" if actual == expected else "✗"
+        print(f"{status} Session {session_uid}: expected {expected}, found {actual}")
+        if actual != expected:
+            validation_passed = False
+
+        for idx, trace in enumerate(traces, 1):
+            print(f"  - Trace {idx}: {trace.id}")
+            print(_format_trace_summary(trace))
+
+    if sample_session_uid and sample_session_uid in expected_counts:
+        sample_traces = await store.get_by_session_uid(sample_session_uid)
+        if sample_traces:
+            sample_trace = sample_traces[0]
+            fetched = await store.get(sample_trace.id)
+            if fetched is None:
+                raise RuntimeError(f"Trace {sample_trace.id} missing when fetched directly by ID")
+            print("  - Sample trace fetched by ID:")
+            print(_format_trace_summary(fetched))
+
+    return validation_passed
 
 
 async def run_all_tests(db_path: str, proxy_port: int, admin_token: str):
@@ -214,10 +266,17 @@ async def run_all_tests(db_path: str, proxy_port: int, admin_token: str):
 
         results = []
         session_uid_1 = None
+        expected_counts: dict[str, int] = {}
+
+        def record_expected(uid: str | None, count: int) -> None:
+            if not uid:
+                return
+            expected_counts[uid] = expected_counts.get(uid, 0) + count
 
         # Test 1: Basic request
         try:
-            response_id, session_uid_1 = await test_basic_request(proxy_manager)
+            response_id, session_uid_1, request_count = await test_basic_request(proxy_manager)
+            record_expected(session_uid_1, request_count)
             results.append(("Basic Request", response_id is not None))
         except Exception as e:
             print(f"✗ Test failed: {e}")
@@ -225,7 +284,8 @@ async def run_all_tests(db_path: str, proxy_port: int, admin_token: str):
 
         # Test 2: Multiple requests
         try:
-            session_uid_2 = await test_multiple_requests(proxy_manager)
+            session_uid_2, multi_count = await test_multiple_requests(proxy_manager)
+            record_expected(session_uid_2, multi_count)
             results.append(("Multiple Requests", session_uid_2 is not None))
         except Exception as e:
             print(f"✗ Test failed: {e}")
@@ -233,17 +293,27 @@ async def run_all_tests(db_path: str, proxy_port: int, admin_token: str):
 
         # Test 3: Concurrent sessions
         try:
-            concurrent_uids = await test_concurrent_sessions(proxy_manager)
-            results.append(("Concurrent Sessions", len(concurrent_uids) == 3))
+            concurrent_stats = await test_concurrent_sessions(proxy_manager)
+            for uid, count in concurrent_stats:
+                record_expected(uid, count)
+            results.append(("Concurrent Sessions", len(concurrent_stats) == 3))
         except Exception as e:
             print(f"✗ Test failed: {e}")
             results.append(("Concurrent Sessions", False))
 
         # Test 4: Trace persistence (use session from test 1)
         try:
-            if session_uid_1:
-                persist_ok = await test_trace_persistence(db_path, session_uid_1, proxy_manager)
+            if expected_counts:
+                persist_ok = await test_trace_persistence(
+                    db_path=db_path,
+                    proxy_manager=proxy_manager,
+                    expected_counts=expected_counts,
+                    sample_session_uid=session_uid_1,
+                )
                 results.append(("Trace Persistence", persist_ok))
+            else:
+                print("Trace persistence skipped: no sessions were exercised.")
+                results.append(("Trace Persistence", False))
         except Exception as e:
             print(f"✗ Test failed: {e}")
             results.append(("Trace Persistence", False))

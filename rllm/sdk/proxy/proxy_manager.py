@@ -15,17 +15,11 @@ import resource
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 import requests
 import yaml
-
-from rllm.engine.rollout import RolloutEngine
-from rllm.engine.rollout.verl_engine import VerlEngine
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +258,7 @@ class VerlProxyManager(ProxyManager):
 
     def __init__(
         self,
-        rollout_engine: RolloutEngine,
+        rollout_engine,
         model_name: str,
         proxy_host: str = "127.0.0.1",
         proxy_port: int = 4000,
@@ -274,7 +268,7 @@ class VerlProxyManager(ProxyManager):
     ):
         """Initialize the proxy manager for a VERL rollout engine."""
 
-        if not isinstance(rollout_engine, VerlEngine):
+        if type(rollout_engine).__name__ != "VerlEngine":
             raise TypeError(f"VerlProxyManager only supports VerlEngine, got {type(rollout_engine).__name__}")
 
         super().__init__(
@@ -312,7 +306,7 @@ class VerlProxyManager(ProxyManager):
         are already running.
         """
         try:
-            from rllm.engine.vllm_instrumentation import check_vllm_instrumentation_status, get_vllm_token_ids_support
+            from rllm.patches.vllm_instrumentation import check_vllm_instrumentation_status, get_vllm_token_ids_support
 
             support = get_vllm_token_ids_support()
             print(f"[PROXY_MANAGER] vLLM token IDs support: {support}")
