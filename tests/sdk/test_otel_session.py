@@ -188,14 +188,18 @@ class TestOTelSessionStorage:
         with OTelSession(storage=storage) as session:
             # Add a mock trace
             from rllm.sdk.protocol import Trace
+            import time
 
             trace = Trace(
-                uid="test_trace",
-                session_uid_chain=session._session_uid_chain,
+                trace_id="test_trace",
                 session_name=session.name,
-                messages=[],
+                name="test_call",
+                input={"messages": []},
+                output="test response",
                 model="gpt-4",
-                response="test",
+                latency_ms=100.0,
+                tokens={"prompt": 10, "completion": 20, "total": 30},
+                timestamp=time.time(),
                 metadata={},
             )
             storage.add_trace(session._session_uid_chain, session.name, trace)

@@ -272,14 +272,18 @@ class TestMemoryUsage:
 
             with OTelSession(name="test", storage=storage) as session:
                 # Add many traces
+                import time
                 for i in range(100):
                     trace = Trace(
-                        uid=f"trace_{i}",
-                        session_uid_chain=session._session_uid_chain,
+                        trace_id=f"trace_{i}",
                         session_name=session.name,
-                        messages=[{"role": "user", "content": f"message {i}"}],
+                        name=f"call_{i}",
+                        input={"messages": [{"role": "user", "content": f"message {i}"}]},
+                        output=f"response {i}",
                         model="gpt-4",
-                        response=f"response {i}",
+                        latency_ms=100.0,
+                        tokens={"prompt": 10, "completion": 20, "total": 30},
+                        timestamp=time.time(),
                         metadata={"index": i}
                     )
                     storage.add_trace(session._session_uid_chain, session.name, trace)
@@ -311,14 +315,18 @@ class TestScalability:
                         storage=storage
                     ) as session:
                         # Add a few traces
+                        import time
                         for i in range(5):
                             trace = Trace(
-                                uid=f"s{session_id}_t{i}",
-                                session_uid_chain=session._session_uid_chain,
+                                trace_id=f"s{session_id}_t{i}",
                                 session_name=session.name,
-                                messages=[],
+                                name=f"call_{i}",
+                                input=[],
+                                output=f"response {i}",
                                 model="gpt-4",
-                                response=f"response {i}",
+                                latency_ms=100.0,
+                                tokens={"prompt": 10, "completion": 20, "total": 30},
+                                timestamp=time.time(),
                                 metadata={}
                             )
                             storage.add_trace(session._session_uid_chain, session.name, trace)

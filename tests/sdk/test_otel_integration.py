@@ -421,13 +421,17 @@ class TestStorageIntegration:
         with patch("rllm.sdk.session.otel._ensure_instrumentation"):
             with OTelSession(name="test", experiment="v1", storage=storage) as session:
                 # Add a trace
+                import time
                 trace = Trace(
-                    uid="trace_1",
-                    session_uid_chain=session._session_uid_chain,
+                    trace_id="trace_1",
                     session_name=session.name,
-                    messages=[{"role": "user", "content": "test"}],
+                    name="test_call",
+                    input={"messages": [{"role": "user", "content": "test"}]},
+                    output="response",
                     model="gpt-4",
-                    response="response",
+                    latency_ms=100.0,
+                    tokens={"prompt": 10, "completion": 20, "total": 30},
+                    timestamp=time.time(),
                     metadata={"experiment": "v1"}
                 )
                 storage.add_trace(session._session_uid_chain, session.name, trace)
@@ -444,13 +448,17 @@ class TestStorageIntegration:
 
         with patch("rllm.sdk.session.otel._ensure_instrumentation"):
             with OTelSession(name="parent", storage=storage) as parent:
+                import time
                 parent_trace = Trace(
-                    uid="parent_trace",
-                    session_uid_chain=parent._session_uid_chain,
+                    trace_id="parent_trace",
                     session_name=parent.name,
-                    messages=[],
+                    name="parent_call",
+                    input=[],
+                    output="parent response",
                     model="gpt-4",
-                    response="parent response",
+                    latency_ms=100.0,
+                    tokens={"prompt": 10, "completion": 20, "total": 30},
+                    timestamp=time.time(),
                     metadata={}
                 )
                 storage.add_trace(parent._session_uid_chain, parent.name, parent_trace)
@@ -460,12 +468,15 @@ class TestStorageIntegration:
                     assert parent._uid in child._session_uid_chain
 
                     child_trace = Trace(
-                        uid="child_trace",
-                        session_uid_chain=child._session_uid_chain,
+                        trace_id="child_trace",
                         session_name=child.name,
-                        messages=[],
+                        name="child_call",
+                        input=[],
+                        output="child response",
                         model="gpt-4",
-                        response="child response",
+                        latency_ms=100.0,
+                        tokens={"prompt": 10, "completion": 20, "total": 30},
+                        timestamp=time.time(),
                         metadata={}
                     )
                     storage.add_trace(child._session_uid_chain, child.name, child_trace)

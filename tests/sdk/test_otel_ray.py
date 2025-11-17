@@ -260,13 +260,17 @@ class TestMultiprocessingScenarios:
                 # Session 1 writes a trace
                 storage1 = SqliteSessionStorage(db_path)
                 with OTelSession(name="session1", storage=storage1) as s1:
+                    import time
                     trace1 = Trace(
-                        uid="trace_from_s1",
-                        session_uid_chain=s1._session_uid_chain,
+                        trace_id="trace_from_s1",
                         session_name=s1.name,
-                        messages=[],
+                        name="call_1",
+                        input=[],
+                        output="response1",
                         model="gpt-4",
-                        response="response1",
+                        latency_ms=100.0,
+                        tokens={"prompt": 10, "completion": 20, "total": 30},
+                        timestamp=time.time(),
                         metadata={}
                     )
                     storage1.add_trace(s1._session_uid_chain, s1.name, trace1)

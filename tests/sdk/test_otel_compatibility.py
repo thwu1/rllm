@@ -58,13 +58,17 @@ class TestContextVarSessionCompatibility:
 
         # Use ContextVarSession first
         with ContextVarSession(name="ctx", storage=storage) as ctx:
+            import time
             trace1 = Trace(
-                uid="ctx_trace",
-                session_uid_chain=ctx._session_uid_chain,
+                trace_id="ctx_trace",
                 session_name=ctx.name,
-                messages=[],
+                name="ctx_call",
+                input=[],
+                output="response1",
                 model="gpt-4",
-                response="response1",
+                latency_ms=100.0,
+                tokens={"prompt": 10, "completion": 20, "total": 30},
+                timestamp=time.time(),
                 metadata={}
             )
             storage.add_trace(ctx._session_uid_chain, ctx.name, trace1)
@@ -73,12 +77,15 @@ class TestContextVarSessionCompatibility:
         with patch("rllm.sdk.session.otel._ensure_instrumentation"):
             with OTelSession(name="otel", storage=storage) as otel:
                 trace2 = Trace(
-                    uid="otel_trace",
-                    session_uid_chain=otel._session_uid_chain,
+                    trace_id="otel_trace",
                     session_name=otel.name,
-                    messages=[],
+                    name="otel_call",
+                    input=[],
+                    output="response2",
                     model="gpt-4",
-                    response="response2",
+                    latency_ms=100.0,
+                    tokens={"prompt": 10, "completion": 20, "total": 30},
+                    timestamp=time.time(),
                     metadata={}
                 )
                 storage.add_trace(otel._session_uid_chain, otel.name, trace2)
@@ -389,17 +396,21 @@ class TestRealWorldUsagePatterns:
             with OTelSession(
                 name="debug_session",
                 debug=True,
-                timestamp="2024-01-15",
+                timestamp_meta="2024-01-15",
                 storage=storage
             ) as session:
                 # Add debug traces
+                import time
                 trace = Trace(
-                    uid="debug_trace",
-                    session_uid_chain=session._session_uid_chain,
+                    trace_id="debug_trace",
                     session_name=session.name,
-                    messages=[{"role": "user", "content": "debug query"}],
+                    name="debug_call",
+                    input={"messages": [{"role": "user", "content": "debug query"}]},
+                    output="debug response",
                     model="gpt-4",
-                    response="debug response",
+                    latency_ms=100.0,
+                    tokens={"prompt": 10, "completion": 20, "total": 30},
+                    timestamp=time.time(),
                     metadata=session.metadata
                 )
                 storage.add_trace(session._session_uid_chain, session.name, trace)
