@@ -149,6 +149,7 @@ class AgentTrainer:
                 env_class=self.env_class,
                 agent_args=self.agent_args,
                 env_args=self.env_args,
+                agent_run_func=self.agent_run_func,
             )
         )
 
