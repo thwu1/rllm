@@ -70,7 +70,7 @@ Or run with custom parameters:
 ```bash
 python3 -m examples.sdk.solver_judge_sqlite.train_sqlite \
     trainer.total_epochs=10 \
-    rllm.omni.store.path=./my_traces.db
+    rllm.sdk.store.path=./my_traces.db
 ```
 
 ## Configuration
@@ -87,7 +87,7 @@ You can configure the database path in several ways:
 2. **Via configuration** (for training):
    ```bash
    python3 -m examples.sdk.solver_judge_sqlite.train_sqlite \
-       rllm.omni.store.path=/path/to/traces.db
+       rllm.sdk.store.path=/path/to/traces.db
    ```
 
 3. **Default location**: If not specified, defaults to `~/.rllm/traces.db`

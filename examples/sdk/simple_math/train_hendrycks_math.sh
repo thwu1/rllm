@@ -60,7 +60,7 @@ python3 -m examples.sdk.simple_math.train_hendrycks_math \
     rllm.stepwise_advantage.enable=False \
     rllm.workflow.use_workflow=True \
     trainer.total_epochs=100 \
-    rllm.omni.proxy.host=127.0.0.1 \
-    rllm.omni.proxy.port=4000 \
-    rllm.omni.proxy.mode=subprocess \
-    rllm.omni.store.path=/data/tianhao/.rllm/research-common-27.db
+    rllm.sdk.proxy.host=127.0.0.1 \
+    rllm.sdk.proxy.port=4000 \
+    rllm.sdk.proxy.mode=subprocess \
+    rllm.sdk.store.path=/data/tianhao/.rllm/research-common-27.db

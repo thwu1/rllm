@@ -32,9 +32,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AgentOmniEngine:
+class AgentSdkEngine:
     def __init__(self, agent_run_func: Callable, rollout_engine: RolloutEngine, config=None, n_parallel_tasks: int = 128, retry_limit: int = 3, raise_on_error: bool = True, proxy_config: dict | None = None, tracer: Optional["TracerProtocol"] = None, **kwargs):
-        """Initialize OmniEngine for executing agent_run_func on multiple tasks.
+        """Initialize SdkEngine for executing agent_run_func on multiple tasks.
 
         Args:
             agent_run_func: Agent rollout function to execute for each task.
@@ -78,9 +78,9 @@ class AgentOmniEngine:
             raise NotImplementedError(f"Rollout engine type {type(rollout_engine)} not supported")
 
         self.wrapped_agent_run_func = self._prepare_run_func_with_tracing(self.agent_run_func)
-        self.groupby_key = self.config.rllm.omni.processing.groupby_key
-        self.traj_name_key = self.config.rllm.omni.processing.traj_name_key
-        self.store = SqliteTraceStore(db_path=self.config.rllm.omni.store.path)
+        self.groupby_key = self.config.rllm.sdk.processing.groupby_key
+        self.traj_name_key = self.config.rllm.sdk.processing.traj_name_key
+        self.store = SqliteTraceStore(db_path=self.config.rllm.sdk.store.path)
 
     def _prepare_run_func_with_tracing(self, func):
         """Wrap agent function with session context for automatic trace collection.
@@ -143,7 +143,7 @@ class AgentOmniEngine:
         if proxy_mode == "subprocess":
             # Start subprocess, wait for server, then reload config
             db_path = proxy_config.get("db_path")
-            project = proxy_config.get("project", "rllm-agent-omni")
+            project = proxy_config.get("project", "rllm-agent-sdk")
             self.proxy_manager.start_proxy_subprocess(config=config_payload, db_path=db_path, project=project)
         elif proxy_mode == "external":
             # Reload external proxy with the generated configuration

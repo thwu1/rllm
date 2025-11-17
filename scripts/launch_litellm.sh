@@ -20,5 +20,5 @@ python -m rllm.sdk.proxy.litellm_server \
   --port 4000 \
   --state-dir /tmp/litellm_proxy \
   --db-path ~/.rllm/research-common-27.db \
-  --project rllm-agent-omni-engine \
+  --project rllm-agent-sdk-engine \
   --admin-token my-shared-secret

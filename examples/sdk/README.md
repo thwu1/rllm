@@ -1,6 +1,6 @@
-# Omni Trainer
+# SDK Trainer
 
-This example demonstrates how to use the Omni Trainer for reinforcement learning with language models.
+This example demonstrates how to use the SDK Trainer for reinforcement learning with language models.
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ See `examples/sdk/solver_judge_sqlite/README.md` for detailed documentation on u
 
 ## Optional: Manual Proxy Setup
 
-By default, the training scripts use `rllm.omni.proxy.mode=subprocess` which automatically manages the LiteLLM proxy. If you prefer to manually manage the proxy, you can set `rllm.omni.proxy.mode=external` in your training script and start the proxy yourself:
+By default, the training scripts use `rllm.sdk.proxy.mode=subprocess` which automatically manages the LiteLLM proxy. If you prefer to manually manage the proxy, you can set `rllm.sdk.proxy.mode=external` in your training script and start the proxy yourself:
 
 ```bash
 #!/bin/bash
@@ -86,6 +86,6 @@ python -m rllm.sdk.proxy.litellm_server \
   --state-dir /tmp/litellm_proxy \
   --cs-endpoint http://localhost:8000 \
   --cs-api-key "your-api-key-here" \
-  --project rllm-agent-omni-engine \
+  --project rllm-agent-sdk-engine \
   --admin-token my-shared-secret
 ```

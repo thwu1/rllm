@@ -61,7 +61,7 @@ rllm:
   rejection_sample:
     enable: False
     multiplier: 1
-  omni:
+  sdk:
     store:
       path: ~/.rllm/traces.db
     processing:
