@@ -124,7 +124,7 @@ fireworks:
 
 trainer:
   critic_warmup: 0
-  logger: ['console', 'wandb']
+  logger: ['console']
   project_name: solver-judge-workflow
   experiment_name: sdk-solver-judge
   val_before_train: false
