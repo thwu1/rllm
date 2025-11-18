@@ -6,6 +6,8 @@ export VLLM_USE_V1=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=100000000000
 
+echo "Store path: ${HOME}/rllm-traces.db"
+
 MODEL_PATH=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 
 python3 -m examples.sdk.simple_math.train_hendrycks_math \
@@ -63,4 +65,4 @@ python3 -m examples.sdk.simple_math.train_hendrycks_math \
     rllm.sdk.proxy.host=127.0.0.1 \
     rllm.sdk.proxy.port=4000 \
     rllm.sdk.proxy.mode=subprocess \
-    rllm.sdk.store.path=/data/tianhao/.rllm/research-common-27.db
+    rllm.sdk.store.path="${HOME}/rllm-traces.db"

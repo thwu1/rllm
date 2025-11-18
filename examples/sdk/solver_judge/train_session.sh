@@ -7,6 +7,8 @@ export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=100000000000
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
+echo "Store path: ${HOME}/rllm-traces.db"
+
 python3 -m examples.sdk.solver_judge.train_session \
     data.train_batch_size=64 \
     data.max_prompt_length=2048 \
@@ -53,7 +55,7 @@ python3 -m examples.sdk.solver_judge.train_session \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='solver-judge-workflow' \
-    trainer.experiment_name='sdk-solver-judge-27-sqlite' \
+    trainer.experiment_name='sdk-solver-judge' \
     trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
@@ -63,6 +65,6 @@ python3 -m examples.sdk.solver_judge.train_session \
     rllm.sdk.proxy.host=127.0.0.1 \
     rllm.sdk.proxy.port=4000 \
     rllm.sdk.proxy.mode=subprocess \
-    rllm.sdk.store.path=/data/tianhao/.rllm/research-common-27.db
+    rllm.sdk.store.path="${HOME}/rllm-traces.db"
 
 pkill -9 -f 'ray::WorkerDict' 
