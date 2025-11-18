@@ -74,4 +74,35 @@ def get_ppo_ray_runtime_env():
     return {
         "env_vars": env,
         # "worker_process_setup_hook": PPO_RAY_RUNTIME_ENV["worker_process_setup_hook"],
+        "excludes": [
+            # Python/Git artifacts
+            "*.git*",
+            "*.pyc",
+            "__pycache__",
+            "*.egg-info",
+            "*.egg",
+            ".pytest_cache",
+            ".venv",
+            "venv",
+            ".ruff_cache",
+            "*.ipynb_checkpoints",
+            # Training outputs
+            "wandb",
+            "outputs",
+            "checkpoints",
+            "*.db",
+            # Large build artifacts
+            "*.whl",
+            "*.so",
+            "*.so.*",
+            "*.a",
+            "*.o",
+            "build",
+            "dist",
+            "install",
+            # Specific large directories from warnings
+            "DeepEP",
+            "deepep-nvshmem",
+            "flash_attn*",
+        ],
     }
