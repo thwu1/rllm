@@ -11,9 +11,6 @@ def main(config):
     train_dataset = DatasetRegistry.load_dataset("deepscaler_math", "train")
     test_dataset = DatasetRegistry.load_dataset("aime2024", "test")
 
-    assert train_dataset, "Train dataset not found. Please run examples/deepscaler/prepare_math_dataset.py first."
-    assert test_dataset, "Test dataset not found. Please run examples/simpldeepscalere_math/prepare_math_dataset.py first."
-
     # Define run function that recreates the client inside to avoid closure capture
     # This ensures the function is fully serializable for Ray
     def rollout(**kwargs):

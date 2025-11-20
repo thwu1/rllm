@@ -11,7 +11,7 @@ RLLM_DIR=$(python3 -c "import rllm; import os; print(os.path.dirname(os.path.dir
 
 MODEL_PATH=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 
-python3 -m examples.deepscaler.train_deepscaler \
+python3 -m examples.sdk.deepscaler.train_deepscaler \
     algorithm.adv_estimator=grpo \
     data.train_batch_size=128 \
     data.val_batch_size=30 \

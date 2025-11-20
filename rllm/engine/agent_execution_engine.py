@@ -433,7 +433,7 @@ class AgentExecutionEngine:
         The assemble is aggresive, if steps is not cumulative, the response_masks is set to all 0s.
 
         Each step_result contains:
-        - steps: List of {"prompt": str, "response": str, "prompt_ids": list, "response_ids": list}
+        - steps: List of {"prompt": str, "response": str, "prompt_ids": list, "completion_ids": list}
 
         For training, we need to assemble the full conversation sequence where:
         - prompt_tokens: Initial prompt (first step's prompt_ids)
@@ -450,7 +450,7 @@ class AgentExecutionEngine:
 
         for i, step in enumerate(steps):
             current_prompt_ids = step["prompt_ids"]
-            current_completion_ids = step["response_ids"]
+            current_completion_ids = step["completion_ids"]
 
             if i == 0:
                 # First step: just add completion
