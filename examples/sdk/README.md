@@ -34,6 +34,14 @@ This is the simplest example with a single agent and single turn.
 ./train_hendrycks_math.sh
 ```
 
+### Deepscaler Math Training
+
+Without much code change from Hendrycks math, one can train a very competitcompetitive math reasoning model, Deepscaler. 
+
+```bash
+./train_deepscaler_8k.sh
+```
+
 ### Solver-Judge Flow Training
 
 This is a more complex example with 2 agents and more complex grouping logic.
