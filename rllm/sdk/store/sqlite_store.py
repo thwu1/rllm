@@ -146,11 +146,26 @@ class SqliteTraceStore:
                 )
             """)
 
+            # Optional hierarchy table for prefix-based session path queries
+            # A session path encodes the full chain, e.g. "S1/" or "S1/S2/".
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS trace_session_paths (
+                    trace_id TEXT NOT NULL,
+                    session_path TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (trace_id, session_path),
+                    FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
+                )
+            """)
+
             # Create indexes for performance
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_uid ON trace_sessions(session_uid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_trace ON trace_sessions(trace_id)")
             # Composite index for efficient time-bounded session queries (created after migration)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_sessions_uid_time ON trace_sessions(session_uid, created_at DESC)")
+
+            # Index to support efficient prefix queries on session_path
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_trace_session_paths_path ON trace_session_paths(session_path)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_type ON traces(context_type)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_namespace ON traces(namespace)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at)")
@@ -233,6 +248,7 @@ class SqliteTraceStore:
 
             # Delete existing junction entries for this trace
             await conn.execute("DELETE FROM trace_sessions WHERE trace_id = ?", (trace_id,))
+            await conn.execute("DELETE FROM trace_session_paths WHERE trace_id = ?", (trace_id,))
 
             # Insert new junction entries (one per active session context)
             # This creates the many-to-many mapping: one trace → multiple session contexts
@@ -242,9 +258,19 @@ class SqliteTraceStore:
             # The composite index on (session_uid, created_at) enables fast time-bounded queries
             # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
             if session_uids:
+                # Flat session UID mapping (existing behavior)
                 await conn.executemany(
                     "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
                     [(trace_id, uid, actual_created_at) for uid in session_uids],
+                )
+
+                # Hierarchical session path mapping (optional, best-effort)
+                # If the caller passes a chain like ["S1", "S2"], construct
+                # a single path "S1/S2/" that can be used for prefix queries.
+                session_path = "/".join(session_uids) + "/"
+                await conn.execute(
+                    "INSERT OR REPLACE INTO trace_session_paths (trace_id, session_path, created_at) VALUES (?, ?, ?)",
+                    (trace_id, session_path, actual_created_at),
                 )
 
             await conn.commit()
@@ -313,13 +339,22 @@ class SqliteTraceStore:
 
                 # Delete existing junction entries
                 await conn.execute("DELETE FROM trace_sessions WHERE trace_id = ?", (trace_id,))
+                await conn.execute("DELETE FROM trace_session_paths WHERE trace_id = ?", (trace_id,))
 
                 # Insert new junction entries
                 # CRITICAL: Use actual_created_at (not 'now') to keep junction table in sync with traces table
                 if session_uids:
+                    # Flat session UID mapping (existing behavior)
                     await conn.executemany(
                         "INSERT INTO trace_sessions (trace_id, session_uid, created_at) VALUES (?, ?, ?)",
                         [(trace_id, uid, actual_created_at) for uid in session_uids],
+                    )
+
+                    # Hierarchical session path mapping (optional, best-effort)
+                    session_path = "/".join(session_uids) + "/"
+                    await conn.execute(
+                        "INSERT OR REPLACE INTO trace_session_paths (trace_id, session_path, created_at) VALUES (?, ?, ?)",
+                        (trace_id, session_path, actual_created_at),
                     )
 
                 # Create TraceContext for return
@@ -498,6 +533,69 @@ class SqliteTraceStore:
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
+        finally:
+            await conn.close()
+
+    async def get_by_session_path(
+        self,
+        session_path: str,
+        since: float | None = None,
+        limit: int | None = None,
+    ) -> list[TraceContext]:
+        """Lookup of all traces for a hierarchical session path.
+
+        Uses the trace_session_paths table and an index on session_path
+        to efficiently fetch all traces whose path starts with the given
+        prefix, e.g. session_path="S1/" will match "S1/" and "S1/S2/".
+
+        Args:
+            session_path: Canonical session path prefix (e.g. "S1/" or "S1/S2/").
+            since: Filter by created_at >= since (Unix timestamp).
+            limit: Maximum number of results to return (most recent first).
+
+        Returns:
+            List of TraceContext objects whose session_path matches the prefix.
+        """
+        await self._ensure_initialized()
+        conn = await self._connect()
+        try:
+            conn.row_factory = aiosqlite.Row
+
+            query = """
+                SELECT t.* FROM traces t
+                INNER JOIN trace_session_paths p ON t.id = p.trace_id
+                WHERE p.session_path LIKE ? || '%'
+            """
+            params: list[Any] = [session_path]
+
+            if since is not None:
+                query += " AND p.created_at >= ?"
+                params.append(since)
+
+            query += " ORDER BY p.created_at DESC"
+
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+
+            results: list[TraceContext] = []
+            for row in rows:
+                results.append(
+                    TraceContext(
+                        id=row["id"],
+                        data=json.loads(row["data"]),
+                        namespace=row["namespace"],
+                        type=row["context_type"],
+                        metadata=json.loads(row["metadata"]),
+                        created_at=row["created_at"],
+                        updated_at=row["updated_at"],
+                    )
+                )
+
+            return results
         finally:
             await conn.close()
 

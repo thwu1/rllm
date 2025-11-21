@@ -79,9 +79,10 @@ class TracingCallback(CustomLogger):
     pre-send, and avoids duplicate logging from nested deployment calls.
     """
 
-    def __init__(self, tracer: SqliteTracer):
+    def __init__(self, tracer: SqliteTracer, *, await_persistence: bool = False):
         super().__init__()
         self.tracer = tracer
+        self._await_persistence = await_persistence
 
     async def async_post_call_success_hook(
         self,
@@ -98,7 +99,9 @@ class TracingCallback(CustomLogger):
         Uses litellm_call_id for deduplication to ensure we only log once per request.
         """
         raw_meta_from_data = data.get("metadata", {}) if isinstance(data, dict) else {}
-        metadata = raw_meta_from_data.get("requester_metadata", {})
+        metadata = raw_meta_from_data.get("requester_metadata") if isinstance(raw_meta_from_data, dict) else None
+        if not isinstance(metadata, dict):
+            metadata = raw_meta_from_data if isinstance(raw_meta_from_data, dict) else {}
 
         model = data.get("model", "unknown") if isinstance(data, dict) else "unknown"
         messages = data.get("messages", []) if isinstance(data, dict) else []
@@ -128,7 +131,7 @@ class TracingCallback(CustomLogger):
         # Extract session_uids from metadata (sent from client via metadata routing)
         session_uids = metadata.get("session_uids", None)
 
-        self.tracer.log_llm_call(
+        log_kwargs = dict(
             name=f"proxy/{model}",
             model=model,
             input={"messages": messages},
@@ -137,9 +140,14 @@ class TracingCallback(CustomLogger):
             session_name=metadata.get("session_name", None),
             latency_ms=latency_ms,
             tokens=tokens,
-            trace_id=response_id,  # Use the provider's response ID as the trace_id
-            session_uids=session_uids,  # Pass session UIDs from client
+            trace_id=response_id,
+            session_uids=session_uids,
         )
+
+        if self._await_persistence:
+            await self.tracer.log_llm_call_sync(**log_kwargs)
+        else:
+            self.tracer.log_llm_call(**log_kwargs)
 
         # Return response unchanged
         return response

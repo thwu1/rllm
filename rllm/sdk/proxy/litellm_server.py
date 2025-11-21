@@ -49,11 +49,19 @@ class FlushTracerPayload(BaseModel):
 class LiteLLMProxyRuntime:
     """Owns LiteLLM initialization and reload logic."""
 
-    def __init__(self, initial_config: Path, state_dir: Path, tracer: SqliteTracer | None):
+    def __init__(
+        self,
+        initial_config: Path,
+        state_dir: Path,
+        tracer: SqliteTracer | None,
+        *,
+        await_tracer_persistence: bool = False,
+    ):
         self._current_config = initial_config
         self._state_dir = state_dir
         self._tracer = tracer
         self._lock = asyncio.Lock()
+        self._await_tracer_persistence = await_tracer_persistence
 
     async def startup(self) -> None:
         # Don't initialize LiteLLM on startup - wait for first reload request
@@ -99,7 +107,7 @@ class LiteLLMProxyRuntime:
         callbacks = [cb for cb in getattr(litellm, "callbacks", []) if not isinstance(cb, SamplingParametersCallback | TracingCallback)]
         callbacks.append(SamplingParametersCallback(add_return_token_ids=True))
         if self._tracer:
-            callbacks.append(TracingCallback(self._tracer))
+            callbacks.append(TracingCallback(self._tracer, await_persistence=self._await_tracer_persistence))
         litellm.callbacks = callbacks
 
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
@@ -156,6 +164,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", default=os.getenv("SQLITE_DB_PATH", "~/.rllm/traces.db"), help="Path to SQLite database file.")
     parser.add_argument("--project", default=os.getenv("PROJECT_NAME", "default"), help="Project name/namespace for the tracer.")
     parser.add_argument("--log-level", default=os.getenv("LITELLM_PROXY_LOG_LEVEL", "INFO"))
+    parser.add_argument(
+        "--sync-tracer",
+        action="store_true",
+        help="If set, liteLLM responses wait for tracer persistence (slower but consistent session reads).",
+    )
     return parser.parse_args()
 
 
@@ -170,6 +183,7 @@ def main() -> None:
         initial_config=Path(args.config).expanduser().resolve(),
         state_dir=Path(args.state_dir).expanduser().resolve(),
         tracer=_build_tracer(args.db_path, args.project),
+        await_tracer_persistence=args.sync_tracer,
     )
 
     @asynccontextmanager

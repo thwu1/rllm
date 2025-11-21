@@ -19,24 +19,40 @@ _metadata: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVa
 _sessions_stack: contextvars.ContextVar[list["ContextVarSession"] | None] = contextvars.ContextVar("sessions_stack", default=None)
 
 
-def get_current_session() -> "ContextVarSession | None":
-    """Get the current session instance from context."""
+def get_current_cv_session() -> "ContextVarSession | None":
+    """Get the current ContextVarSession from contextvars.
+
+    Returns:
+        The active ContextVarSession or None if no session is active.
+    """
     return _current_session.get()
 
 
-def get_current_session_name() -> str | None:
-    """Get current session name from context."""
+def get_current_cv_session_name() -> str | None:
+    """Get current session name from ContextVar.
+
+    Returns:
+        Session name or None if no session is active.
+    """
     return _session_name.get()
 
 
-def get_current_metadata() -> dict[str, Any]:
-    """Get current metadata from context."""
+def get_current_cv_metadata() -> dict[str, Any]:
+    """Get current metadata from ContextVar.
+
+    Returns:
+        Metadata dict or empty dict if no metadata is set.
+    """
     metadata = _metadata.get()
     return metadata if metadata is not None else {}
 
 
-def get_active_sessions() -> list["ContextVarSession"]:
-    """Get a copy of the current stack of active sessions (outer → inner)."""
+def get_active_cv_sessions() -> list["ContextVarSession"]:
+    """Get a copy of the current stack of active ContextVarSessions (outer → inner).
+
+    Returns:
+        List of active ContextVarSessions or empty list.
+    """
     stack = _sessions_stack.get() or []
     # Return a shallow copy to prevent accidental mutation by callers
     return list(stack)
@@ -98,7 +114,7 @@ class ContextVarSession:
             self._session_uid_chain = _session_uid_chain + [self._uid]
         else:
             # Check for parent session in current context (nested local case)
-            parent_session = get_current_session()
+            parent_session = get_current_cv_session()
             if parent_session is not None:
                 # Inherit parent's chain and append our UID
                 self._session_uid_chain = parent_session._session_uid_chain + [self._uid]

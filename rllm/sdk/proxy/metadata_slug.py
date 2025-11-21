@@ -8,7 +8,11 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from rllm.sdk.session import get_active_sessions, get_current_metadata, get_current_session_name
+from rllm.sdk.session import (
+    get_active_sessions,
+    get_current_metadata,
+    get_current_session_name,
+)
 
 _SLUG_PREFIX = "rllm1:"
 
