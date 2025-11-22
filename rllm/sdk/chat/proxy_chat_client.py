@@ -12,7 +12,7 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
-from rllm.sdk.chat.base import (
+from rllm.sdk.chat.util import (
     TimedCall,
     extract_completion_tokens,
     extract_usage_tokens,

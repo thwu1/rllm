@@ -1,6 +1,6 @@
 """Chat provider clients exposed by the RLLM SDK."""
 
-from rllm.sdk.chat.base import (
+from rllm.sdk.chat.util import (
     TimedCall,
     extract_completion_tokens,
     extract_usage_tokens,
