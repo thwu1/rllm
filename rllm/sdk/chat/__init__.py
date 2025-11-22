@@ -3,14 +3,15 @@
 This module provides unified chat client implementations that support both
 proxy-based tracing and optional local in-memory tracing.
 
-Client Hierarchy:
-- SimpleTrackedChatClient: Direct tracing without proxy involvement
-- ProxyTrackedChatClient: Proxy + optional local tracing (default: enabled)
-- OpenTelemetryTrackedChatClient: Proxy without local tracing (OTel mode)
+All clients are now consolidated in the openai module:
+- ProxyTrackedChatClient: Full-featured client with proxy and tracing support
+- SimpleTrackedChatClient: Alias for ProxyTrackedChatClient with use_proxy=False
+- OpenTelemetryTrackedChatClient: Alias with enable_local_tracing=False (OTel mode)
 
-The OpenTelemetry clients are now aliases for ProxyTracked clients with
-`enable_local_tracing=False`, simplifying the codebase while maintaining
-backward compatibility.
+Configuration options:
+- use_proxy: Enable/disable proxy URL metadata injection (default: True)
+- enable_local_tracing: Enable/disable local trace logging (default: True)
+- tracer: Custom tracer for logging (default: shared in-memory tracer)
 """
 
 from rllm.sdk.chat.util import (
@@ -19,26 +20,31 @@ from rllm.sdk.chat.util import (
     merge_args,
 )
 from rllm.sdk.chat.openai import (
+    # Core clients
+    ProxyTrackedAsyncChatClient,
+    ProxyTrackedChatClient,
+    # Simple client aliases (use_proxy=False)
+    SimpleTrackedAsyncChatClient,
+    SimpleTrackedChatClient,
+    # OTel client aliases (enable_local_tracing=False)
     AsyncOpenAIOTelClient,
     OpenAIOTelClient,
     OpenTelemetryTrackedAsyncChatClient,
     OpenTelemetryTrackedChatClient,
-    ProxyTrackedAsyncChatClient,
-    ProxyTrackedChatClient,
 )
-from rllm.sdk.chat.simple_chat_client import SimpleTrackedAsyncChatClient, SimpleTrackedChatClient
 
 __all__ = [
     # Utility functions
     "merge_args",
     "extract_completion_tokens",
     "extract_usage_tokens",
-    # Client implementations
-    "SimpleTrackedChatClient",
-    "SimpleTrackedAsyncChatClient",
+    # Core client implementations
     "ProxyTrackedChatClient",
     "ProxyTrackedAsyncChatClient",
-    # OTel-mode clients (backward-compatible aliases)
+    # Simple client aliases (use_proxy=False)
+    "SimpleTrackedChatClient",
+    "SimpleTrackedAsyncChatClient",
+    # OTel-mode client aliases (enable_local_tracing=False)
     "OpenTelemetryTrackedChatClient",
     "OpenTelemetryTrackedAsyncChatClient",
     "OpenAIOTelClient",

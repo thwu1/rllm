@@ -289,8 +289,7 @@ rllm/sdk/
 │   └── session_buffer.py    # SessionBuffer (ephemeral trace storage)
 ├── chat/
 │   ├── __init__.py          # Chat client exports
-│   ├── openai.py            # Unified OpenAI chat client (includes OTel aliases)
-│   ├── simple_chat_client.py      # Simple chat client
+│   ├── openai.py            # Unified OpenAI chat client (all client types)
 │   └── util.py              # Shared utilities for chat clients
 ├── proxy/
 │   ├── __init__.py          # Proxy module exports
