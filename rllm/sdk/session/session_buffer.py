@@ -1,9 +1,6 @@
 """Session buffer for temporary trace storage during session lifecycle.
 
-This module provides non-persistent, session-scoped trace buffering.
-Traces are held in memory for the duration of the session and discarded afterward.
-
-For persistent storage across sessions/processes, see rllm.sdk.store (SqliteTraceStore).
+For persistent storage, see rllm.sdk.store (SqliteTraceStore).
 """
 
 from __future__ import annotations
@@ -17,11 +14,7 @@ from rllm.sdk.protocol import Trace
 
 @runtime_checkable
 class SessionBufferProtocol(Protocol):
-    """Protocol for session trace buffer backends.
-
-    Implementations: SessionBuffer (single-process, in-memory).
-    Uses session_uid_chain for hierarchy support - parent sessions see all descendant traces.
-    """
+    """Protocol for session trace buffer backends."""
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
         """Add trace to buffer under session hierarchy."""
@@ -33,31 +26,15 @@ class SessionBufferProtocol(Protocol):
 
 
 class SessionBuffer:
-    """Thread-safe in-memory trace buffer (default, single-process only).
-
-    Buffers traces temporarily during session lifecycle for single-process scenarios.
-    """
+    """Thread-safe in-memory trace buffer (default, single-process only)."""
 
     def __init__(self):
-        """Initialize thread-safe session buffer."""
         self._traces: dict[str, list[Trace]] = defaultdict(list)
         self._lock = threading.Lock()
 
     def add_trace(self, session_uid_chain: list[str], session_name: str, trace: Trace) -> None:
-        """
-        Add trace to session buffer (thread-safe).
-
-        Stores the trace under ALL session UIDs in the chain, enabling
-        parent sessions to query all descendant traces.
-
-        Args:
-            session_uid_chain: List of session UIDs from root to current
-            session_name: User-visible session name (for logging/debugging)
-            trace: Trace object to store
-        """
+        """Add trace under all session UIDs in chain (enables parent queries)."""
         with self._lock:
-            # Store trace under all session UIDs in the chain
-            # This enables tree queries: parent sees all descendant traces
             for uid in session_uid_chain:
                 self._traces[uid].append(trace)
 
@@ -74,5 +51,5 @@ class SessionBuffer:
 
     def __repr__(self):
         with self._lock:
-            total_traces = sum(len(traces) for traces in self._traces.values())
-            return f"SessionBuffer(sessions={len(self._traces)}, total_traces={total_traces})"
+            total = sum(len(t) for t in self._traces.values())
+            return f"SessionBuffer(sessions={len(self._traces)}, traces={total})"
