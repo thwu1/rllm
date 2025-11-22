@@ -69,7 +69,6 @@ def get_chat_client(
     *,
     api_key: str | None = None,
     base_url: str | None = None,
-    model: str | None = None,
     organization: str | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
@@ -85,7 +84,6 @@ def get_chat_client(
         provider: Provider name (only "openai" supported).
         api_key: OpenAI API key (optional if OPENAI_API_KEY set).
         base_url: Base URL for proxy or custom endpoints.
-        model: Default model for completions.
         organization: OpenAI organization ID.
         timeout: Request timeout in seconds.
         max_retries: Max retries for failed requests.
@@ -96,9 +94,9 @@ def get_chat_client(
         ProxyTrackedChatClient: OpenAI client with session tracking.
 
     Example:
-        >>> llm = get_chat_client(api_key="sk-...", model="gpt-4")
+        >>> llm = get_chat_client(api_key="sk-...")
         >>> with session(experiment="v1"):
-        ...     llm.chat.completions.create(messages=[...])
+        ...     llm.chat.completions.create(model="gpt-4", messages=[...])
     """
     if provider.lower() != "openai":
         raise ValueError(f"Unsupported chat provider '{provider}'. Only 'openai' is supported.")
@@ -129,15 +127,12 @@ def get_chat_client(
     # ContextVar backend uses proxy client with local tracing enabled
     if SESSION_BACKEND == "opentelemetry":
         wrapper = OpenTelemetryTrackedChatClient(
-            api_key=resolved_api_key,
             base_url=base_url,
-            default_model=model,
             client=client,
             use_proxy=use_proxy,
         )
     else:
         wrapper = ProxyTrackedChatClient(
-            default_model=model,
             base_url=base_url,
             client=client,
             use_proxy=use_proxy,
@@ -151,7 +146,6 @@ def get_chat_client_async(
     *,
     api_key: str | None = None,
     base_url: str | None = None,
-    model: str | None = None,
     organization: str | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
@@ -166,9 +160,9 @@ def get_chat_client_async(
         ProxyTrackedAsyncChatClient: Async OpenAI client with session tracking.
 
     Example:
-        >>> llm = get_chat_client_async(api_key="sk-...", model="gpt-4")
+        >>> llm = get_chat_client_async(api_key="sk-...")
         >>> with session(experiment="v1"):
-        ...     await llm.chat.completions.create(messages=[...])
+        ...     await llm.chat.completions.create(model="gpt-4", messages=[...])
     """
     if provider.lower() != "openai":
         raise ValueError(f"Unsupported chat provider '{provider}'. Only 'openai' is supported.")
@@ -198,15 +192,12 @@ def get_chat_client_async(
     # ContextVar backend uses proxy client with local tracing enabled
     if SESSION_BACKEND == "opentelemetry":
         wrapper = OpenTelemetryTrackedAsyncChatClient(
-            api_key=resolved_api_key,
             base_url=base_url,
-            default_model=model,
             client=client,
             use_proxy=use_proxy,
         )
     else:
         wrapper = ProxyTrackedAsyncChatClient(
-            default_model=model,
             base_url=base_url,
             client=client,
             use_proxy=use_proxy,

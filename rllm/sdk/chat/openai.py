@@ -28,7 +28,6 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import partial
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAI
@@ -106,10 +105,7 @@ class _ChatCompletions:
         if not messages:
             raise ValueError("messages required")
 
-        model = call_kwargs.setdefault("model", p.default_model)
-        if not model:
-            raise ValueError("model required")
-
+        model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
 
         # Get client (with proxy URL if enabled)
@@ -154,10 +150,7 @@ class _Completions:
         if prompt is None:
             raise ValueError("prompt required")
 
-        model = call_kwargs.setdefault("model", p.default_model)
-        if not model:
-            raise ValueError("model required")
-
+        model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
 
         if p.use_proxy:
@@ -201,12 +194,12 @@ class TrackedChatClient:
     Args:
         api_key: OpenAI API key
         base_url: Base URL (proxy URL for metadata injection)
-        default_model: Default model for calls
         client: Pre-configured OpenAI client
         use_proxy: Inject metadata into proxy URL (default: True)
         enable_local_tracing: Log traces locally (default: True)
         tracer: Custom tracer (default: shared in-memory tracer)
         extra_headers: Additional request headers
+        **client_kwargs: Additional args passed to OpenAI client
     """
 
     def __init__(
@@ -214,7 +207,6 @@ class TrackedChatClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
-        default_model: str | None = None,
         client: OpenAI | None = None,
         use_proxy: bool = True,
         enable_local_tracing: bool = True,
@@ -239,7 +231,6 @@ class TrackedChatClient:
             self._client = OpenAI(**kw)
 
         self.base_url = base_url  # Only set if explicitly provided or custom client URL
-        self.default_model = default_model
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
         self._tracer = tracer
@@ -266,10 +257,7 @@ class _AsyncChatCompletions:
         if not messages:
             raise ValueError("messages required")
 
-        model = call_kwargs.setdefault("model", p.default_model)
-        if not model:
-            raise ValueError("model required")
-
+        model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
 
         if p.use_proxy:
@@ -310,10 +298,7 @@ class _AsyncCompletions:
         if prompt is None:
             raise ValueError("prompt required")
 
-        model = call_kwargs.setdefault("model", p.default_model)
-        if not model:
-            raise ValueError("model required")
-
+        model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
 
         if p.use_proxy:
@@ -359,7 +344,6 @@ class TrackedAsyncChatClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
-        default_model: str | None = None,
         client: AsyncOpenAI | None = None,
         use_proxy: bool = True,
         enable_local_tracing: bool = True,
@@ -384,7 +368,6 @@ class TrackedAsyncChatClient:
             self._client = AsyncOpenAI(**kw)
 
         self.base_url = base_url  # Only set if explicitly provided or custom client URL
-        self.default_model = default_model
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
         self._tracer = tracer
