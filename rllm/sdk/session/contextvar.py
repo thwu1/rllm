@@ -62,7 +62,7 @@ class ContextVarSession:
     """Context-based session with pluggable storage for LLM trace collection.
 
     Features thread-safe context propagation, nested sessions with metadata inheritance,
-    and pluggable storage (InMemoryStorage default, SqliteSessionStorage for multi-process).
+    and pluggable storage (InMemoryStorage default).
 
     Example:
         >>> with ContextVarSession() as session:
@@ -87,7 +87,6 @@ class ContextVarSession:
                   existing session name in the context (from a parent session),
                   that will be inherited instead of generating a new one.
             storage: Storage backend for traces. If None, uses InMemoryStorage (default).
-                    Pass SqliteSessionStorage for multi-process scenarios.
             formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
             persistent_tracers: Optional list of persistent tracers (deprecated, kept for compatibility)
             _session_uid_chain: Internal parameter for context restoration (do not use directly)
