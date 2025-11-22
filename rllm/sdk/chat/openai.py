@@ -1,7 +1,9 @@
-"""Unified proxy-aware OpenAI chat clients that inject metadata slugs per request.
+"""Unified OpenAI chat clients with session tracking and optional proxy support.
 
-This client injects session metadata into the proxy URL for server-side tracing.
-It supports optional local in-memory tracing for immediate access to LLM calls.
+This module provides OpenAI-compatible chat clients that support:
+- Automatic session metadata injection into proxy URLs
+- Optional local in-memory tracing for immediate access to LLM calls
+- Both sync and async variants
 
 When `enable_local_tracing=True` (default), traces are logged to an in-memory store
 for access via session.llm_calls. When `enable_local_tracing=False`, the client
