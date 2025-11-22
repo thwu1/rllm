@@ -50,35 +50,49 @@ def instrument(
     if _instrumented:
         return
 
-    # Setup proxy URL modification if requested
-    if proxy_urls:
-        for url in proxy_urls:
-            register_proxy_url(url)
-        patch_httpx()
+    try:
+        # Setup proxy URL modification if requested
+        if proxy_urls:
+            for url in proxy_urls:
+                register_proxy_url(url)
+            patch_httpx()
 
-    # Instrument providers - only mark as instrumented if at least one succeeds
-    any_success = False
-    for name in (providers or SUPPORTED_PROVIDERS):
-        if name.lower() == "openai":
-            if instrument_openai():
-                any_success = True
-        else:
-            raise ValueError(f"Unknown provider: {name}. Supported: {SUPPORTED_PROVIDERS}")
+        # Instrument providers - only mark as instrumented if at least one succeeds
+        any_success = False
+        for name in (providers or SUPPORTED_PROVIDERS):
+            if name.lower() == "openai":
+                if instrument_openai():
+                    any_success = True
+            else:
+                raise ValueError(f"Unknown provider: {name}. Supported: {SUPPORTED_PROVIDERS}")
 
-    _instrumented = any_success
+        _instrumented = any_success
+    except Exception:
+        # Clean up partial instrumentation on failure
+        _cleanup()
+        raise
+
+
+def _cleanup() -> None:
+    """Clean up all instrumentation state (internal helper)."""
+    uninstrument_openai()
+    clear_proxy_urls()
+    unpatch_httpx()
 
 
 def uninstrument(providers: Sequence[str] | None = None) -> None:
-    """Disable auto-instrumentation."""
-    global _instrumented
+    """Disable auto-instrumentation.
 
-    if not _instrumented:
-        return
+    Always cleans up httpx patches and proxy URLs, even if _instrumented is False,
+    to handle partial/failed instrumentation cleanup.
+    """
+    global _instrumented
 
     for name in (providers or SUPPORTED_PROVIDERS):
         if name.lower() == "openai":
             uninstrument_openai()
 
+    # Always clean up httpx/proxy state to handle partial instrumentation
     clear_proxy_urls()
     unpatch_httpx()
     _instrumented = False

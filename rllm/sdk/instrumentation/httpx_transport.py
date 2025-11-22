@@ -92,16 +92,23 @@ class _TransportWrapper:
         self._wrapped = wrapped
 
     def _modify_request(self, request: "httpx.Request") -> "httpx.Request":
+        """Modify request URL while preserving body stream and all other attributes."""
+        if not _should_inject(request.url):
+            return request
+
         import httpx
-        if _should_inject(request.url):
-            return httpx.Request(
-                method=request.method,
-                url=_inject_metadata(request.url),
-                headers=request.headers,
-                content=request.content,
-                extensions=request.extensions,
-            )
-        return request
+
+        new_url = _inject_metadata(request.url)
+
+        # Preserve the original stream to avoid consuming/buffering request bodies.
+        # Using stream= instead of content= keeps streaming uploads intact.
+        return httpx.Request(
+            method=request.method,
+            url=new_url,
+            headers=request.headers,
+            stream=request.stream,
+            extensions=request.extensions,
+        )
 
 
 class AsyncTransportWrapper(_TransportWrapper):
