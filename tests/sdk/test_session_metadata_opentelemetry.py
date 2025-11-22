@@ -299,3 +299,64 @@ async def test_http_override_on_server_does_not_back_propagate(fastapi_app):
 
         # Client remains user role
         assert get_current_otel_metadata() == {"user_id": "12345", "role": "user"}
+
+
+@pytest.mark.anyio
+async def test_http_two_hop_propagation_without_intermediate_sessions(fastapi_app):
+    """Test two-hop HTTP propagation where only root has a session.
+
+    Client -> /stage1 (no session) -> /stage2 (no session)
+    Both intermediate services should receive and be able to read root session metadata.
+    """
+    import httpx
+    from fastapi import APIRouter
+
+    router = APIRouter()
+
+    @router.get("/stage2")
+    async def stage2():
+        # No session created here - just read propagated metadata
+        meta = get_current_otel_metadata()
+        return {"meta": meta}
+
+    @router.get("/stage1")
+    async def stage1():
+        # No session created here either - just read propagated metadata
+        meta = get_current_otel_metadata()
+        # Make nested HTTP call to stage2
+        transport = httpx.ASGITransport(app=fastapi_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/stage2")
+        stage2_data = resp.json()
+        return {
+            "stage1_meta": meta,
+            "stage2_meta": stage2_data["meta"],
+        }
+
+    fastapi_app.include_router(router)
+
+    # Client root session
+    with otel_session(user_id="12345", tenant_id="acme", request_id="req-abc") as client_session:
+        client_chain_len = len(client_session._session_uid_chain)
+        transport = httpx.ASGITransport(app=fastapi_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/stage1")
+        data = resp.json()
+        stage1_meta = data["stage1_meta"]
+        stage2_meta = data["stage2_meta"]
+
+        # Both stages should see root session metadata
+        assert stage1_meta["user_id"] == "12345"
+        assert stage1_meta["tenant_id"] == "acme"
+        assert stage1_meta["request_id"] == "req-abc"
+
+        assert stage2_meta["user_id"] == "12345"
+        assert stage2_meta["tenant_id"] == "acme"
+        assert stage2_meta["request_id"] == "req-abc"
+
+        # Metadata should be identical at both stages (no intermediate sessions)
+        assert stage1_meta == stage2_meta
+
+        # Client session unchanged
+        assert get_current_otel_metadata() == {"user_id": "12345", "tenant_id": "acme", "request_id": "req-abc"}
+        assert len(client_session._session_uid_chain) == client_chain_len
