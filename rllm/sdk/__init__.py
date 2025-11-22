@@ -7,7 +7,6 @@ from rllm.sdk.session import (
     InMemoryStorage,
     SessionContext,
     SessionStorage,
-    SqliteSessionStorage,
     get_current_metadata,
     get_current_session,
     get_current_session_name,
@@ -35,7 +34,6 @@ __all__ = [
     # Session Storage
     "SessionStorage",  # Storage protocol
     "InMemoryStorage",  # Default in-memory storage
-    "SqliteSessionStorage",  # SQLite-backed storage
     # Shortcuts
     "session",
     "get_chat_client",

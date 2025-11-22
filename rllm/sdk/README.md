@@ -78,19 +78,13 @@ with session(experiment="v1"):
 ```
 
 ### 3. Storage Backends
-Choose between in-memory or persistent storage.
+The SDK uses in-memory storage by default for session traces.
 
 ```python
 from rllm.sdk import session
-from rllm.sdk.session import SqliteSessionStorage
 
 # In-memory (default)
 with session() as sess:
-    llm.call()
-
-# SQLite (persistent, multi-process)
-storage = SqliteSessionStorage("traces.db")
-with session(storage=storage) as sess:
     llm.call()
 ```
 
@@ -153,7 +147,7 @@ rllm/sdk/
 ├── session/
 │   ├── base.py           # SessionProtocol
 │   ├── contextvar.py     # ContextVarSession (default)
-│   └── storage.py        # InMemoryStorage, SqliteSessionStorage
+│   └── storage.py        # InMemoryStorage
 ├── chat/
 │   ├── proxy_chat_client.py    # Proxy-enabled chat client
 │   └── simple_chat_client.py   # Simple chat client

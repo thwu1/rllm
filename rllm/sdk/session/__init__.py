@@ -14,7 +14,6 @@ from rllm.sdk.session.contextvar import (
 from rllm.sdk.session.storage import (
     InMemoryStorage,
     SessionStorage,
-    SqliteSessionStorage,
 )
 
 
@@ -140,5 +139,4 @@ __all__ = [
     # Storage
     "SessionStorage",  # Protocol
     "InMemoryStorage",  # Default in-memory storage
-    "SqliteSessionStorage",  # SQLite-backed storage
 ]
