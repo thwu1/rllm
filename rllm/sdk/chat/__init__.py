@@ -1,7 +1,6 @@
 """Chat provider clients exposed by the RLLM SDK."""
 
 from rllm.sdk.chat.util import (
-    TimedCall,
     extract_completion_tokens,
     extract_usage_tokens,
     merge_args,
@@ -27,7 +26,6 @@ else:
 
 __all__ = [
     # Utility functions
-    "TimedCall",
     "merge_args",
     "extract_completion_tokens",
     "extract_usage_tokens",

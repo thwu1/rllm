@@ -5,6 +5,7 @@ This client injects session metadata into the proxy URL for server-side tracing.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,7 +14,6 @@ from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
 from rllm.sdk.chat.util import (
-    TimedCall,
     extract_completion_tokens,
     extract_usage_tokens,
     merge_args,
@@ -105,8 +105,9 @@ class _ProxyChatCompletions:
         else:
             scoped_client = self.parent._client
 
-        with TimedCall() as timer:
-            response = scoped_client.chat.completions.create(**call_kwargs)
+        start = time.perf_counter()
+        response = scoped_client.chat.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
 
         response_dict = response.model_dump()
         completion_token_ids = extract_completion_tokens(response_dict)
@@ -117,7 +118,7 @@ class _ProxyChatCompletions:
             response_payload=response_dict,
             completion_token_ids=completion_token_ids,
             metadata_overrides=metadata,
-            latency_ms=timer.latency_ms,
+            latency_ms=latency_ms,
         )
         return response
 
@@ -154,8 +155,9 @@ class _ProxyCompletions:
         else:
             scoped_client = self.parent._client
 
-        with TimedCall() as timer:
-            response = scoped_client.completions.create(**call_kwargs)
+        start = time.perf_counter()
+        response = scoped_client.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
 
         response_dict = response.model_dump()
         completion_token_ids = extract_completion_tokens(response_dict)
@@ -166,7 +168,7 @@ class _ProxyCompletions:
             response_payload=response_dict,
             completion_token_ids=completion_token_ids,
             metadata_overrides=metadata,
-            latency_ms=timer.latency_ms,
+            latency_ms=latency_ms,
         )
         return response
 
@@ -232,8 +234,9 @@ class _ProxyAsyncChatCompletions:
         else:
             scoped_client = self.parent._client
 
-        with TimedCall() as timer:
-            response = await scoped_client.chat.completions.create(**call_kwargs)
+        start = time.perf_counter()
+        response = await scoped_client.chat.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
 
         response_dict = response.model_dump()
         completion_token_ids = extract_completion_tokens(response_dict)
@@ -244,7 +247,7 @@ class _ProxyAsyncChatCompletions:
             response_payload=response_dict,
             completion_token_ids=completion_token_ids,
             metadata_overrides=metadata,
-            latency_ms=timer.latency_ms,
+            latency_ms=latency_ms,
         )
         return response
 
@@ -281,8 +284,9 @@ class _ProxyAsyncCompletions:
         else:
             scoped_client = self.parent._client
 
-        with TimedCall() as timer:
-            response = await scoped_client.completions.create(**call_kwargs)
+        start = time.perf_counter()
+        response = await scoped_client.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
 
         response_dict = response.model_dump()
         completion_token_ids = extract_completion_tokens(response_dict)
@@ -293,7 +297,7 @@ class _ProxyAsyncCompletions:
             response_payload=response_dict,
             completion_token_ids=completion_token_ids,
             metadata_overrides=metadata,
-            latency_ms=timer.latency_ms,
+            latency_ms=latency_ms,
         )
         return response
 

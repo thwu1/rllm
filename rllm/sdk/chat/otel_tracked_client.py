@@ -5,6 +5,7 @@ This client reads session metadata from OTel baggage for cross-process context p
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -13,8 +14,44 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
-from rllm.sdk.chat.util import TimedCall, merge_args
-from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
+from rllm.sdk.chat.util import merge_args
+from rllm.sdk.proxy.metadata_slug import build_proxied_base_url
+from rllm.sdk.session.opentelemetry import (
+    get_active_otel_session_uids,
+    get_current_otel_metadata,
+    get_current_otel_session_name,
+)
+
+
+def _build_routing_metadata(user_metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Build routing metadata from baggage (single source of truth).
+
+    This function reads directly from W3C baggage, which works both:
+    - In-process: when inside an otel_session() context
+    - Cross-process: when baggage has been propagated via HTTP headers
+
+    Args:
+        user_metadata: Optional user-provided metadata to merge (overrides session metadata)
+
+    Returns:
+        Dict with session_name, session_uids, and merged metadata
+    """
+    session_name = get_current_otel_session_name()
+    session_uids = get_active_otel_session_uids()
+    session_metadata = get_current_otel_metadata()
+
+    result: dict[str, Any] = {}
+
+    if session_metadata:
+        result.update(session_metadata)
+    if session_name:
+        result["session_name"] = session_name
+    if session_uids:
+        result["session_uids"] = session_uids
+    if user_metadata:
+        result.update(dict(user_metadata))
+
+    return result
 
 
 class _ScopedClientMixin:
@@ -59,11 +96,10 @@ class _OTelChatCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata) if self.parent.use_proxy else None
+        routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        with TimedCall():
-            response = scoped_client.chat.completions.create(**call_kwargs)
+        response = scoped_client.chat.completions.create(**call_kwargs)
         return response
 
 
@@ -91,11 +127,10 @@ class _OTelCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata) if self.parent.use_proxy else None
+        routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        with TimedCall():
-            response = scoped_client.completions.create(**call_kwargs)
+        response = scoped_client.completions.create(**call_kwargs)
         return response
 
 
@@ -153,11 +188,10 @@ class _OTelAsyncChatCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata) if self.parent.use_proxy else None
+        routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        with TimedCall():
-            response = await scoped_client.chat.completions.create(**call_kwargs)
+        response = await scoped_client.chat.completions.create(**call_kwargs)
         return response
 
 
@@ -185,11 +219,10 @@ class _OTelAsyncCompletions:
             raise ValueError("model must be supplied either in the call or via default_model.")
 
         metadata = call_kwargs.pop("metadata", None) or {}
-        routing_metadata = assemble_routing_metadata(metadata) if self.parent.use_proxy else None
+        routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        with TimedCall():
-            response = await scoped_client.completions.create(**call_kwargs)
+        response = await scoped_client.completions.create(**call_kwargs)
         return response
 
 

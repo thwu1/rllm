@@ -7,7 +7,6 @@ code duplication.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -83,18 +82,3 @@ def extract_usage_tokens(response_payload: Mapping[str, Any]) -> dict[str, int]:
         "completion": completion_tokens,
         "total": total_tokens,
     }
-
-
-class TimedCall:
-    """Context manager for timing API calls."""
-
-    def __init__(self):
-        self.start_time: float = 0
-        self.latency_ms: float = 0
-
-    def __enter__(self) -> "TimedCall":
-        self.start_time = time.perf_counter()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.latency_ms = (time.perf_counter() - self.start_time) * 1000
