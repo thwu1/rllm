@@ -3,11 +3,14 @@
 This module provides OpenAI-compatible chat clients that support:
 - Automatic session metadata injection into proxy URLs
 - Optional local in-memory tracing for immediate access to LLM calls
+- Custom tracer injection for flexible tracing backends
 - Both sync and async variants
 
 When `enable_local_tracing=True` (default), traces are logged to an in-memory store
 for access via session.llm_calls. When `enable_local_tracing=False`, the client
 relies entirely on the proxy/backend for tracing (suitable for OTel-based setups).
+
+A custom `tracer` can be provided to override the default in-memory tracer.
 """
 
 from __future__ import annotations
@@ -33,12 +36,13 @@ from rllm.sdk.tracers import InMemorySessionTracer
 
 
 class _ScopedClientMixin:
-    """Shared helpers for proxy client scoping and in-memory tracing."""
+    """Shared helpers for proxy client scoping and tracing."""
 
-    # Shared in-memory session tracer instance for all proxy clients
+    # Shared in-memory session tracer instance (used when no custom tracer provided)
     _memory_tracer = InMemorySessionTracer()
 
     _base_headers: dict[str, str]
+    _tracer: Any  # Custom tracer (if provided)
     base_url: str | None
     use_proxy: bool
     enable_local_tracing: bool
@@ -56,6 +60,10 @@ class _ScopedClientMixin:
 
         return client
 
+    def _get_tracer(self) -> Any:
+        """Get the tracer to use for logging (custom or default in-memory)."""
+        return self._tracer if self._tracer is not None else self._memory_tracer
+
     def _log_trace(
         self,
         *,
@@ -66,11 +74,11 @@ class _ScopedClientMixin:
         metadata_overrides: dict[str, Any],
         latency_ms: float,
     ) -> None:
-        """Log trace to in-memory session (if active and local tracing is enabled).
+        """Log trace to tracer (if local tracing is enabled).
 
-        In proxy mode, the proxy handles persistent tracing to the backend.
-        When enable_local_tracing=True, we also log to in-memory session for
-        immediate access via session.llm_calls without any I/O.
+        When enable_local_tracing=True (default), traces are logged either to:
+        - A custom tracer (if provided via `tracer` parameter)
+        - The shared in-memory tracer (for access via session.llm_calls)
 
         When enable_local_tracing=False (OTel mode), we skip local tracing and
         rely entirely on the proxy/OTel backend for tracing.
@@ -78,8 +86,16 @@ class _ScopedClientMixin:
         if not self.enable_local_tracing:
             return
 
+        tracer = self._get_tracer()
+        if not tracer:
+            return
+
         context_metadata = get_current_metadata()
         merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
+
+        # Include token IDs in metadata if available
+        if completion_token_ids:
+            merged_metadata["token_ids"] = {"prompt": [], "completion": completion_token_ids}
 
         session_name = get_current_session_name()
         tokens = extract_usage_tokens(response_payload)
@@ -87,8 +103,8 @@ class _ScopedClientMixin:
         session_uids = get_active_session_uids()
         sessions = get_active_cv_sessions()
 
-        self._memory_tracer.log_llm_call(
-            name="proxy.chat.completions.create",
+        tracer.log_llm_call(
+            name="chat.completions.create",
             input={"messages": messages},
             output=response_payload,
             model=model,
@@ -199,10 +215,12 @@ class _ProxyCompletions:
 
 
 class ProxyTrackedChatClient(_ScopedClientMixin):
-    """OpenAI client wrapper that injects metadata slugs into the proxy base URL.
+    """Unified OpenAI client wrapper with proxy support and flexible tracing.
 
-    This unified client supports both proxy-based tracing and optional local
-    in-memory tracing for immediate access to LLM call data.
+    This client supports:
+    - Proxy-based metadata injection for server-side tracing
+    - Optional local tracing via custom or built-in in-memory tracer
+    - Custom headers for request customization
 
     Args:
         api_key: OpenAI API key
@@ -213,6 +231,8 @@ class ProxyTrackedChatClient(_ScopedClientMixin):
         extra_headers: Additional headers to include in requests
         enable_local_tracing: Whether to log traces locally (default: True).
             Set to False for OTel-only mode where tracing is handled by backend.
+        tracer: Custom tracer for logging LLM calls. If None, uses shared
+            in-memory tracer. Must implement log_llm_call() method.
         **client_kwargs: Additional arguments passed to OpenAI client
     """
 
@@ -226,6 +246,7 @@ class ProxyTrackedChatClient(_ScopedClientMixin):
         use_proxy: bool = True,
         extra_headers: Mapping[str, str] | None = None,
         enable_local_tracing: bool = True,
+        tracer: Any = None,
         **client_kwargs: Any,
     ) -> None:
         if client is not None:
@@ -243,6 +264,7 @@ class ProxyTrackedChatClient(_ScopedClientMixin):
         self.use_proxy = use_proxy
         self._base_headers = dict(extra_headers or {})
         self.enable_local_tracing = enable_local_tracing
+        self._tracer = tracer
 
         self.chat = _ProxyChatNamespace(self)
         self.completions = _ProxyCompletions(self)
@@ -345,10 +367,12 @@ class _ProxyAsyncCompletions:
 
 
 class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
-    """Async variant of the proxy-aware chat client.
+    """Async variant of the unified OpenAI client wrapper.
 
-    This unified client supports both proxy-based tracing and optional local
-    in-memory tracing for immediate access to LLM call data.
+    This client supports:
+    - Proxy-based metadata injection for server-side tracing
+    - Optional local tracing via custom or built-in in-memory tracer
+    - Custom headers for request customization
 
     Args:
         api_key: OpenAI API key
@@ -359,6 +383,8 @@ class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
         extra_headers: Additional headers to include in requests
         enable_local_tracing: Whether to log traces locally (default: True).
             Set to False for OTel-only mode where tracing is handled by backend.
+        tracer: Custom tracer for logging LLM calls. If None, uses shared
+            in-memory tracer. Must implement log_llm_call() method.
         **client_kwargs: Additional arguments passed to AsyncOpenAI client
     """
 
@@ -372,6 +398,7 @@ class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
         use_proxy: bool = True,
         extra_headers: Mapping[str, str] | None = None,
         enable_local_tracing: bool = True,
+        tracer: Any = None,
         **client_kwargs: Any,
     ) -> None:
         if client is not None:
@@ -389,6 +416,7 @@ class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
         self.use_proxy = use_proxy
         self._base_headers = dict(extra_headers or {})
         self.enable_local_tracing = enable_local_tracing
+        self._tracer = tracer
 
         self.chat = _ProxyAsyncChatNamespace(self)
         self.completions = _ProxyAsyncCompletions(self)
@@ -466,3 +494,84 @@ class OpenTelemetryTrackedAsyncChatClient(ProxyTrackedAsyncChatClient):
 # Legacy shorthand names
 OpenAIOTelClient = OpenTelemetryTrackedChatClient
 AsyncOpenAIOTelClient = OpenTelemetryTrackedAsyncChatClient
+
+
+# =============================================================================
+# Backward-compatible aliases for Simple clients
+# =============================================================================
+# These aliases provide the same interface as the former SimpleTrackedChatClient
+# but using the unified implementation with use_proxy=False.
+
+
+class SimpleTrackedChatClient(ProxyTrackedChatClient):
+    """Backward-compatible alias for simple (non-proxy) sync client.
+
+    This is equivalent to ProxyTrackedChatClient with use_proxy=False.
+    Useful for direct OpenAI API calls without proxy involvement.
+
+    Args:
+        api_key: OpenAI API key
+        base_url: Base URL for the API
+        tracer: Custom tracer for logging LLM calls
+        default_model: Default model to use if not specified in calls
+        client: Pre-configured OpenAI client instance
+        **client_kwargs: Additional arguments passed to OpenAI client
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        tracer: Any = None,
+        default_model: str | None = None,
+        client: OpenAI | None = None,
+        **client_kwargs: Any,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_model=default_model,
+            client=client,
+            use_proxy=False,
+            enable_local_tracing=True,
+            tracer=tracer,
+            **client_kwargs,
+        )
+
+
+class SimpleTrackedAsyncChatClient(ProxyTrackedAsyncChatClient):
+    """Backward-compatible alias for simple (non-proxy) async client.
+
+    This is equivalent to ProxyTrackedAsyncChatClient with use_proxy=False.
+    Useful for direct OpenAI API calls without proxy involvement.
+
+    Args:
+        api_key: OpenAI API key
+        base_url: Base URL for the API
+        tracer: Custom tracer for logging LLM calls
+        default_model: Default model to use if not specified in calls
+        client: Pre-configured AsyncOpenAI client instance
+        **client_kwargs: Additional arguments passed to AsyncOpenAI client
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        tracer: Any = None,
+        default_model: str | None = None,
+        client: AsyncOpenAI | None = None,
+        **client_kwargs: Any,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_model=default_model,
+            client=client,
+            use_proxy=False,
+            enable_local_tracing=True,
+            tracer=tracer,
+            **client_kwargs,
+        )
