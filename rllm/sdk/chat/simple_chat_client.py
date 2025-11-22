@@ -77,6 +77,9 @@ class _SimpleTrackedChatClientBase:
             "total": total_tokens,
         }
 
+        # Extract trace_id from response (e.g., "chatcmpl-xxx" from OpenAI)
+        trace_id = response_payload.get("id")
+
         self.tracer.log_llm_call(
             name="simple.chat.completions.create",
             model=model,
@@ -86,6 +89,7 @@ class _SimpleTrackedChatClientBase:
             metadata=metadata,
             latency_ms=latency_ms,
             tokens=tokens_summary,
+            trace_id=trace_id,
         )
 
 

@@ -59,6 +59,9 @@ class _ScopedClientMixin:
             "total": int(usage.get("total_tokens") or 0),
         }
 
+        # Extract trace_id from response (e.g., "chatcmpl-xxx" from OpenAI)
+        trace_id = response_payload.get("id")
+
         # Use the shared memory tracer - it handles all the session logic
         self._memory_tracer.log_llm_call(
             name="proxy.chat.completions.create",
@@ -68,6 +71,7 @@ class _ScopedClientMixin:
             latency_ms=latency_ms,
             tokens=tokens,
             metadata=merged_metadata,
+            trace_id=trace_id,
         )
 
 
