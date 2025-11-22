@@ -1,58 +1,85 @@
-# Design Doc: Auto-Instrumentation for rLLM SDK
+# Design Doc: LLM Call Tracing in rLLM SDK
 
-**Status:** Proposal
+**Status:** Implemented (Factory Pattern) / Optional (Auto-Instrumentation)
 **Author:** Claude
 **Date:** 2025-11-22
 
 ## Overview
 
-This document proposes a design for **auto-instrumentation** in the rLLM SDK, allowing users to use standard LLM clients (OpenAI, Anthropic, etc.) without needing custom wrapper clients, while still automatically capturing LLM traces within session contexts.
+This document describes two approaches for LLM call tracing in the rLLM SDK:
 
-## Problem Statement
+1. **Recommended: Explicit Factory Pattern** (`get_chat_client()`) - Already implemented, safe, explicit
+2. **Optional: Auto-Instrumentation** - For advanced use cases requiring native client APIs
 
-### Current State
+## Recommended Approach: Explicit Factory Pattern
 
-Users must use special wrapper clients to get automatic trace capture:
+The rLLM SDK already provides the safest and most explicit approach via `get_chat_client()`:
 
 ```python
 from rllm.sdk import get_chat_client_async, session
 
-# Must use rLLM's wrapped client
-client = get_chat_client_async(base_url="...", api_key="...")
+# Explicit: user knows this client has tracing
+client = get_chat_client_async(
+    base_url="http://proxy:4000/v1",
+    api_key="EMPTY",
+    model="gpt-4"
+)
 
 with session(agent="solver") as sess:
     response = await client.chat.completions.create(messages=[...])
-    print(sess.llm_calls)  # Works!
+    print(sess.llm_calls)  # Traces captured!
 ```
 
-### Issues
+### Why This Is the Best Approach
 
-1. **Friction**: Users must replace their existing clients with rLLM wrappers
-2. **Multiple Clients**: We have 4+ client variants:
-   - `ProxyTrackedChatClient` / `ProxyTrackedAsyncChatClient`
-   - `OpenTelemetryTrackedChatClient` / `OpenTelemetryTrackedAsyncChatClient`
-   - `SimpleTrackedChatClient` / `SimpleTrackedAsyncChatClient`
-3. **Maintenance**: Each new LLM provider requires a new wrapper implementation
-4. **Complexity**: Backend-specific routing logic (`SESSION_BACKEND`) scattered across code
+| Aspect | Factory Pattern | Auto-Instrumentation |
+|--------|----------------|---------------------|
+| **Explicitness** | ✅ Clear which clients are traced | ❌ Hidden behavior |
+| **Safety** | ✅ No global state mutation | ❌ Monkey-patching risks |
+| **Debugging** | ✅ Easy to trace issues | ❌ Magic can obscure problems |
+| **Proxy URL Modification** | ✅ Built-in support | ⚠️ Requires httpx patching |
+| **Per-call Metadata** | ✅ Full control | ❌ Limited |
+| **Default Model** | ✅ Configurable | ❌ Not available |
 
-### Desired State
+### Current Implementation
 
-Users can use **standard clients** with zero changes:
+The factory functions route to backend-appropriate clients:
 
 ```python
-from openai import AsyncOpenAI
-from rllm.sdk import session, instrument
+# rllm/sdk/shortcuts.py
+def get_chat_client_async(...):
+    client = AsyncOpenAI(**openai_kwargs)
 
-# One-time setup (or via engine)
-instrument()
-
-# Use standard OpenAI client - unchanged!
-client = AsyncOpenAI()
-
-with session(agent="solver") as sess:
-    response = await client.chat.completions.create(messages=[...])
-    print(sess.llm_calls)  # Still works!
+    if SESSION_BACKEND == "opentelemetry":
+        return OpenTelemetryTrackedAsyncChatClient(client=client, ...)
+    else:
+        return ProxyTrackedAsyncChatClient(client=client, ...)
 ```
+
+This provides:
+- **Session tracking**: Automatic trace capture within `session()` contexts
+- **Proxy mode**: URL modification to pass metadata to proxy (`use_proxy=True`)
+- **Backend flexibility**: Works with both ContextVar and OpenTelemetry backends
+- **Full OpenAI API**: Wrapper exposes same interface as native client
+
+---
+
+## Optional: Auto-Instrumentation
+
+For users who **must** use native clients (e.g., existing codebases, third-party libraries),
+auto-instrumentation provides an alternative. However, this comes with trade-offs.
+
+### When to Consider Auto-Instrumentation
+
+- Integrating with existing code that already uses native OpenAI clients
+- Using third-party libraries that create their own clients
+- Frameworks that don't allow custom client injection
+
+### When NOT to Use Auto-Instrumentation
+
+- New projects (use `get_chat_client()` instead)
+- Projects where you control client creation
+- When proxy URL modification is required (complex setup needed)
 
 ## Design Goals
 
@@ -497,25 +524,32 @@ rllm/sdk/
 └── shortcuts.py                   # session(), get_chat_client() (backward compat)
 ```
 
-## Migration Path
+## Implementation Status
 
-### Phase 1: Add Instrumentation (Non-Breaking)
+### Implemented: Factory Pattern (Recommended)
 
-1. Add `rllm/sdk/instrumentation/` module
-2. Add `instrument()` to `rllm.sdk` exports
-3. Existing wrapper clients continue to work
+The `get_chat_client()` / `get_chat_client_async()` functions are fully implemented:
 
-### Phase 2: Deprecate Wrapper Clients
+```python
+from rllm.sdk import get_chat_client_async, session
 
-1. Mark `get_chat_client()` as deprecated
-2. Update examples to use `instrument()` + standard clients
-3. Wrapper clients remain functional but emit deprecation warnings
+# This is the recommended approach
+client = get_chat_client_async(
+    base_url="http://proxy:4000/v1",
+    api_key="EMPTY",
+    model="gpt-4",
+    use_proxy=True,  # Enable URL modification for proxy
+)
+```
 
-### Phase 3: Simplify (Major Version)
+**No changes needed** - this is already the best approach for most use cases.
 
-1. Remove wrapper client classes
-2. Remove `get_chat_client()` and `get_chat_client_async()`
-3. `instrument()` is the only way to enable tracing
+### Not Implemented: Auto-Instrumentation
+
+Auto-instrumentation (`instrument()`) is **not yet implemented** and is considered optional.
+If implemented in the future, it would be an **additional** option, not a replacement.
+
+The factory pattern will **never be deprecated** - it remains the recommended approach.
 
 ## Usage Examples
 
@@ -594,44 +628,61 @@ with session(name="agent") as sess:
     await client.chat.completions.create(...)
 ```
 
-## Comparison: Before vs After
+## Comparison: Factory Pattern vs Auto-Instrumentation
 
-### Before (Current)
+### Factory Pattern (Recommended)
 
 ```python
-# Multiple wrapper classes to maintain
-class ProxyTrackedChatClient: ...
-class ProxyTrackedAsyncChatClient: ...
-class OpenTelemetryTrackedChatClient: ...
-class OpenTelemetryTrackedAsyncChatClient: ...
-class SimpleTrackedChatClient: ...
-class SimpleTrackedAsyncChatClient: ...
+from rllm.sdk import get_chat_client_async, session
 
-# Backend-specific routing scattered across code
-if SESSION_BACKEND == "opentelemetry":
-    wrapper = OpenTelemetryTrackedChatClient(...)
-else:
-    wrapper = ProxyTrackedChatClient(...)
+# Explicit: clear what's being traced
+client = get_chat_client_async(
+    base_url="http://proxy:4000/v1",
+    api_key="EMPTY",
+    model="gpt-4",
+)
 
-# User must use wrapper
-client = get_chat_client_async(...)
+with session(agent="solver") as sess:
+    await client.chat.completions.create(...)
+    print(sess.llm_calls)  # Works!
 ```
 
-### After (Proposed)
+**Pros:**
+- Explicit and predictable
+- No global state mutation
+- Full proxy URL modification support
+- Easy to debug
+
+**Cons:**
+- Users must use `get_chat_client()` instead of native `OpenAI()`
+- Can't trace calls from third-party libraries
+
+### Auto-Instrumentation (Optional, Not Implemented)
 
 ```python
-# Single instrumentation entry point
+from openai import AsyncOpenAI
+from rllm.sdk import instrument, session
+
+# Global setup - affects ALL OpenAI clients
 instrument()
 
-# User uses standard client
-from openai import AsyncOpenAI
+# Native client - no wrapper
 client = AsyncOpenAI()
 
-# Everything else works automatically
-with session(name="agent") as sess:
+with session(agent="solver") as sess:
     await client.chat.completions.create(...)
-    print(sess.llm_calls)  # Just works!
+    print(sess.llm_calls)  # Works (if implemented)
 ```
+
+**Pros:**
+- Zero code changes for existing code
+- Can trace third-party library calls
+
+**Cons:**
+- Hidden behavior (magic)
+- Monkey-patching risks
+- Proxy URL modification requires additional httpx patching
+- Harder to debug
 
 ## Trade-offs
 
@@ -950,22 +1001,27 @@ async def solve(problem: str):
 
 ## Implementation Plan
 
-### Week 1
+### Already Implemented
+
+- [x] `get_chat_client()` / `get_chat_client_async()` factory functions
+- [x] `ProxyTrackedChatClient` / `ProxyTrackedAsyncChatClient`
+- [x] `OpenTelemetryTrackedChatClient` / `OpenTelemetryTrackedAsyncChatClient`
+- [x] Proxy URL modification (`use_proxy=True`)
+- [x] Session context via W3C baggage
+- [x] In-memory trace capture via `InMemorySessionTracer`
+
+### Future (Optional - Only If Needed)
+
+If auto-instrumentation becomes necessary:
+
 - [ ] Implement `InstrumentationProvider` protocol
 - [ ] Implement `OpenAIInstrumentationProvider`
-- [ ] Implement `capture_trace()` function
+- [ ] Implement httpx transport patching for proxy URL modification
 - [ ] Add `instrument()` / `uninstrument()` functions
-
-### Week 2
 - [ ] Add tests for instrumentation
-- [ ] Update examples to use `instrument()`
-- [ ] Add deprecation warnings to `get_chat_client()`
-- [ ] Write migration guide
 
-### Week 3
-- [ ] Add Anthropic provider (if needed)
-- [ ] Performance testing
-- [ ] Documentation updates
+**Note**: This is optional and should only be implemented if there's a clear use case that
+cannot be addressed by the factory pattern.
 
 ## Open Questions
 
@@ -983,6 +1039,24 @@ async def solve(problem: str):
 
 ## Conclusion
 
-Auto-instrumentation provides a cleaner, more maintainable approach to LLM tracing in the rLLM SDK. By monkey-patching standard clients at runtime, we eliminate the need for wrapper classes while maintaining full trace capture capabilities within session contexts.
+**The factory pattern (`get_chat_client()`) is the recommended approach** for LLM tracing in the rLLM SDK.
+It provides:
 
-The key insight is that **session context via W3C baggage** is already the source of truth - instrumentation just needs to read from baggage and store traces. This makes the implementation straightforward and the user experience seamless.
+- **Explicit behavior**: Users know which clients are traced
+- **Full feature support**: Proxy URL modification, per-call metadata, default models
+- **Safety**: No global state mutation or monkey-patching
+- **Simplicity**: No hidden magic to debug
+
+Auto-instrumentation is **optional** and would only be considered for:
+- Integrating with existing codebases that already use native clients
+- Tracing calls from third-party libraries
+- Scenarios where client injection is not possible
+
+For most use cases, `get_chat_client()` is simpler, safer, and already implemented.
+
+### Summary
+
+| Approach | Status | Recommendation |
+|----------|--------|----------------|
+| `get_chat_client()` | ✅ Implemented | **Use this** for new projects |
+| Auto-instrumentation | ❌ Not implemented | Consider only if factory pattern is not feasible |
