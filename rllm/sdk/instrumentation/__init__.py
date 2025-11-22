@@ -56,14 +56,16 @@ def instrument(
             register_proxy_url(url)
         patch_httpx()
 
-    # Instrument providers
+    # Instrument providers - only mark as instrumented if at least one succeeds
+    any_success = False
     for name in (providers or SUPPORTED_PROVIDERS):
         if name.lower() == "openai":
-            instrument_openai()
+            if instrument_openai():
+                any_success = True
         else:
             raise ValueError(f"Unknown provider: {name}. Supported: {SUPPORTED_PROVIDERS}")
 
-    _instrumented = True
+    _instrumented = any_success
 
 
 def uninstrument(providers: Sequence[str] | None = None) -> None:

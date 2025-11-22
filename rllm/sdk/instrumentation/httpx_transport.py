@@ -55,9 +55,12 @@ def _should_inject(url: Any) -> bool:
 
 
 def _inject_metadata(url: Any) -> Any:
-    """Inject session metadata into URL if inside a session context."""
+    """Inject session metadata into URL if inside a session context.
+
+    Preserves query parameters when rewriting URLs.
+    """
     import httpx
-    from rllm.sdk.session import SESSION_BACKEND, get_active_session_uids, get_current_metadata, get_current_session_name
+    from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
 
     session_uids = get_active_session_uids()
     if not session_uids:
@@ -72,7 +75,10 @@ def _inject_metadata(url: Any) -> Any:
 
     if isinstance(url, httpx.URL):
         new_path = _insert_slug_in_path(str(url.path), slug)
-        return url.copy_with(raw_path=new_path.encode())
+        # Preserve query string by appending it to the raw path
+        query = url.query
+        raw_path = new_path.encode() + (b"?" + query if query else b"")
+        return url.copy_with(raw_path=raw_path)
 
     parsed = urlparse(str(url))
     new_path = _insert_slug_in_path(parsed.path, slug)
