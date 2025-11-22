@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from rllm.sdk.session.base import SessionProtocol
+from rllm.sdk.session.base import SessionProtocol, wrap_with_session_context
 from rllm.sdk.session.contextvar import (
     ContextVarSession,
     get_active_cv_sessions,
@@ -11,7 +11,7 @@ from rllm.sdk.session.contextvar import (
     get_current_cv_session,
     get_current_cv_session_name,
 )
-from rllm.sdk.session.storage import (
+from rllm.sdk.session.ephemeral import (
     InMemoryStorage,
     SessionStorage,
 )
@@ -136,6 +136,8 @@ __all__ = [
     "get_current_session_name",
     "get_current_metadata",
     "get_active_session_uids",
+    # Runtime helpers
+    "wrap_with_session_context",
     # Storage
     "SessionStorage",  # Protocol
     "InMemoryStorage",  # Default in-memory storage

@@ -1,4 +1,10 @@
-"""Storage protocols and implementations for session trace storage."""
+"""Ephemeral (in-memory) trace storage for session-scoped data.
+
+This module provides non-persistent, session-scoped trace storage.
+Traces are held in memory for the duration of the session and discarded afterward.
+
+For persistent storage across sessions/processes, see rllm.sdk.store (SqliteTraceStore).
+"""
 
 from __future__ import annotations
 

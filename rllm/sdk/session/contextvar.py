@@ -6,10 +6,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from rllm.sdk.protocol import StepView, Trace, trace_to_step_view
-from rllm.sdk.session.storage import InMemoryStorage
+from rllm.sdk.session.ephemeral import InMemoryStorage
 
 if TYPE_CHECKING:
-    from rllm.sdk.session.storage import SessionStorage
+    from rllm.sdk.session.ephemeral import SessionStorage
 
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
