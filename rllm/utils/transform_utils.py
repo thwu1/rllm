@@ -605,7 +605,7 @@ def episodes_to_dataproto(
             "prompts": prompts_batch,
             "responses": response_batch,
             "response_mask": traj_mask_batch,
-            "traj_rewards": traj_rewards_batch,
+            "token_level_scores": traj_rewards_batch,  # Named for verl trainer compatibility
             "step_rewards": step_rewards_batch,
         },
         non_tensors={
