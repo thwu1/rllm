@@ -8,7 +8,6 @@ Architecture:
 
     Aliases (preset configurations):
         ProxyTrackedChatClient         = TrackedChatClient (defaults)
-        SimpleTrackedChatClient        = TrackedChatClient(use_proxy=False)
         OpenTelemetryTrackedChatClient = TrackedChatClient(enable_local_tracing=False)
 """
 
@@ -24,8 +23,6 @@ from rllm.sdk.chat.openai import (
     OpenTelemetryTrackedChatClient,
     ProxyTrackedAsyncChatClient,
     ProxyTrackedChatClient,
-    SimpleTrackedAsyncChatClient,
-    SimpleTrackedChatClient,
 )
 
 __all__ = [
@@ -39,8 +36,6 @@ __all__ = [
     # Aliases
     "ProxyTrackedChatClient",
     "ProxyTrackedAsyncChatClient",
-    "SimpleTrackedChatClient",
-    "SimpleTrackedAsyncChatClient",
     "OpenTelemetryTrackedChatClient",
     "OpenTelemetryTrackedAsyncChatClient",
     "OpenAIOTelClient",

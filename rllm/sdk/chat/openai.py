@@ -9,17 +9,16 @@ Architecture:
     │  └───────────────┘  └──────────────────┘  └─────────────────┘  │
     └─────────────────────────────────────────────────────────────────┘
                               │
-            ┌─────────────────┼─────────────────┐
-            ▼                 ▼                 ▼
-    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-    │   Default    │  │  OTel Mode   │  │ Simple Mode  │
-    │  (proxy+log) │  │ (proxy only) │  │  (log only)  │
-    └──────────────┘  └──────────────┘  └──────────────┘
-     use_proxy=True    use_proxy=True    use_proxy=False
-     local_trace=True  local_trace=False local_trace=True
+                  ┌───────────┴───────────┐
+                  ▼                       ▼
+          ┌──────────────┐        ┌──────────────┐
+          │   Default    │        │  OTel Mode   │
+          │  (proxy+log) │        │ (proxy only) │
+          └──────────────┘        └──────────────┘
+           use_proxy=True          use_proxy=True
+           local_trace=True        local_trace=False
 
 Aliases (backward compatible):
-- SimpleTrackedChatClient      = TrackedChatClient(use_proxy=False)
 - OpenTelemetryTrackedChatClient = TrackedChatClient(enable_local_tracing=False)
 """
 
@@ -192,52 +191,37 @@ class TrackedChatClient:
     """OpenAI client wrapper with proxy support and tracing.
 
     Args:
-        api_key: OpenAI API key
-        base_url: Base URL (proxy URL for metadata injection)
-        client: Pre-configured OpenAI client
+        client: Pre-configured OpenAI client (if None, creates one with **kwargs)
         use_proxy: Inject metadata into proxy URL (default: True)
         enable_local_tracing: Log traces locally (default: True)
         tracer: Custom tracer (default: shared in-memory tracer)
-        extra_headers: Additional request headers
-        **client_kwargs: Additional args passed to OpenAI client
+        **kwargs: Passed directly to OpenAI() if client not provided
     """
 
     def __init__(
         self,
         *,
-        api_key: str | None = None,
-        base_url: str | None = None,
         client: OpenAI | None = None,
         use_proxy: bool = True,
         enable_local_tracing: bool = True,
         tracer: Any = None,
-        extra_headers: Mapping[str, str] | None = None,
-        **client_kwargs: Any,
+        **kwargs: Any,
     ) -> None:
-        if client is not None:
-            self._client = client
+        # Use provided client or create one (let OpenAI handle all its own args)
+        self._client = client if client is not None else OpenAI(**kwargs)
+
+        # Resolve base_url for proxy routing from the client
+        # Skip default OpenAI URL (would break if we tried to proxy-rewrite it)
+        client_url = getattr(self._client, "base_url", None)
+        if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
+            self.base_url = str(client_url)
         else:
-            kw = dict(client_kwargs)
-            if api_key:
-                kw["api_key"] = api_key
-            if base_url:
-                kw["base_url"] = base_url
-            self._client = OpenAI(**kw)
+            self.base_url = None
 
-        # Resolve base_url for proxy routing:
-        # 1. Use explicit base_url if provided
-        # 2. Otherwise check client's base_url (may come from env OPENAI_BASE_URL)
-        # 3. Skip default OpenAI URL (would break if we tried to proxy-rewrite it)
-        if base_url is None:
-            client_url = getattr(self._client, "base_url", None)
-            if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
-                base_url = str(client_url)
-
-        self.base_url = base_url
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
         self._tracer = tracer
-        self._headers = dict(extra_headers or {})
+        self._headers: dict[str, str] = {}
 
         self.chat = _ChatNamespace(self)
         self.completions = _Completions(self)
@@ -345,39 +329,27 @@ class TrackedAsyncChatClient:
     def __init__(
         self,
         *,
-        api_key: str | None = None,
-        base_url: str | None = None,
         client: AsyncOpenAI | None = None,
         use_proxy: bool = True,
         enable_local_tracing: bool = True,
         tracer: Any = None,
-        extra_headers: Mapping[str, str] | None = None,
-        **client_kwargs: Any,
+        **kwargs: Any,
     ) -> None:
-        if client is not None:
-            self._client = client
+        # Use provided client or create one (let AsyncOpenAI handle all its own args)
+        self._client = client if client is not None else AsyncOpenAI(**kwargs)
+
+        # Resolve base_url for proxy routing from the client
+        # Skip default OpenAI URL (would break if we tried to proxy-rewrite it)
+        client_url = getattr(self._client, "base_url", None)
+        if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
+            self.base_url = str(client_url)
         else:
-            kw = dict(client_kwargs)
-            if api_key:
-                kw["api_key"] = api_key
-            if base_url:
-                kw["base_url"] = base_url
-            self._client = AsyncOpenAI(**kw)
+            self.base_url = None
 
-        # Resolve base_url for proxy routing:
-        # 1. Use explicit base_url if provided
-        # 2. Otherwise check client's base_url (may come from env OPENAI_BASE_URL)
-        # 3. Skip default OpenAI URL (would break if we tried to proxy-rewrite it)
-        if base_url is None:
-            client_url = getattr(self._client, "base_url", None)
-            if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
-                base_url = str(client_url)
-
-        self.base_url = base_url
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
         self._tracer = tracer
-        self._headers = dict(extra_headers or {})
+        self._headers: dict[str, str] = {}
 
         self.chat = _AsyncChatNamespace(self)
         self.completions = _AsyncCompletions(self)
@@ -400,20 +372,6 @@ class ProxyTrackedAsyncChatClient(TrackedAsyncChatClient):
     """Alias: TrackedAsyncChatClient with defaults"""
 
     pass
-
-
-class SimpleTrackedChatClient(TrackedChatClient):
-    """Alias: TrackedChatClient with use_proxy=False (direct API calls)"""
-
-    def __init__(self, *, tracer: Any = None, **kwargs: Any) -> None:
-        super().__init__(use_proxy=False, tracer=tracer, **kwargs)
-
-
-class SimpleTrackedAsyncChatClient(TrackedAsyncChatClient):
-    """Alias: TrackedAsyncChatClient with use_proxy=False"""
-
-    def __init__(self, *, tracer: Any = None, **kwargs: Any) -> None:
-        super().__init__(use_proxy=False, tracer=tracer, **kwargs)
 
 
 class OpenTelemetryTrackedChatClient(TrackedChatClient):

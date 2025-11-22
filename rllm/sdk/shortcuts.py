@@ -6,10 +6,7 @@ making the SDK more ergonomic for simple use cases.
 
 from __future__ import annotations
 
-import os
 from typing import Any
-
-from openai import AsyncOpenAI, OpenAI
 
 from rllm.sdk.chat import (
     OpenTelemetryTrackedAsyncChatClient,
@@ -67,31 +64,21 @@ def session(**metadata: Any):
 def get_chat_client(
     provider: str = "openai",
     *,
-    api_key: str | None = None,
-    base_url: str | None = None,
-    organization: str | None = None,
-    timeout: float | None = None,
-    max_retries: int | None = None,
     use_proxy: bool = True,
     **kwargs: Any,
 ):
     """Get OpenAI chat client with automatic session tracking.
 
-    Returns ProxyTrackedChatClient that tracks calls within session() contexts.
-    API key from parameter or OPENAI_API_KEY env var.
+    Returns TrackedChatClient that tracks calls within session() contexts.
+    All OpenAI client arguments (api_key, base_url, etc.) are passed through.
 
     Args:
         provider: Provider name (only "openai" supported).
-        api_key: OpenAI API key (optional if OPENAI_API_KEY set).
-        base_url: Base URL for proxy or custom endpoints.
-        organization: OpenAI organization ID.
-        timeout: Request timeout in seconds.
-        max_retries: Max retries for failed requests.
         use_proxy: Enable proxy features (default: True).
-        **kwargs: Additional OpenAI client arguments.
+        **kwargs: Passed directly to OpenAI client (api_key, base_url, etc.)
 
     Returns:
-        ProxyTrackedChatClient: OpenAI client with session tracking.
+        TrackedChatClient: OpenAI client with session tracking.
 
     Example:
         >>> llm = get_chat_client(api_key="sk-...")
@@ -101,54 +88,18 @@ def get_chat_client(
     if provider.lower() != "openai":
         raise ValueError(f"Unsupported chat provider '{provider}'. Only 'openai' is supported.")
 
-    # Get API key from parameter or environment
-    resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
-    if not resolved_api_key:
-        raise ValueError("OpenAI API key is required. Provide api_key=... or set OPENAI_API_KEY environment variable.")
-
-    # Build OpenAI client kwargs
-    openai_kwargs: dict[str, Any] = {"api_key": resolved_api_key}
-    if base_url is not None:
-        openai_kwargs["base_url"] = base_url
-    if organization is not None:
-        openai_kwargs["organization"] = organization
-    if timeout is not None:
-        openai_kwargs["timeout"] = timeout
-    if max_retries is not None:
-        openai_kwargs["max_retries"] = max_retries
-    openai_kwargs.update(kwargs)
-
-    # Create OpenAI client
-    client = OpenAI(**openai_kwargs)
-
-    # Wrap with backend-routed client
-    # When use_proxy=True, injects metadata slugs for proxy routing
-    # OTel backend uses OpenTelemetry-aware client (no local tracing);
-    # ContextVar backend uses proxy client with local tracing enabled
+    # Select client based on session backend
+    # OTel backend disables local tracing (handled by OTel)
+    # ContextVar backend enables local tracing
     if SESSION_BACKEND == "opentelemetry":
-        wrapper = OpenTelemetryTrackedChatClient(
-            base_url=base_url,
-            client=client,
-            use_proxy=use_proxy,
-        )
+        return OpenTelemetryTrackedChatClient(use_proxy=use_proxy, **kwargs)
     else:
-        wrapper = ProxyTrackedChatClient(
-            base_url=base_url,
-            client=client,
-            use_proxy=use_proxy,
-        )
-
-    return wrapper
+        return ProxyTrackedChatClient(use_proxy=use_proxy, **kwargs)
 
 
 def get_chat_client_async(
     provider: str = "openai",
     *,
-    api_key: str | None = None,
-    base_url: str | None = None,
-    organization: str | None = None,
-    timeout: float | None = None,
-    max_retries: int | None = None,
     use_proxy: bool = True,
     **kwargs: Any,
 ):
@@ -157,7 +108,7 @@ def get_chat_client_async(
     Async version of get_chat_client(). See get_chat_client() for details.
 
     Returns:
-        ProxyTrackedAsyncChatClient: Async OpenAI client with session tracking.
+        TrackedAsyncChatClient: Async OpenAI client with session tracking.
 
     Example:
         >>> llm = get_chat_client_async(api_key="sk-...")
@@ -167,40 +118,7 @@ def get_chat_client_async(
     if provider.lower() != "openai":
         raise ValueError(f"Unsupported chat provider '{provider}'. Only 'openai' is supported.")
 
-    # Get API key from parameter or environment
-    resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
-    if not resolved_api_key:
-        raise ValueError("OpenAI API key is required. Provide api_key=... or set OPENAI_API_KEY environment variable.")
-
-    # Build AsyncOpenAI client kwargs
-    openai_kwargs: dict[str, Any] = {"api_key": resolved_api_key}
-    if base_url is not None:
-        openai_kwargs["base_url"] = base_url
-    if organization is not None:
-        openai_kwargs["organization"] = organization
-    if timeout is not None:
-        openai_kwargs["timeout"] = timeout
-    if max_retries is not None:
-        openai_kwargs["max_retries"] = max_retries
-    openai_kwargs.update(kwargs)
-
-    # Create AsyncOpenAI client
-    client = AsyncOpenAI(**openai_kwargs)
-
-    # Wrap with backend-routed client
-    # OTel backend uses OpenTelemetry-aware client (no local tracing);
-    # ContextVar backend uses proxy client with local tracing enabled
     if SESSION_BACKEND == "opentelemetry":
-        wrapper = OpenTelemetryTrackedAsyncChatClient(
-            base_url=base_url,
-            client=client,
-            use_proxy=use_proxy,
-        )
+        return OpenTelemetryTrackedAsyncChatClient(use_proxy=use_proxy, **kwargs)
     else:
-        wrapper = ProxyTrackedAsyncChatClient(
-            base_url=base_url,
-            client=client,
-            use_proxy=use_proxy,
-        )
-
-    return wrapper
+        return ProxyTrackedAsyncChatClient(use_proxy=use_proxy, **kwargs)
