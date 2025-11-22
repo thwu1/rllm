@@ -104,19 +104,3 @@ class TracerProtocol(Protocol):
             timeout: Maximum time to wait in seconds
         """
         ...
-
-    async def close(self, timeout: float = 30.0) -> None:
-        """
-        Close all child tracers.
-
-        Args:
-            timeout: Maximum time to wait in seconds (applied per tracer)
-        """
-        for tracer in self.tracers:
-            try:
-                await tracer.close(timeout=timeout)
-            except Exception as e:
-                logger.exception(f"Tracer {tracer.__class__.__name__} failed to close: {e}")
-
-    def __repr__(self):
-        return f"CompositeTracer(tracers={[t.__class__.__name__ for t in self.tracers]})"
