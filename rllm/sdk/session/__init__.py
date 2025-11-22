@@ -53,7 +53,6 @@ if SESSION_BACKEND == "opentelemetry":
         OpenTelemetrySession,
         get_active_otel_session_uids,
         get_current_otel_metadata,
-        get_current_otel_session,
         get_current_otel_session_name,
         otel_session,
     )
@@ -62,22 +61,22 @@ else:
     OpenTelemetrySession = None  # type: ignore
     get_active_otel_session_uids = None  # type: ignore
     get_current_otel_metadata = None  # type: ignore
-    get_current_otel_session = None  # type: ignore
     get_current_otel_session_name = None  # type: ignore
     otel_session = None  # type: ignore
 
 
 # Public routing functions - these dispatch to the appropriate backend
-def get_current_session() -> ContextVarSession | OpenTelemetrySession | None:
-    """Get the current session instance from context.
+def get_current_session() -> ContextVarSession | None:
+    """Get the current session instance from context (ContextVar backend only).
 
-    Routes to the appropriate backend based on SESSION_BACKEND configuration.
-
-    Returns:
-        The active session (either ContextVarSession or OpenTelemetrySession) or None.
+    Note: OpenTelemetry backend uses baggage as source of truth and doesn't store
+    session objects. Use get_current_metadata() or get_current_session_name() instead.
     """
     if SESSION_BACKEND == "opentelemetry":
-        return get_current_otel_session()  # type: ignore[return-value]
+        raise NotImplementedError(
+            "get_current_session() not supported with OpenTelemetry backend. "
+            "Use get_current_metadata(), get_current_session_name(), or get_active_session_uids()."
+        )
     return get_current_cv_session()
 
 

@@ -1,4 +1,4 @@
-"""OpenTelemetry-aware OpenAI chat client that relies on proxy tracing."""
+"""OpenTelemetry-aware OpenAI chat client that reads session context from baggage."""
 
 from __future__ import annotations
 
@@ -11,11 +11,12 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
-from rllm.sdk.proxy.metadata_slug import (
-    assemble_routing_metadata,
-    build_proxied_base_url,
+from rllm.sdk.proxy.metadata_slug import build_proxied_base_url
+from rllm.sdk.session.opentelemetry import (
+    get_active_otel_session_uids,
+    get_current_otel_metadata,
+    get_current_otel_session_name,
 )
-from rllm.sdk.session.opentelemetry import OpenTelemetrySession, get_current_otel_session
 
 
 def _merge_args(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
@@ -28,78 +29,42 @@ def _merge_args(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, A
     return dict(kwargs)
 
 
-def _current_otel_session() -> OpenTelemetrySession | None:
-    return get_current_otel_session()
-
-
-def _read_baggage_if_no_session(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Read session context from OpenTelemetry baggage if no active session exists."""
-    try:
-        import json
-
-        from opentelemetry import baggage as otel_baggage
-        from opentelemetry import trace as otel_trace
-
-        if otel_baggage is None:
-            return metadata
-
-        baggage_val = otel_baggage.get_baggage("rllm-session")
-        if not baggage_val:
-            return metadata
-
-        ctx = json.loads(baggage_val)
-        session_uid_chain = ctx.get("session_uid_chain", [])
-        session_metadata = ctx.get("metadata", {})
-
-        if session_uid_chain:
-            metadata["session_uids"] = session_uid_chain
-        # Merge session metadata directly into top-level (includes session_name)
-        if session_metadata:
-            for key, value in session_metadata.items():
-                metadata.setdefault(key, value)
-
-        # Also extract OpenTelemetry trace ID from current span context (propagated via trace headers)
-        if otel_trace is not None:
-            span = otel_trace.get_current_span()
-            if span is not None and span.is_recording():
-                span_context = span.get_span_context()
-                if span_context.is_valid:
-                    trace_id = f"{span_context.trace_id:032x}"
-                    metadata.setdefault("otel_trace_id", trace_id)
-
-        return metadata
-    except Exception:
-        return metadata
-
-
 def _build_routing_metadata(user_metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    metadata = assemble_routing_metadata(user_metadata)
-    session = _current_otel_session()
+    """Build routing metadata from baggage (single source of truth).
 
-    if session is None:
-        # No active session - try to read from baggage (for cross-process propagation)
-        return _read_baggage_if_no_session(metadata)
+    This function reads directly from W3C baggage, which works both:
+    - In-process: when inside an otel_session() context
+    - Cross-process: when baggage has been propagated via HTTP headers
 
-    # Active session exists - use its context
-    payload = session.to_context_payload()
-    metadata.setdefault("session_uid", payload["session_uid"])
+    Args:
+        user_metadata: Optional user-provided metadata to merge (overrides session metadata)
 
-    # Add session UIDs for trace association (proxy expects this list)
-    # Include all UIDs in the chain for proper hierarchy tracking
-    session_uid_chain = payload.get("session_uid_chain", [])
-    if session_uid_chain:
-        # Overwrite any session_uids from ContextVarSession with our OTel chain
-        metadata["session_uids"] = session_uid_chain
+    Returns:
+        Dict with session_name, session_uids, and merged metadata
+    """
+    # Read from baggage - the single source of truth
+    session_name = get_current_otel_session_name()
+    session_uids = get_active_otel_session_uids()
+    session_metadata = get_current_otel_metadata()
 
-    # Merge session metadata directly into top-level (includes session_name)
-    if payload.get("metadata"):
-        for key, value in payload["metadata"].items():
-            metadata.setdefault(key, value)
-    if payload.get("trace_id"):
-        metadata["otel_trace_id"] = payload["trace_id"]
-    if payload.get("span_id"):
-        metadata.setdefault("otel_span_id", payload["span_id"])
-    return metadata
+    # Build result: session metadata as base, user metadata can override
+    result: dict[str, Any] = {}
+
+    # Add session metadata
+    if session_metadata:
+        result.update(session_metadata)
+
+    # Add session identifiers
+    if session_name:
+        result["session_name"] = session_name
+    if session_uids:
+        result["session_uids"] = session_uids
+
+    # User metadata can override anything
+    if user_metadata:
+        result.update(dict(user_metadata))
+
+    return result
 
 
 class _ScopedClientMixin:
