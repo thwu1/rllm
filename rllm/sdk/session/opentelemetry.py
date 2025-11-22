@@ -201,38 +201,49 @@ class OpenTelemetrySession:
     # Context manager
     # ------------------------------------------------------------------
     def __enter__(self):
-        """Enter session context: read parent baggage, merge, write new baggage."""
         # Read parent context from baggage
         parent_ctx = _read_baggage()
         parent_chain = parent_ctx.get("session_uid_chain", [])
         parent_meta = parent_ctx.get("metadata", {})
 
-        # Start span and extract span ID as session UID
+        # Start span and use span ID as session UID
         tracer = self._otel_tracer or otel_trace.get_tracer(self._tracer_name)
-        self._span_scope = tracer.start_as_current_span(f"session:{self._init_name}" if self._init_name else "session")
+        span_name = f"session:{self._init_name}" if self._init_name else "session"
+        self._span_scope = tracer.start_as_current_span(span_name)
         self._span = self._span_scope.__enter__()
         self._cache_span_context()
         self._uid = self._span_id or f"ctx_{uuid.uuid4().hex[:16]}"
 
-        # Build UID chain and merge metadata
-        self._session_uid_chain = ([str(x) for x in parent_chain] if parent_chain else []) + [self._uid]
-        self._merged_metadata = {**(parent_meta if isinstance(parent_meta, dict) else {}), **self._init_metadata}
+        # Build UID chain: parent + current
+        if parent_chain:
+            self._session_uid_chain = [str(x) for x in parent_chain] + [self._uid]
+        else:
+            self._session_uid_chain = [self._uid]
+
+        # Merge metadata: parent inherited, child overrides
+        self._merged_metadata = dict(parent_meta) if isinstance(parent_meta, dict) else {}
+        self._merged_metadata.update(self._init_metadata)
         if self._init_name:
             self._merged_metadata["session_name"] = self._init_name
 
-        # Write to baggage (single source of truth) and decorate span
-        self._baggage_token = _write_baggage({"session_uid_chain": self._session_uid_chain, "metadata": self._merged_metadata})
+        # Write to baggage and decorate span
+        self._baggage_token = _write_baggage({
+            "session_uid_chain": self._session_uid_chain,
+            "metadata": self._merged_metadata,
+        })
         self._decorate_span()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Exit session context: restore parent baggage and close span."""
         if self._baggage_token:
             otel_context.detach(self._baggage_token)
             self._baggage_token = None
         if self._span_scope:
             self._span_scope.__exit__(exc_type, exc_val, exc_tb)
-            self._span_scope = self._span = self._trace_id = self._span_id = None
+            self._span_scope = None
+            self._span = None
+            self._trace_id = None
+            self._span_id = None
         return False
 
     # ------------------------------------------------------------------
