@@ -232,7 +232,8 @@ class TrackedChatClient:
                 kw["base_url"] = base_url
             self._client = OpenAI(**kw)
 
-        self.base_url = base_url
+        # Resolve base_url from client if not explicitly provided (for proxy routing)
+        self.base_url = base_url or str(self._client.base_url) if self._client.base_url else None
         self.default_model = default_model
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
@@ -371,7 +372,8 @@ class TrackedAsyncChatClient:
                 kw["base_url"] = base_url
             self._client = AsyncOpenAI(**kw)
 
-        self.base_url = base_url
+        # Resolve base_url from client if not explicitly provided (for proxy routing)
+        self.base_url = base_url or str(self._client.base_url) if self._client.base_url else None
         self.default_model = default_model
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
