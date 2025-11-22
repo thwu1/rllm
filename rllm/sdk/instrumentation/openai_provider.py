@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import functools
 import time
+import uuid
 from typing import Any, Callable
 
 # Instrumentation state
@@ -31,33 +32,73 @@ def _extract_response(response: Any) -> tuple[dict, dict[str, int]]:
 def _log_trace(name: str, input_data: Any, response: Any, model: str, latency_ms: float) -> None:
     """Log trace to active sessions if within a session context."""
     from rllm.sdk.session import SESSION_BACKEND, get_active_session_uids, get_current_metadata, get_current_session_name
-    from rllm.sdk.tracers.memory import InMemorySessionTracer
 
     session_uids = get_active_session_uids()
     if not session_uids:
         return
 
     response_payload, tokens = _extract_response(response)
+    trace_id = response_payload.get("id") or f"tr_{uuid.uuid4().hex[:16]}"
 
-    # Get sessions for in-memory tracing (ContextVar backend only)
-    sessions = None
-    if SESSION_BACKEND != "opentelemetry":
-        from rllm.sdk.session.contextvar import get_active_cv_sessions
-        sessions = get_active_cv_sessions()
+    trace_data = {
+        "name": name,
+        "input": {"messages": input_data} if isinstance(input_data, list) else {"prompt": input_data},
+        "output": response_payload,
+        "model": model,
+        "latency_ms": latency_ms,
+        "tokens": tokens,
+        "metadata": dict(get_current_metadata()),
+        "session_name": get_current_session_name() or "",
+        "timestamp": time.time(),
+    }
 
-    InMemorySessionTracer().log_llm_call(
-        name=name,
-        input={"messages": input_data} if isinstance(input_data, list) else {"prompt": input_data},
-        output=response_payload,
-        model=model,
-        latency_ms=latency_ms,
-        tokens=tokens,
-        metadata=dict(get_current_metadata()),
-        trace_id=response_payload.get("id"),
-        session_name=get_current_session_name(),
-        session_uids=session_uids,
-        sessions=sessions,
-    )
+    if SESSION_BACKEND == "opentelemetry":
+        # OTel backend: store traces in SqliteTraceStore for persistence
+        _store_to_sqlite(trace_id, trace_data, session_uids)
+    else:
+        # ContextVar backend: store traces in session's in-memory storage
+        _store_to_sessions(trace_id, trace_data, session_uids)
+
+
+def _store_to_sqlite(trace_id: str, trace_data: dict, session_uids: list[str]) -> None:
+    """Store trace to SqliteTraceStore for OTel backend."""
+    import asyncio
+
+    from rllm.sdk.store import SqliteTraceStore
+
+    store = SqliteTraceStore()
+
+    # Run async store in sync context
+    try:
+        loop = asyncio.get_running_loop()
+        # If we're in an async context, schedule it
+        loop.create_task(store.store(
+            trace_id=trace_id,
+            data=trace_data,
+            session_uids=session_uids,
+        ))
+    except RuntimeError:
+        # No running loop - run synchronously
+        asyncio.run(store.store(
+            trace_id=trace_id,
+            data=trace_data,
+            session_uids=session_uids,
+        ))
+
+
+def _store_to_sessions(trace_id: str, trace_data: dict, session_uids: list[str]) -> None:
+    """Store trace to in-memory session storage for ContextVar backend."""
+    from rllm.sdk.protocol import Trace
+    from rllm.sdk.session.contextvar import get_active_cv_sessions
+
+    sessions = get_active_cv_sessions()
+    if not sessions:
+        return
+
+    trace_obj = Trace(trace_id=trace_id, **trace_data)
+
+    for sess in sessions:
+        sess.storage.add_trace(sess._session_uid_chain, sess.name, trace_obj)
 
 
 def _make_wrapper(original: Callable, name: str, input_key: str, is_async: bool) -> Callable:
