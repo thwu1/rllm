@@ -48,9 +48,13 @@ class TracerProtocol(Protocol):
         contexts: list[str | dict] | None = None,
         tags: list[str] | None = None,
         session_uids: list[str] | None = None,
+        sessions: list | None = None,
     ) -> None:
         """
         Log an LLM call trace.
+
+        Tracers do NOT perform any auto-fill or context lookups.
+        All values are used as-is from the caller.
 
         Args:
             name: Identifier for the call (e.g., "chat.completions.create")
@@ -68,7 +72,8 @@ class TracerProtocol(Protocol):
             tools: List of tool definitions used
             contexts: List of context IDs or dicts
             tags: List of tags for categorization
-            session_uids: List of session UIDs to associate with this trace (caller must provide)
+            session_uids: List of session UIDs (for SqliteTracer)
+            sessions: List of session objects (for InMemorySessionTracer)
         """
         ...
 

@@ -306,6 +306,7 @@ class SqliteTracer:
         contexts: list[str | dict] | None = None,
         tags: list[str] | None = None,
         session_uids: list[str] | None = None,
+        sessions: list | None = None,  # Ignored - uses session_uids instead
     ) -> None:
         """
         Log an LLM call to SQLite store (non-blocking).
@@ -320,16 +321,17 @@ class SqliteTracer:
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_name: Session name (optional, extracted from context if available)
-            metadata: Additional metadata dict
-            trace_id: Unique trace ID (auto-generated if None, or extracted from output.id)
+            session_name: Session name (caller must provide, no auto-detection)
+            metadata: Additional metadata dict (caller must provide, no merging)
+            trace_id: Unique trace ID (caller should provide, auto-generated if None)
             parent_trace_id: Parent trace ID for nested calls
             cost: Cost in USD (optional)
             environment: Environment name (e.g., "production", "dev")
             tools: List of tool definitions used
             contexts: List of context IDs or dicts
             tags: List of tags for categorization
-            session_uids: List of session UIDs to associate with this trace (optional, auto-detected from context if not provided)
+            session_uids: List of session UIDs to associate with this trace (caller must provide)
+            sessions: Ignored - this tracer uses session_uids, not session objects
         """
         trace, final_metadata, prepared_session_uids = self._create_trace_payload(
             name=name,
@@ -374,6 +376,7 @@ class SqliteTracer:
         contexts: list[str | dict] | None = None,
         tags: list[str] | None = None,
         session_uids: list[str] | None = None,
+        sessions: list | None = None,  # Ignored - uses session_uids instead
     ) -> None:
         """Store an LLM call synchronously by awaiting the SQLite write."""
 

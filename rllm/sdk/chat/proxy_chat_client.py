@@ -14,6 +14,7 @@ from openai.types.completion import Completion
 from rllm.sdk.chat.simple_chat_client import _SimpleTrackedChatClientBase
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
 from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
+from rllm.sdk.session.contextvar import get_active_cv_sessions
 from rllm.sdk.tracers import InMemorySessionTracer
 
 
@@ -65,8 +66,9 @@ class _ScopedClientMixin:
         # Extract trace_id from response (e.g., "chatcmpl-xxx" from OpenAI)
         trace_id = response_payload.get("id")
 
-        # Extract session_uids from context
+        # Extract session_uids and sessions from context
         session_uids = get_active_session_uids()
+        sessions = get_active_cv_sessions()
 
         # Use the shared memory tracer
         self._memory_tracer.log_llm_call(
@@ -80,6 +82,7 @@ class _ScopedClientMixin:
             trace_id=trace_id,
             session_name=session_name,
             session_uids=session_uids,
+            sessions=sessions,
         )
 
 
