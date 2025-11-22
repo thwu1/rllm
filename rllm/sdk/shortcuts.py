@@ -125,10 +125,9 @@ def get_chat_client(
 
     # Wrap with backend-routed client
     # When use_proxy=True, injects metadata slugs for proxy routing
-    # OTel backend uses OpenTelemetry-aware client; ContextVar uses proxy client
+    # OTel backend uses OpenTelemetry-aware client (no local tracing);
+    # ContextVar backend uses proxy client with local tracing enabled
     if SESSION_BACKEND == "opentelemetry":
-        if OpenTelemetryTrackedChatClient is None:
-            raise RuntimeError("OpenTelemetry backend requested but opentelemetry package not installed")
         wrapper = OpenTelemetryTrackedChatClient(
             api_key=resolved_api_key,
             base_url=base_url,
@@ -138,7 +137,6 @@ def get_chat_client(
         )
     else:
         wrapper = ProxyTrackedChatClient(
-            tracer=None,
             default_model=model,
             base_url=base_url,
             client=client,
@@ -196,9 +194,9 @@ def get_chat_client_async(
     client = AsyncOpenAI(**openai_kwargs)
 
     # Wrap with backend-routed client
+    # OTel backend uses OpenTelemetry-aware client (no local tracing);
+    # ContextVar backend uses proxy client with local tracing enabled
     if SESSION_BACKEND == "opentelemetry":
-        if OpenTelemetryTrackedAsyncChatClient is None:
-            raise RuntimeError("OpenTelemetry backend requested but opentelemetry package not installed")
         wrapper = OpenTelemetryTrackedAsyncChatClient(
             api_key=resolved_api_key,
             base_url=base_url,
@@ -208,11 +206,10 @@ def get_chat_client_async(
         )
     else:
         wrapper = ProxyTrackedAsyncChatClient(
-            tracer=None,
             default_model=model,
             base_url=base_url,
-            use_proxy=use_proxy,
             client=client,
+            use_proxy=use_proxy,
         )
 
     return wrapper
