@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 
 from rllm.sdk.session import SESSION_BACKEND
-from rllm.sdk.session.opentelemetry import configure_default_tracer
 from rllm.sdk.shortcuts import _session_with_name
 
 
@@ -13,6 +12,8 @@ def _ensure_tracer_initialized(service_name: str | None = None) -> None:
     """Configure OpenTelemetry tracer provider once per process (idempotent)."""
     if SESSION_BACKEND != "opentelemetry":
         return
+    from rllm.sdk.session.opentelemetry import configure_default_tracer
+
     configure_default_tracer(service_name=service_name)
 
 

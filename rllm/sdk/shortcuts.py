@@ -34,6 +34,8 @@ def _session_with_name(name: str | None = None, **metadata: Any):
         SessionContext: A context manager that sets session name and metadata
     """
     if SESSION_BACKEND == "opentelemetry":
+        if otel_session is None:
+            raise RuntimeError("OpenTelemetry backend requested but opentelemetry package not installed")
         return otel_session(name=name, **metadata)
     return SessionContext(name=name, **metadata)
 
@@ -56,6 +58,8 @@ def session(**metadata: Any):
     """
     assert "name" not in metadata, "name is auto-generated and cannot be specified"
     if SESSION_BACKEND == "opentelemetry":
+        if otel_session is None:
+            raise RuntimeError("OpenTelemetry backend requested but opentelemetry package not installed")
         return otel_session(**metadata)
     return SessionContext(**metadata)
 
@@ -123,6 +127,8 @@ def get_chat_client(
     # When use_proxy=True, injects metadata slugs for proxy routing
     # OTel backend uses OpenTelemetry-aware client; ContextVar uses proxy client
     if SESSION_BACKEND == "opentelemetry":
+        if OpenTelemetryTrackedChatClient is None:
+            raise RuntimeError("OpenTelemetry backend requested but opentelemetry package not installed")
         wrapper = OpenTelemetryTrackedChatClient(
             api_key=resolved_api_key,
             base_url=base_url,
@@ -191,6 +197,8 @@ def get_chat_client_async(
 
     # Wrap with backend-routed client
     if SESSION_BACKEND == "opentelemetry":
+        if OpenTelemetryTrackedAsyncChatClient is None:
+            raise RuntimeError("OpenTelemetry backend requested but opentelemetry package not installed")
         wrapper = OpenTelemetryTrackedAsyncChatClient(
             api_key=resolved_api_key,
             base_url=base_url,

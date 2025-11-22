@@ -11,14 +11,6 @@ from rllm.sdk.session.contextvar import (
     get_current_cv_session,
     get_current_cv_session_name,
 )
-from rllm.sdk.session.opentelemetry import (
-    OpenTelemetrySession,
-    get_active_otel_session_uids,
-    get_current_otel_metadata,
-    get_current_otel_session,
-    get_current_otel_session_name,
-    otel_session,
-)
 from rllm.sdk.session.storage import (
     InMemoryStorage,
     SessionStorage,
@@ -54,6 +46,25 @@ def _load_session_backend() -> str:
 
 # Global session backend configuration
 SESSION_BACKEND = _load_session_backend()
+
+# Conditionally import OTEL modules only if backend is "opentelemetry"
+if SESSION_BACKEND == "opentelemetry":
+    from rllm.sdk.session.opentelemetry import (
+        OpenTelemetrySession,
+        get_active_otel_session_uids,
+        get_current_otel_metadata,
+        get_current_otel_session,
+        get_current_otel_session_name,
+        otel_session,
+    )
+else:
+    # Stub definitions for type hints when OTEL not in use
+    OpenTelemetrySession = None  # type: ignore
+    get_active_otel_session_uids = None  # type: ignore
+    get_current_otel_metadata = None  # type: ignore
+    get_current_otel_session = None  # type: ignore
+    get_current_otel_session_name = None  # type: ignore
+    otel_session = None  # type: ignore
 
 
 # Public routing functions - these dispatch to the appropriate backend
