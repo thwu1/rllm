@@ -265,7 +265,7 @@ class TrajectoryView:
 ### Runtime Helpers
 
 ```python
-from rllm.sdk.session.runtime import wrap_with_session_context
+from rllm.sdk.session import wrap_with_session_context
 
 # Wrap agent functions with automatic session context
 wrapped_fn = wrap_with_session_context(agent_func, tracer_service_name="my-agent")
@@ -283,11 +283,10 @@ rllm/sdk/
 ├── data_process.py          # Trace-to-model-output conversion utilities
 ├── session/
 │   ├── __init__.py          # Session exports, SESSION_BACKEND config
-│   ├── base.py              # SessionProtocol
+│   ├── base.py              # SessionProtocol, wrap_with_session_context()
 │   ├── contextvar.py        # ContextVarSession (default backend)
 │   ├── opentelemetry.py     # OpenTelemetrySession (W3C baggage-based)
-│   ├── runtime.py           # wrap_with_session_context() for agent integration
-│   └── storage.py           # InMemoryStorage
+│   └── session_buffer.py    # SessionBuffer (ephemeral trace storage)
 ├── chat/
 │   ├── __init__.py          # Chat client exports
 │   ├── proxy_chat_client.py       # Proxy-enabled chat client (ContextVar)
