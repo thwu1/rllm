@@ -11,10 +11,38 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
-from rllm.sdk.chat.simple_chat_client import _SimpleTrackedChatClientBase
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
-from rllm.sdk.session import get_current_metadata
+from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
+from rllm.sdk.session.contextvar import get_active_cv_sessions
 from rllm.sdk.tracers import InMemorySessionTracer
+
+
+def _merge_args(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge positional and keyword arguments into a single dict."""
+    if args:
+        if len(args) == 1 and isinstance(args[0], Mapping):
+            merged = dict(args[0])
+            merged.update(kwargs)
+            return merged
+        raise TypeError("Positional arguments are not supported; pass keyword arguments.")
+    return dict(kwargs)
+
+
+def _extract_completion_tokens(response_payload: Mapping[str, Any]) -> list[int] | None:
+    """Extract completion token IDs from response payload."""
+    choices = response_payload.get("choices") or []
+    if not choices:
+        return None
+    choice0 = choices[0]
+    output_ids = choice0.get("output_token_ids")
+    if isinstance(output_ids, list):
+        return [int(tok) for tok in output_ids]
+    logprobs = choice0.get("logprobs")
+    if isinstance(logprobs, Mapping):
+        token_ids = logprobs.get("token_ids")
+        if isinstance(token_ids, list):
+            return [int(tok) for tok in token_ids]
+    return None
 
 
 class _ScopedClientMixin:
@@ -51,6 +79,9 @@ class _ScopedClientMixin:
         context_metadata = get_current_metadata()
         merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
 
+        # Extract session_name from context
+        session_name = get_current_session_name()
+
         # Extract token usage for the tracer
         usage = response_payload.get("usage") or {}
         tokens = {
@@ -59,7 +90,14 @@ class _ScopedClientMixin:
             "total": int(usage.get("total_tokens") or 0),
         }
 
-        # Use the shared memory tracer - it handles all the session logic
+        # Extract trace_id from response (e.g., "chatcmpl-xxx" from OpenAI)
+        trace_id = response_payload.get("id")
+
+        # Extract session_uids and sessions from context
+        session_uids = get_active_session_uids()
+        sessions = get_active_cv_sessions()
+
+        # Use the shared memory tracer
         self._memory_tracer.log_llm_call(
             name="proxy.chat.completions.create",
             input={"messages": messages},
@@ -68,6 +106,10 @@ class _ScopedClientMixin:
             latency_ms=latency_ms,
             tokens=tokens,
             metadata=merged_metadata,
+            trace_id=trace_id,
+            session_name=session_name,
+            session_uids=session_uids,
+            sessions=sessions,
         )
 
 
@@ -76,7 +118,7 @@ class _ProxyChatCompletions:
     parent: ProxyTrackedChatClient
 
     def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        call_kwargs = self.parent._merge_args(args, kwargs)
+        call_kwargs = _merge_args(args, kwargs)
         messages = call_kwargs.get("messages")
         if not messages:
             raise ValueError("messages must be provided for chat.completions.create.")
@@ -101,7 +143,7 @@ class _ProxyChatCompletions:
         latency_ms = (time.perf_counter() - start) * 1000
         response_dict = response.model_dump()
 
-        completion_token_ids = self.parent._extract_completion_tokens(response_dict)
+        completion_token_ids = _extract_completion_tokens(response_dict)
         self.parent._log_trace(
             model=model,
             messages=messages,
@@ -127,7 +169,7 @@ class _ProxyCompletions:
     parent: ProxyTrackedChatClient
 
     def create(self, *args: Any, **kwargs: Any) -> Completion:
-        call_kwargs = self.parent._merge_args(args, kwargs)
+        call_kwargs = _merge_args(args, kwargs)
         prompt = call_kwargs.get("prompt")
         if prompt is None:
             raise ValueError("prompt must be provided for completions.create.")
@@ -152,7 +194,7 @@ class _ProxyCompletions:
         latency_ms = (time.perf_counter() - start) * 1000
         response_dict = response.model_dump()
 
-        completion_token_ids = self.parent._extract_completion_tokens(response_dict)
+        completion_token_ids = _extract_completion_tokens(response_dict)
         self.parent._log_trace(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -164,7 +206,7 @@ class _ProxyCompletions:
         return response
 
 
-class ProxyTrackedChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
+class ProxyTrackedChatClient(_ScopedClientMixin):
     """OpenAI client wrapper that injects metadata slugs into the proxy base URL."""
 
     def __init__(
@@ -202,7 +244,7 @@ class _ProxyAsyncChatCompletions:
     parent: ProxyTrackedAsyncChatClient
 
     async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        call_kwargs = self.parent._merge_args(args, kwargs)
+        call_kwargs = _merge_args(args, kwargs)
         messages = call_kwargs.get("messages")
         if not messages:
             raise ValueError("messages must be provided for chat.completions.create.")
@@ -227,7 +269,7 @@ class _ProxyAsyncChatCompletions:
         latency_ms = (time.perf_counter() - start) * 1000
         response_dict = response.model_dump()
 
-        completion_token_ids = self.parent._extract_completion_tokens(response_dict)
+        completion_token_ids = _extract_completion_tokens(response_dict)
         self.parent._log_trace(
             model=model,
             messages=messages,
@@ -253,7 +295,7 @@ class _ProxyAsyncCompletions:
     parent: ProxyTrackedAsyncChatClient
 
     async def create(self, *args: Any, **kwargs: Any) -> Completion:
-        call_kwargs = self.parent._merge_args(args, kwargs)
+        call_kwargs = _merge_args(args, kwargs)
         prompt = call_kwargs.get("prompt")
         if prompt is None:
             raise ValueError("prompt must be provided for completions.create.")
@@ -278,7 +320,7 @@ class _ProxyAsyncCompletions:
         latency_ms = (time.perf_counter() - start) * 1000
         response_dict = response.model_dump()
 
-        completion_token_ids = self.parent._extract_completion_tokens(response_dict)
+        completion_token_ids = _extract_completion_tokens(response_dict)
         self.parent._log_trace(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -290,7 +332,7 @@ class _ProxyAsyncCompletions:
         return response
 
 
-class ProxyTrackedAsyncChatClient(_ScopedClientMixin, _SimpleTrackedChatClientBase):
+class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
     """Async variant of the proxy-aware chat client."""
 
     def __init__(

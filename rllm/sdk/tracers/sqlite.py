@@ -11,7 +11,6 @@ import uuid
 from typing import Any
 
 from rllm.sdk.protocol import Trace
-from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
 from rllm.sdk.store import SqliteTraceStore
 
 logger = logging.getLogger(__name__)
@@ -249,24 +248,25 @@ class SqliteTracer:
         tags: list[str] | None,
         session_uids: list[str] | None,
     ) -> tuple[Trace, dict[str, Any], list[str] | None]:
-        """Build the Trace object plus metadata/session UID list."""
-        if trace_id is None and isinstance(output, dict):
-            trace_id = output.get("id")
+        """Build the Trace object plus metadata/session UID list.
 
+        This method does NOT perform any autofill or context lookups.
+        All values are used as-is from the caller. If trace_id is None,
+        a new one is generated. All other None values remain None.
+
+        IMPORTANT: Callers MUST provide session_uids explicitly. The tracer
+        does not auto-detect from context - this is the caller's responsibility.
+        """
+        # Generate trace_id only if not provided (no extraction from output)
         if trace_id is None:
             trace_id = f"tr_{uuid.uuid4().hex[:16]}"
 
-        if session_name is None:
-            session_name = get_current_session_name()
+        # Copy metadata to snapshot state before async queueing
+        # (prevents caller mutations from affecting stored trace)
+        final_metadata = dict(metadata) if metadata else {}
 
-        context_meta = get_current_metadata()
-        final_metadata = {**context_meta, **(metadata or {})}
-
-        sessions_list = session_uids
-        if sessions_list is None:
-            sessions_list = get_active_session_uids()
-
-        prepared_session_uids = list(sessions_list) if sessions_list else None
+        # Use session_uids as-is (no auto-detection from context)
+        prepared_session_uids = list(session_uids) if session_uids else None
 
         trace = Trace(
             trace_id=trace_id,
@@ -307,6 +307,7 @@ class SqliteTracer:
         contexts: list[str | dict] | None = None,
         tags: list[str] | None = None,
         session_uids: list[str] | None = None,
+        sessions: list | None = None,  # Ignored - uses session_uids instead
     ) -> None:
         """
         Log an LLM call to SQLite store (non-blocking).
@@ -321,16 +322,17 @@ class SqliteTracer:
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_name: Session name (optional, extracted from context if available)
-            metadata: Additional metadata dict
-            trace_id: Unique trace ID (auto-generated if None, or extracted from output.id)
+            session_name: Session name (caller must provide, no auto-detection)
+            metadata: Additional metadata dict (caller must provide, no merging)
+            trace_id: Unique trace ID (caller should provide, auto-generated if None)
             parent_trace_id: Parent trace ID for nested calls
             cost: Cost in USD (optional)
             environment: Environment name (e.g., "production", "dev")
             tools: List of tool definitions used
             contexts: List of context IDs or dicts
             tags: List of tags for categorization
-            session_uids: List of session UIDs to associate with this trace (optional, auto-detected from context if not provided)
+            session_uids: List of session UIDs to associate with this trace (caller must provide)
+            sessions: Ignored - this tracer uses session_uids, not session objects
         """
         trace, final_metadata, prepared_session_uids = self._create_trace_payload(
             name=name,
@@ -375,6 +377,7 @@ class SqliteTracer:
         contexts: list[str | dict] | None = None,
         tags: list[str] | None = None,
         session_uids: list[str] | None = None,
+        sessions: list | None = None,  # Ignored - uses session_uids instead
     ) -> None:
         """Store an LLM call synchronously by awaiting the SQLite write."""
 
