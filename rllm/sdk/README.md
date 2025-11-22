@@ -1,6 +1,6 @@
 # RLLM SDK - Automatic LLM Trace Collection and RL Training
 
-Lightweight SDK for automatic LLM trace collection using session contexts and trajectory decorators.
+Lightweight SDK for automatic LLM trace collection using session contexts and trajectory decorators. Supports both in-process context tracking (ContextVar) and distributed tracing (OpenTelemetry with W3C baggage).
 
 ## Installation
 
@@ -8,6 +8,12 @@ The SDK is part of the `rllm` package:
 
 ```python
 from rllm.sdk import session, get_chat_client, trajectory
+```
+
+For OpenTelemetry support, install with extras:
+
+```bash
+pip install rllm[otel]
 ```
 
 ## Quick Start
@@ -55,7 +61,20 @@ traj.reward = sum(s.reward for s in traj.steps)
 
 ## Core Concepts
 
-### 1. Session Context
+### 1. Session Backend Configuration
+
+The SDK supports two session backends, configured via `rllm/sdk/config.yaml`:
+
+```yaml
+# config.yaml
+session_backend: "contextvar"  # or "opentelemetry"
+```
+
+- **contextvar** (default): In-process context tracking using Python's `contextvars`
+- **opentelemetry**: Distributed tracing with W3C baggage propagation for cross-process context
+
+### 2. Session Context
+
 Tracks all LLM calls within a context for debugging and analysis.
 
 ```python
@@ -67,7 +86,8 @@ with session(experiment="v1") as sess:
     print(sess.llm_calls)  # List of Trace objects
 ```
 
-### 2. Metadata Inheritance
+### 3. Metadata Inheritance
+
 Nested sessions automatically merge metadata.
 
 ```python
@@ -77,7 +97,35 @@ with session(experiment="v1"):
         llm.chat.completions.create(...)
 ```
 
-### 3. Storage Backends
+### 4. OpenTelemetry Sessions (Distributed Tracing)
+
+For cross-process context propagation, use the OpenTelemetry backend:
+
+```python
+from rllm.sdk.session import otel_session, configure_default_tracer
+
+# Configure tracer once per process
+configure_default_tracer(service_name="my-agent")
+
+# Sessions use W3C baggage for context propagation
+with otel_session(name="client") as client_session:
+    # HTTP calls automatically carry session context via baggage headers
+    httpx.post("http://server/api", ...)
+
+# On the server side:
+with otel_session(name="handler") as server_session:
+    llm.chat.completions.create(...)
+    # server_session automatically inherits client's UID chain
+```
+
+Key features of OpenTelemetry sessions:
+- W3C baggage as single source of truth for session state
+- Automatic context propagation across HTTP boundaries
+- Span-based session UIDs for distributed tracing
+- Compatible with OpenTelemetry observability tools
+
+### 5. Storage Backends
+
 The SDK uses in-memory storage by default for session traces.
 
 ```python
@@ -88,6 +136,39 @@ with session() as sess:
     llm.call()
 ```
 
+## Proxy Integration
+
+The SDK includes a proxy module for routing LLM calls through a LiteLLM proxy with metadata injection.
+
+### Metadata Routing Middleware
+
+```python
+from rllm.sdk.proxy import MetadataRoutingMiddleware
+
+# Add to your ASGI app
+app = MetadataRoutingMiddleware(app)
+```
+
+### LiteLLM Callbacks
+
+```python
+from rllm.sdk.proxy import TracingCallback, SamplingParametersCallback
+
+# Use with LiteLLM for automatic trace collection
+callbacks = [TracingCallback(), SamplingParametersCallback()]
+```
+
+### Metadata Slug Encoding
+
+```python
+from rllm.sdk.proxy import encode_metadata_slug, decode_metadata_slug, build_proxied_base_url
+
+# Encode metadata into URL path for proxy routing
+metadata = {"session_name": "my-session", "experiment": "v1"}
+slug = encode_metadata_slug(metadata)
+proxied_url = build_proxied_base_url("http://localhost:8000", metadata)
+```
+
 ## API Reference
 
 ### Core Functions
@@ -95,15 +176,60 @@ with session() as sess:
 ```python
 # Session management
 session(**metadata) -> SessionContext  # Auto-generates session name
-get_current_session() -> ContextVarSession | None
+get_current_session() -> ContextVarSession | None  # ContextVar backend only
+get_current_session_name() -> str | None
 get_current_metadata() -> dict
+get_active_session_uids() -> list[str]  # Get UID chain for current session
+
+# OpenTelemetry sessions (when backend="opentelemetry")
+otel_session(name=None, **metadata) -> OpenTelemetrySession
+configure_default_tracer(service_name="rllm-worker") -> None
 
 # Chat clients
-get_chat_client(api_key, model, ...) -> ProxyTrackedChatClient
-get_chat_client_async(api_key, model, ...) -> ProxyTrackedAsyncChatClient
+get_chat_client(api_key, model, ...) -> ProxyTrackedChatClient | OpenTelemetryTrackedChatClient
+get_chat_client_async(api_key, model, ...) -> ProxyTrackedAsyncChatClient | OpenTelemetryTrackedAsyncChatClient
 
 # Decorators
 @trajectory(name: str, **metadata) -> Callable
+```
+
+### Session Configuration
+
+```python
+from rllm.sdk.session import SESSION_BACKEND
+
+# Check current backend
+print(SESSION_BACKEND)  # "contextvar" or "opentelemetry"
+```
+
+### Chat Clients
+
+```python
+# ContextVar backend (default)
+from rllm.sdk.chat import ProxyTrackedChatClient, ProxyTrackedAsyncChatClient
+
+# OpenTelemetry backend
+from rllm.sdk.chat import OpenTelemetryTrackedChatClient, OpenTelemetryTrackedAsyncChatClient
+# Aliases
+from rllm.sdk.chat import OpenAIOTelClient, AsyncOpenAIOTelClient
+```
+
+### Proxy Module
+
+```python
+from rllm.sdk.proxy import (
+    # Middleware
+    MetadataRoutingMiddleware,
+    # LiteLLM callbacks
+    TracingCallback,
+    SamplingParametersCallback,
+    # Metadata encoding
+    encode_metadata_slug,
+    decode_metadata_slug,
+    build_proxied_base_url,
+    extract_metadata_from_path,
+    assemble_routing_metadata,
+)
 ```
 
 ### Data Models
@@ -136,32 +262,60 @@ class TrajectoryView:
     output: Any  # Function return value
 ```
 
+### Runtime Helpers
+
+```python
+from rllm.sdk.session.runtime import wrap_with_session_context
+
+# Wrap agent functions with automatic session context
+wrapped_fn = wrap_with_session_context(agent_func, tracer_service_name="my-agent")
+output, session_uid = wrapped_fn(metadata, *args, **kwargs)
+```
+
 ## Architecture
 
 ```
 rllm/sdk/
-├── __init__.py           # Public exports
-├── protocol.py           # Data models (Trace, StepView, TrajectoryView)
-├── decorators.py         # @trajectory decorator
-├── shortcuts.py          # session(), get_chat_client()
+├── __init__.py              # Public exports
+├── protocol.py              # Data models (Trace, StepView, TrajectoryView)
+├── decorators.py            # @trajectory decorator
+├── shortcuts.py             # session(), get_chat_client()
+├── data_process.py          # Trace-to-model-output conversion utilities
 ├── session/
-│   ├── base.py           # SessionProtocol
-│   ├── contextvar.py     # ContextVarSession (default)
-│   └── storage.py        # InMemoryStorage
+│   ├── __init__.py          # Session exports, SESSION_BACKEND config
+│   ├── base.py              # SessionProtocol
+│   ├── contextvar.py        # ContextVarSession (default backend)
+│   ├── opentelemetry.py     # OpenTelemetrySession (W3C baggage-based)
+│   ├── runtime.py           # wrap_with_session_context() for agent integration
+│   └── storage.py           # InMemoryStorage
 ├── chat/
-│   ├── proxy_chat_client.py    # Proxy-enabled chat client
-│   └── simple_chat_client.py   # Simple chat client
+│   ├── __init__.py          # Chat client exports
+│   ├── proxy_chat_client.py       # Proxy-enabled chat client (ContextVar)
+│   ├── simple_chat_client.py      # Simple chat client
+│   └── otel_tracked_client.py     # OpenTelemetry-aware chat client
+├── proxy/
+│   ├── __init__.py          # Proxy module exports
+│   ├── litellm_callbacks.py # TracingCallback, SamplingParametersCallback
+│   ├── litellm_server.py    # LiteLLM server integration
+│   ├── metadata_slug.py     # URL metadata encoding/decoding
+│   ├── middleware.py        # MetadataRoutingMiddleware (ASGI)
+│   └── proxy_manager.py     # Proxy lifecycle management
 ├── tracers/
-│   ├── base.py           # TracerProtocol
-│   ├── memory.py         # InMemorySessionTracer
-│   └── sqlite.py         # SqliteTracer
+│   ├── __init__.py          # Tracer exports
+│   ├── base.py              # TracerProtocol
+│   ├── memory.py            # InMemorySessionTracer
+│   └── sqlite.py            # SqliteTracer
 └── store/
-    └── sqlite_store.py   # SQLite trace storage
+    ├── __init__.py          # Store exports
+    └── sqlite_store.py      # SQLite trace storage
+```
 
 ## Design Principles
 
 1. **Minimal API surface**: Simple, focused functions
 2. **Context-based**: Uses Python's `contextvars` for automatic propagation
-3. **Pluggable storage**: Supports in-memory, SQLite, or custom backends
-4. **Type-safe**: Full type annotations with Pydantic models
-5. **Async-native**: First-class async/await support
+3. **Distributed-ready**: OpenTelemetry backend for cross-process tracing
+4. **Pluggable storage**: Supports in-memory, SQLite, or custom backends
+5. **Type-safe**: Full type annotations with Pydantic models
+6. **Async-native**: First-class async/await support
+7. **Proxy-integrated**: Built-in support for LiteLLM proxy routing
