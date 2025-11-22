@@ -1,16 +1,26 @@
 """Unified OpenAI chat clients with session tracking and optional proxy support.
 
-This module provides OpenAI-compatible chat clients that support:
-- Automatic session metadata injection into proxy URLs
-- Optional local in-memory tracing for immediate access to LLM calls
-- Custom tracer injection for flexible tracing backends
-- Both sync and async variants
+Architecture:
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                    TrackedChatClient                            │
+    │  ┌───────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
+    │  │  use_proxy    │  │ enable_local_    │  │    tracer       │  │
+    │  │  (default: T) │  │ tracing (def: T) │  │  (optional)     │  │
+    │  └───────────────┘  └──────────────────┘  └─────────────────┘  │
+    └─────────────────────────────────────────────────────────────────┘
+                              │
+            ┌─────────────────┼─────────────────┐
+            ▼                 ▼                 ▼
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+    │   Default    │  │  OTel Mode   │  │ Simple Mode  │
+    │  (proxy+log) │  │ (proxy only) │  │  (log only)  │
+    └──────────────┘  └──────────────┘  └──────────────┘
+     use_proxy=True    use_proxy=True    use_proxy=False
+     local_trace=True  local_trace=False local_trace=True
 
-When `enable_local_tracing=True` (default), traces are logged to an in-memory store
-for access via session.llm_calls. When `enable_local_tracing=False`, the client
-relies entirely on the proxy/backend for tracing (suitable for OTel-based setups).
-
-A custom `tracer` can be provided to override the default in-memory tracer.
+Aliases (backward compatible):
+- SimpleTrackedChatClient      = TrackedChatClient(use_proxy=False)
+- OpenTelemetryTrackedChatClient = TrackedChatClient(enable_local_tracing=False)
 """
 
 from __future__ import annotations
@@ -18,423 +28,185 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
-from rllm.sdk.chat.util import (
-    extract_completion_tokens,
-    extract_usage_tokens,
-    merge_args,
-)
+from rllm.sdk.chat.util import extract_completion_tokens, extract_usage_tokens, merge_args
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
 from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
 from rllm.sdk.session.contextvar import get_active_cv_sessions
 from rllm.sdk.tracers import InMemorySessionTracer
 
+# Shared tracer instance for all clients (when no custom tracer provided)
+_SHARED_TRACER = InMemorySessionTracer()
 
-class _ScopedClientMixin:
-    """Shared helpers for proxy client scoping and tracing."""
 
-    # Shared in-memory session tracer instance (used when no custom tracer provided)
-    _memory_tracer = InMemorySessionTracer()
+def _get_scoped_client(client, base_url: str | None, metadata: dict | None, headers: dict | None):
+    """Apply proxy URL rewriting and extra headers to client."""
+    if base_url and metadata:
+        client = client.with_options(base_url=build_proxied_base_url(base_url, metadata))
+    if headers:
+        client = client.with_options(extra_headers=headers)
+    return client
 
-    _base_headers: dict[str, str]
-    _tracer: Any  # Custom tracer (if provided)
-    base_url: str | None
-    use_proxy: bool
-    enable_local_tracing: bool
 
-    def _scoped_client(self, metadata: dict[str, Any] | None):
-        client = self._client
+def _log_trace(
+    tracer,
+    *,
+    model: str,
+    messages: list[dict],
+    response: dict,
+    token_ids: list[int] | None,
+    metadata: dict,
+    latency_ms: float,
+) -> None:
+    """Log LLM call to tracer."""
+    if not tracer:
+        return
 
-        base_url = getattr(self, "base_url", None)
-        if self.use_proxy and base_url and metadata:
-            proxied_base = build_proxied_base_url(base_url, metadata)
-            client = client.with_options(base_url=proxied_base)
+    ctx_metadata = {**get_current_metadata(), **metadata}
+    if token_ids:
+        ctx_metadata["token_ids"] = {"prompt": [], "completion": token_ids}
 
-        if self._base_headers:
-            client = client.with_options(extra_headers=self._base_headers)
-
-        return client
-
-    def _get_tracer(self) -> Any:
-        """Get the tracer to use for logging (custom or default in-memory)."""
-        return self._tracer if self._tracer is not None else self._memory_tracer
-
-    def _log_trace(
-        self,
-        *,
-        model: str,
-        messages: list[dict[str, Any]],
-        response_payload: dict[str, Any],
-        completion_token_ids: list[int] | None,
-        metadata_overrides: dict[str, Any],
-        latency_ms: float,
-    ) -> None:
-        """Log trace to tracer (if local tracing is enabled).
-
-        When enable_local_tracing=True (default), traces are logged either to:
-        - A custom tracer (if provided via `tracer` parameter)
-        - The shared in-memory tracer (for access via session.llm_calls)
-
-        When enable_local_tracing=False (OTel mode), we skip local tracing and
-        rely entirely on the proxy/OTel backend for tracing.
-        """
-        if not self.enable_local_tracing:
-            return
-
-        tracer = self._get_tracer()
-        if not tracer:
-            return
-
-        context_metadata = get_current_metadata()
-        merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
-
-        # Include token IDs in metadata if available
-        if completion_token_ids:
-            merged_metadata["token_ids"] = {"prompt": [], "completion": completion_token_ids}
-
-        session_name = get_current_session_name()
-        tokens = extract_usage_tokens(response_payload)
-        trace_id = response_payload.get("id")
-        session_uids = get_active_session_uids()
-        sessions = get_active_cv_sessions()
-
-        tracer.log_llm_call(
-            name="chat.completions.create",
-            input={"messages": messages},
-            output=response_payload,
-            model=model,
-            latency_ms=latency_ms,
-            tokens=tokens,
-            metadata=merged_metadata,
-            trace_id=trace_id,
-            session_name=session_name,
-            session_uids=session_uids,
-            sessions=sessions,
-        )
+    tracer.log_llm_call(
+        name="chat.completions.create",
+        model=model,
+        input={"messages": messages},
+        output=response,
+        metadata=ctx_metadata,
+        latency_ms=latency_ms,
+        tokens=extract_usage_tokens(response),
+        trace_id=response.get("id"),
+        session_name=get_current_session_name(),
+        session_uids=get_active_session_uids(),
+        sessions=get_active_cv_sessions(),
+    )
 
 
 # =============================================================================
-# Sync Client Implementation
+# Sync Implementation
 # =============================================================================
 
 
 @dataclass
-class _ProxyChatCompletions:
-    parent: "ProxyTrackedChatClient"
+class _ChatCompletions:
+    """Namespace for chat.completions.create()"""
+
+    parent: "TrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
+        p = self.parent
         call_kwargs = merge_args(args, kwargs)
+
         messages = call_kwargs.get("messages")
         if not messages:
-            raise ValueError("messages must be provided for chat.completions.create.")
+            raise ValueError("messages required")
 
-        model = call_kwargs.setdefault("model", self.parent.default_model)
+        model = call_kwargs.setdefault("model", p.default_model)
         if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
+            raise ValueError("model required")
 
         metadata = call_kwargs.pop("metadata", None) or {}
 
-        # Choose client based on use_proxy setting
-        if self.parent.use_proxy:
-            routing_metadata = assemble_routing_metadata(metadata)
-            scoped_client = self.parent._scoped_client(routing_metadata)
+        # Get client (with proxy URL if enabled)
+        if p.use_proxy:
+            client = _get_scoped_client(
+                p._client, p.base_url, assemble_routing_metadata(metadata), p._headers
+            )
         else:
-            scoped_client = self.parent._client
+            client = _get_scoped_client(p._client, None, None, p._headers)
 
         start = time.perf_counter()
-        response = scoped_client.chat.completions.create(**call_kwargs)
+        response = client.chat.completions.create(**call_kwargs)
         latency_ms = (time.perf_counter() - start) * 1000
 
-        response_dict = response.model_dump()
-        completion_token_ids = extract_completion_tokens(response_dict)
+        # Log trace (if enabled)
+        if p.enable_local_tracing:
+            resp_dict = response.model_dump()
+            _log_trace(
+                p._tracer or _SHARED_TRACER,
+                model=model,
+                messages=messages,
+                response=resp_dict,
+                token_ids=extract_completion_tokens(resp_dict),
+                metadata=metadata,
+                latency_ms=latency_ms,
+            )
 
-        self.parent._log_trace(
-            model=model,
-            messages=messages,
-            response_payload=response_dict,
-            completion_token_ids=completion_token_ids,
-            metadata_overrides=metadata,
-            latency_ms=latency_ms,
-        )
         return response
 
 
 @dataclass
-class _ProxyChatNamespace:
-    parent: "ProxyTrackedChatClient"
+class _Completions:
+    """Namespace for completions.create()"""
 
-    @property
-    def completions(self) -> _ProxyChatCompletions:
-        return _ProxyChatCompletions(self.parent)
-
-
-@dataclass
-class _ProxyCompletions:
-    parent: "ProxyTrackedChatClient"
+    parent: "TrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> Completion:
+        p = self.parent
         call_kwargs = merge_args(args, kwargs)
+
         prompt = call_kwargs.get("prompt")
         if prompt is None:
-            raise ValueError("prompt must be provided for completions.create.")
+            raise ValueError("prompt required")
 
-        model = call_kwargs.setdefault("model", self.parent.default_model)
+        model = call_kwargs.setdefault("model", p.default_model)
         if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
+            raise ValueError("model required")
 
         metadata = call_kwargs.pop("metadata", None) or {}
 
-        # Choose client based on use_proxy setting
-        if self.parent.use_proxy:
-            routing_metadata = assemble_routing_metadata(metadata)
-            scoped_client = self.parent._scoped_client(routing_metadata)
+        if p.use_proxy:
+            client = _get_scoped_client(
+                p._client, p.base_url, assemble_routing_metadata(metadata), p._headers
+            )
         else:
-            scoped_client = self.parent._client
+            client = _get_scoped_client(p._client, None, None, p._headers)
 
         start = time.perf_counter()
-        response = scoped_client.completions.create(**call_kwargs)
+        response = client.completions.create(**call_kwargs)
         latency_ms = (time.perf_counter() - start) * 1000
 
-        response_dict = response.model_dump()
-        completion_token_ids = extract_completion_tokens(response_dict)
+        if p.enable_local_tracing:
+            resp_dict = response.model_dump()
+            _log_trace(
+                p._tracer or _SHARED_TRACER,
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response=resp_dict,
+                token_ids=extract_completion_tokens(resp_dict),
+                metadata=metadata,
+                latency_ms=latency_ms,
+            )
 
-        self.parent._log_trace(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_payload=response_dict,
-            completion_token_ids=completion_token_ids,
-            metadata_overrides=metadata,
-            latency_ms=latency_ms,
-        )
-        return response
-
-
-class ProxyTrackedChatClient(_ScopedClientMixin):
-    """Unified OpenAI client wrapper with proxy support and flexible tracing.
-
-    This client supports:
-    - Proxy-based metadata injection for server-side tracing
-    - Optional local tracing via custom or built-in in-memory tracer
-    - Custom headers for request customization
-
-    Args:
-        api_key: OpenAI API key
-        base_url: Base URL for the API (typically the proxy URL)
-        default_model: Default model to use if not specified in calls
-        client: Pre-configured OpenAI client instance
-        use_proxy: Whether to inject metadata into proxy URL (default: True)
-        extra_headers: Additional headers to include in requests
-        enable_local_tracing: Whether to log traces locally (default: True).
-            Set to False for OTel-only mode where tracing is handled by backend.
-        tracer: Custom tracer for logging LLM calls. If None, uses shared
-            in-memory tracer. Must implement log_llm_call() method.
-        **client_kwargs: Additional arguments passed to OpenAI client
-    """
-
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        default_model: str | None = None,
-        client: OpenAI | None = None,
-        use_proxy: bool = True,
-        extra_headers: Mapping[str, str] | None = None,
-        enable_local_tracing: bool = True,
-        tracer: Any = None,
-        **client_kwargs: Any,
-    ) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            init_kwargs = dict(client_kwargs)
-            if api_key is not None:
-                init_kwargs["api_key"] = api_key
-            if base_url is not None:
-                init_kwargs["base_url"] = base_url
-            self._client = OpenAI(**init_kwargs)
-
-        self.default_model = default_model
-        self.base_url = base_url
-        self.use_proxy = use_proxy
-        self._base_headers = dict(extra_headers or {})
-        self.enable_local_tracing = enable_local_tracing
-        self._tracer = tracer
-
-        self.chat = _ProxyChatNamespace(self)
-        self.completions = _ProxyCompletions(self)
-
-
-# =============================================================================
-# Async Client Implementation
-# =============================================================================
-
-
-@dataclass
-class _ProxyAsyncChatCompletions:
-    parent: "ProxyTrackedAsyncChatClient"
-
-    async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        call_kwargs = merge_args(args, kwargs)
-        messages = call_kwargs.get("messages")
-        if not messages:
-            raise ValueError("messages must be provided for chat.completions.create.")
-
-        model = call_kwargs.setdefault("model", self.parent.default_model)
-        if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
-
-        metadata = call_kwargs.pop("metadata", None) or {}
-
-        # Choose client based on use_proxy setting
-        if self.parent.use_proxy:
-            routing_metadata = assemble_routing_metadata(metadata)
-            scoped_client = self.parent._scoped_client(routing_metadata)
-        else:
-            scoped_client = self.parent._client
-
-        start = time.perf_counter()
-        response = await scoped_client.chat.completions.create(**call_kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        response_dict = response.model_dump()
-        completion_token_ids = extract_completion_tokens(response_dict)
-
-        self.parent._log_trace(
-            model=model,
-            messages=messages,
-            response_payload=response_dict,
-            completion_token_ids=completion_token_ids,
-            metadata_overrides=metadata,
-            latency_ms=latency_ms,
-        )
         return response
 
 
 @dataclass
-class _ProxyAsyncChatNamespace:
-    parent: "ProxyTrackedAsyncChatClient"
+class _ChatNamespace:
+    parent: "TrackedChatClient"
 
     @property
-    def completions(self) -> _ProxyAsyncChatCompletions:
-        return _ProxyAsyncChatCompletions(self.parent)
+    def completions(self) -> _ChatCompletions:
+        return _ChatCompletions(self.parent)
 
 
-@dataclass
-class _ProxyAsyncCompletions:
-    parent: "ProxyTrackedAsyncChatClient"
-
-    async def create(self, *args: Any, **kwargs: Any) -> Completion:
-        call_kwargs = merge_args(args, kwargs)
-        prompt = call_kwargs.get("prompt")
-        if prompt is None:
-            raise ValueError("prompt must be provided for completions.create.")
-
-        model = call_kwargs.setdefault("model", self.parent.default_model)
-        if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
-
-        metadata = call_kwargs.pop("metadata", None) or {}
-
-        # Choose client based on use_proxy setting
-        if self.parent.use_proxy:
-            routing_metadata = assemble_routing_metadata(metadata)
-            scoped_client = self.parent._scoped_client(routing_metadata)
-        else:
-            scoped_client = self.parent._client
-
-        start = time.perf_counter()
-        response = await scoped_client.completions.create(**call_kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        response_dict = response.model_dump()
-        completion_token_ids = extract_completion_tokens(response_dict)
-
-        self.parent._log_trace(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_payload=response_dict,
-            completion_token_ids=completion_token_ids,
-            metadata_overrides=metadata,
-            latency_ms=latency_ms,
-        )
-        return response
-
-
-class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
-    """Async variant of the unified OpenAI client wrapper.
-
-    This client supports:
-    - Proxy-based metadata injection for server-side tracing
-    - Optional local tracing via custom or built-in in-memory tracer
-    - Custom headers for request customization
+class TrackedChatClient:
+    """OpenAI client wrapper with proxy support and tracing.
 
     Args:
         api_key: OpenAI API key
-        base_url: Base URL for the API (typically the proxy URL)
-        default_model: Default model to use if not specified in calls
-        client: Pre-configured AsyncOpenAI client instance
-        use_proxy: Whether to inject metadata into proxy URL (default: True)
-        extra_headers: Additional headers to include in requests
-        enable_local_tracing: Whether to log traces locally (default: True).
-            Set to False for OTel-only mode where tracing is handled by backend.
-        tracer: Custom tracer for logging LLM calls. If None, uses shared
-            in-memory tracer. Must implement log_llm_call() method.
-        **client_kwargs: Additional arguments passed to AsyncOpenAI client
-    """
-
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        default_model: str | None = None,
-        client: AsyncOpenAI | None = None,
-        use_proxy: bool = True,
-        extra_headers: Mapping[str, str] | None = None,
-        enable_local_tracing: bool = True,
-        tracer: Any = None,
-        **client_kwargs: Any,
-    ) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            init_kwargs = dict(client_kwargs)
-            if api_key is not None:
-                init_kwargs["api_key"] = api_key
-            if base_url is not None:
-                init_kwargs["base_url"] = base_url
-            self._client = AsyncOpenAI(**init_kwargs)
-
-        self.default_model = default_model
-        self.base_url = base_url
-        self.use_proxy = use_proxy
-        self._base_headers = dict(extra_headers or {})
-        self.enable_local_tracing = enable_local_tracing
-        self._tracer = tracer
-
-        self.chat = _ProxyAsyncChatNamespace(self)
-        self.completions = _ProxyAsyncCompletions(self)
-
-
-# =============================================================================
-# Backward-compatible aliases for OTel clients
-# =============================================================================
-# These aliases provide the same interface as the former OpenTelemetryTrackedChatClient
-# but with enable_local_tracing=False by default (OTel mode).
-
-
-class OpenTelemetryTrackedChatClient(ProxyTrackedChatClient):
-    """Backward-compatible alias for OTel-mode sync client.
-
-    This is equivalent to ProxyTrackedChatClient with enable_local_tracing=False.
-    In this mode, local tracing is disabled and the client relies entirely on
-    the proxy/OTel backend for tracing.
+        base_url: Base URL (proxy URL for metadata injection)
+        default_model: Default model for calls
+        client: Pre-configured OpenAI client
+        use_proxy: Inject metadata into proxy URL (default: True)
+        enable_local_tracing: Log traces locally (default: True)
+        tracer: Custom tracer (default: shared in-memory tracer)
+        extra_headers: Additional request headers
     """
 
     def __init__(
@@ -445,28 +217,136 @@ class OpenTelemetryTrackedChatClient(ProxyTrackedChatClient):
         default_model: str | None = None,
         client: OpenAI | None = None,
         use_proxy: bool = True,
+        enable_local_tracing: bool = True,
+        tracer: Any = None,
         extra_headers: Mapping[str, str] | None = None,
         **client_kwargs: Any,
     ) -> None:
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            use_proxy=use_proxy,
-            extra_headers=extra_headers,
-            enable_local_tracing=False,
-            **client_kwargs,
-        )
+        if client is not None:
+            self._client = client
+        else:
+            kw = dict(client_kwargs)
+            if api_key:
+                kw["api_key"] = api_key
+            if base_url:
+                kw["base_url"] = base_url
+            self._client = OpenAI(**kw)
+
+        self.base_url = base_url
+        self.default_model = default_model
+        self.use_proxy = use_proxy
+        self.enable_local_tracing = enable_local_tracing
+        self._tracer = tracer
+        self._headers = dict(extra_headers or {})
+
+        self.chat = _ChatNamespace(self)
+        self.completions = _Completions(self)
 
 
-class OpenTelemetryTrackedAsyncChatClient(ProxyTrackedAsyncChatClient):
-    """Backward-compatible alias for OTel-mode async client.
+# =============================================================================
+# Async Implementation
+# =============================================================================
 
-    This is equivalent to ProxyTrackedAsyncChatClient with enable_local_tracing=False.
-    In this mode, local tracing is disabled and the client relies entirely on
-    the proxy/OTel backend for tracing.
-    """
+
+@dataclass
+class _AsyncChatCompletions:
+    parent: "TrackedAsyncChatClient"
+
+    async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
+        p = self.parent
+        call_kwargs = merge_args(args, kwargs)
+
+        messages = call_kwargs.get("messages")
+        if not messages:
+            raise ValueError("messages required")
+
+        model = call_kwargs.setdefault("model", p.default_model)
+        if not model:
+            raise ValueError("model required")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
+
+        if p.use_proxy:
+            client = _get_scoped_client(
+                p._client, p.base_url, assemble_routing_metadata(metadata), p._headers
+            )
+        else:
+            client = _get_scoped_client(p._client, None, None, p._headers)
+
+        start = time.perf_counter()
+        response = await client.chat.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        if p.enable_local_tracing:
+            resp_dict = response.model_dump()
+            _log_trace(
+                p._tracer or _SHARED_TRACER,
+                model=model,
+                messages=messages,
+                response=resp_dict,
+                token_ids=extract_completion_tokens(resp_dict),
+                metadata=metadata,
+                latency_ms=latency_ms,
+            )
+
+        return response
+
+
+@dataclass
+class _AsyncCompletions:
+    parent: "TrackedAsyncChatClient"
+
+    async def create(self, *args: Any, **kwargs: Any) -> Completion:
+        p = self.parent
+        call_kwargs = merge_args(args, kwargs)
+
+        prompt = call_kwargs.get("prompt")
+        if prompt is None:
+            raise ValueError("prompt required")
+
+        model = call_kwargs.setdefault("model", p.default_model)
+        if not model:
+            raise ValueError("model required")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
+
+        if p.use_proxy:
+            client = _get_scoped_client(
+                p._client, p.base_url, assemble_routing_metadata(metadata), p._headers
+            )
+        else:
+            client = _get_scoped_client(p._client, None, None, p._headers)
+
+        start = time.perf_counter()
+        response = await client.completions.create(**call_kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        if p.enable_local_tracing:
+            resp_dict = response.model_dump()
+            _log_trace(
+                p._tracer or _SHARED_TRACER,
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response=resp_dict,
+                token_ids=extract_completion_tokens(resp_dict),
+                metadata=metadata,
+                latency_ms=latency_ms,
+            )
+
+        return response
+
+
+@dataclass
+class _AsyncChatNamespace:
+    parent: "TrackedAsyncChatClient"
+
+    @property
+    def completions(self) -> _AsyncChatCompletions:
+        return _AsyncChatCompletions(self.parent)
+
+
+class TrackedAsyncChatClient:
+    """Async OpenAI client wrapper with proxy support and tracing."""
 
     def __init__(
         self,
@@ -476,102 +356,79 @@ class OpenTelemetryTrackedAsyncChatClient(ProxyTrackedAsyncChatClient):
         default_model: str | None = None,
         client: AsyncOpenAI | None = None,
         use_proxy: bool = True,
+        enable_local_tracing: bool = True,
+        tracer: Any = None,
         extra_headers: Mapping[str, str] | None = None,
         **client_kwargs: Any,
     ) -> None:
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            use_proxy=use_proxy,
-            extra_headers=extra_headers,
-            enable_local_tracing=False,
-            **client_kwargs,
-        )
+        if client is not None:
+            self._client = client
+        else:
+            kw = dict(client_kwargs)
+            if api_key:
+                kw["api_key"] = api_key
+            if base_url:
+                kw["base_url"] = base_url
+            self._client = AsyncOpenAI(**kw)
+
+        self.base_url = base_url
+        self.default_model = default_model
+        self.use_proxy = use_proxy
+        self.enable_local_tracing = enable_local_tracing
+        self._tracer = tracer
+        self._headers = dict(extra_headers or {})
+
+        self.chat = _AsyncChatNamespace(self)
+        self.completions = _AsyncCompletions(self)
+
+
+# =============================================================================
+# Backward-compatible Aliases
+# =============================================================================
+# These are simple subclasses that set sensible defaults for common use cases.
+# No logic changes - just preset configurations.
+
+
+class ProxyTrackedChatClient(TrackedChatClient):
+    """Alias: TrackedChatClient with defaults (use_proxy=True, local_tracing=True)"""
+
+    pass
+
+
+class ProxyTrackedAsyncChatClient(TrackedAsyncChatClient):
+    """Alias: TrackedAsyncChatClient with defaults"""
+
+    pass
+
+
+class SimpleTrackedChatClient(TrackedChatClient):
+    """Alias: TrackedChatClient with use_proxy=False (direct API calls)"""
+
+    def __init__(self, *, tracer: Any = None, **kwargs: Any) -> None:
+        super().__init__(use_proxy=False, tracer=tracer, **kwargs)
+
+
+class SimpleTrackedAsyncChatClient(TrackedAsyncChatClient):
+    """Alias: TrackedAsyncChatClient with use_proxy=False"""
+
+    def __init__(self, *, tracer: Any = None, **kwargs: Any) -> None:
+        super().__init__(use_proxy=False, tracer=tracer, **kwargs)
+
+
+class OpenTelemetryTrackedChatClient(TrackedChatClient):
+    """Alias: TrackedChatClient with enable_local_tracing=False (OTel mode)"""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(enable_local_tracing=False, **kwargs)
+
+
+class OpenTelemetryTrackedAsyncChatClient(TrackedAsyncChatClient):
+    """Alias: TrackedAsyncChatClient with enable_local_tracing=False"""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(enable_local_tracing=False, **kwargs)
 
 
 # Legacy shorthand names
 OpenAIOTelClient = OpenTelemetryTrackedChatClient
 AsyncOpenAIOTelClient = OpenTelemetryTrackedAsyncChatClient
-
-
-# =============================================================================
-# Backward-compatible aliases for Simple clients
-# =============================================================================
-# These aliases provide the same interface as the former SimpleTrackedChatClient
-# but using the unified implementation with use_proxy=False.
-
-
-class SimpleTrackedChatClient(ProxyTrackedChatClient):
-    """Backward-compatible alias for simple (non-proxy) sync client.
-
-    This is equivalent to ProxyTrackedChatClient with use_proxy=False.
-    Useful for direct OpenAI API calls without proxy involvement.
-
-    Args:
-        api_key: OpenAI API key
-        base_url: Base URL for the API
-        tracer: Custom tracer for logging LLM calls
-        default_model: Default model to use if not specified in calls
-        client: Pre-configured OpenAI client instance
-        **client_kwargs: Additional arguments passed to OpenAI client
-    """
-
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        tracer: Any = None,
-        default_model: str | None = None,
-        client: OpenAI | None = None,
-        **client_kwargs: Any,
-    ) -> None:
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            use_proxy=False,
-            enable_local_tracing=True,
-            tracer=tracer,
-            **client_kwargs,
-        )
-
-
-class SimpleTrackedAsyncChatClient(ProxyTrackedAsyncChatClient):
-    """Backward-compatible alias for simple (non-proxy) async client.
-
-    This is equivalent to ProxyTrackedAsyncChatClient with use_proxy=False.
-    Useful for direct OpenAI API calls without proxy involvement.
-
-    Args:
-        api_key: OpenAI API key
-        base_url: Base URL for the API
-        tracer: Custom tracer for logging LLM calls
-        default_model: Default model to use if not specified in calls
-        client: Pre-configured AsyncOpenAI client instance
-        **client_kwargs: Additional arguments passed to AsyncOpenAI client
-    """
-
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        tracer: Any = None,
-        default_model: str | None = None,
-        client: AsyncOpenAI | None = None,
-        **client_kwargs: Any,
-    ) -> None:
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            use_proxy=False,
-            enable_local_tracing=True,
-            tracer=tracer,
-            **client_kwargs,
-        )
