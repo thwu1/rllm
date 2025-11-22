@@ -290,9 +290,9 @@ rllm/sdk/
 │   └── storage.py           # InMemoryStorage
 ├── chat/
 │   ├── __init__.py          # Chat client exports
-│   ├── proxy_chat_client.py       # Proxy-enabled chat client (ContextVar)
+│   ├── proxy_chat_client.py # Unified proxy chat client (includes OTel aliases)
 │   ├── simple_chat_client.py      # Simple chat client
-│   └── otel_tracked_client.py     # OpenTelemetry-aware chat client
+│   └── util.py              # Shared utilities for chat clients
 ├── proxy/
 │   ├── __init__.py          # Proxy module exports
 │   ├── litellm_callbacks.py # TracingCallback, SamplingParametersCallback
