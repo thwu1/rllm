@@ -261,8 +261,9 @@ class SqliteTracer:
         if trace_id is None:
             trace_id = f"tr_{uuid.uuid4().hex[:16]}"
 
-        # Use metadata as-is (no context merging)
-        final_metadata = metadata or {}
+        # Copy metadata to snapshot state before async queueing
+        # (prevents caller mutations from affecting stored trace)
+        final_metadata = dict(metadata) if metadata else {}
 
         # Use session_uids as-is (no auto-detection from context)
         prepared_session_uids = list(session_uids) if session_uids else None
