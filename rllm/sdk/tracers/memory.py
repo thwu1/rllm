@@ -102,12 +102,16 @@ class InMemorySessionTracer:
         """
         Log trace to all active sessions' in-memory storage.
 
+        This method does NOT perform any autofill or overwrites.
+        All values are used as-is from the caller. If trace_id is None,
+        a new one is generated. All other None values remain None.
+
         Algorithm:
         1. Get active sessions from context via get_active_sessions()
         2. If none, return early (trace is dropped)
-        3. Build trace dict with all provided data
+        3. Build trace dict with all provided data (no overwrites)
         4. Apply formatter (if configured)
-        5. Append formatted trace to each session._calls
+        5. Append formatted trace to each session's storage
 
         Args:
             name: Identifier for the call (e.g., "chat.completions.create")
@@ -116,9 +120,9 @@ class InMemorySessionTracer:
             model: Model identifier (e.g., "gpt-4")
             latency_ms: Latency in milliseconds
             tokens: Token usage dict with keys: prompt, completion, total
-            session_name: Session name (ignored - session names come from active sessions in context)
-            metadata: Additional metadata dict
-            trace_id: Unique trace ID (auto-generated if None, or extracted from output.id)
+            session_name: Session name (used as-is, no auto-detection)
+            metadata: Additional metadata dict (used as-is, no merging)
+            trace_id: Unique trace ID (auto-generated if None)
             parent_trace_id: Parent trace ID for nested calls
             cost: Cost in USD (optional)
             environment: Environment name (e.g., "production", "dev")
@@ -127,9 +131,6 @@ class InMemorySessionTracer:
             tags: List of tags for categorization
 
         Note:
-            - The `session_name` parameter is ignored. Session names are automatically
-              extracted from active sessions in context via `get_active_sessions()`.
-              Each active session gets its own trace with its own session_name.
             - If not within a session context (no active sessions found),
               the trace is silently dropped. This is intentional - in-memory tracer
               only works within sessions.
@@ -142,18 +143,13 @@ class InMemorySessionTracer:
             # In-memory tracer only works within sessions
             return
 
-        # Extract trace_id: prefer provided trace_id, then check output for id, otherwise generate
-        if trace_id is None:
-            # Check if output contains an id field (common in LLM provider responses)
-            if isinstance(output, dict):
-                trace_id = output.get("id")
-
-        # Use single trace_id for the same logical call across sessions
+        # Generate trace_id only if not provided (no extraction from output)
         actual_trace_id = trace_id or f"tr_{uuid.uuid4().hex[:16]}"
 
-        # Build base trace data (session_name will be set per-session)
+        # Build trace data - use all values as-is (no overwrites)
         trace_kwargs = {
             "trace_id": actual_trace_id,
+            "session_name": session_name or "",
             "name": name,
             "input": input,
             "output": output,
@@ -170,9 +166,9 @@ class InMemorySessionTracer:
             "tags": tags,
         }
 
-        # Add trace to every active session's storage with its own session_name
+        # Add trace to every active session's storage
         for sess in sessions:
-            trace_obj = Trace(session_name=sess.name, **trace_kwargs)
+            trace_obj = Trace(**trace_kwargs)
             # Add to session storage with full UID chain for tree hierarchy
             sess.storage.add_trace(sess._session_uid_chain, sess.name, trace_obj)
 
