@@ -224,6 +224,12 @@ class TrackedChatClient:
     ) -> None:
         if client is not None:
             self._client = client
+            # Preserve base_url from supplied client only if not explicitly provided
+            # (but don't pick up the default OpenAI URL - that would break proxy routing)
+            if base_url is None:
+                client_url = getattr(client, "base_url", None)
+                if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
+                    base_url = str(client_url)
         else:
             kw = dict(client_kwargs)
             if api_key:
@@ -232,8 +238,7 @@ class TrackedChatClient:
                 kw["base_url"] = base_url
             self._client = OpenAI(**kw)
 
-        # Resolve base_url from client if not explicitly provided (for proxy routing)
-        self.base_url = base_url or str(self._client.base_url) if self._client.base_url else None
+        self.base_url = base_url  # Only set if explicitly provided or custom client URL
         self.default_model = default_model
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
@@ -364,6 +369,12 @@ class TrackedAsyncChatClient:
     ) -> None:
         if client is not None:
             self._client = client
+            # Preserve base_url from supplied client only if not explicitly provided
+            # (but don't pick up the default OpenAI URL - that would break proxy routing)
+            if base_url is None:
+                client_url = getattr(client, "base_url", None)
+                if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
+                    base_url = str(client_url)
         else:
             kw = dict(client_kwargs)
             if api_key:
@@ -372,8 +383,7 @@ class TrackedAsyncChatClient:
                 kw["base_url"] = base_url
             self._client = AsyncOpenAI(**kw)
 
-        # Resolve base_url from client if not explicitly provided (for proxy routing)
-        self.base_url = base_url or str(self._client.base_url) if self._client.base_url else None
+        self.base_url = base_url  # Only set if explicitly provided or custom client URL
         self.default_model = default_model
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
