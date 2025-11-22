@@ -6,10 +6,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from rllm.sdk.protocol import StepView, Trace, trace_to_step_view
-from rllm.sdk.session.ephemeral import InMemoryStorage
+from rllm.sdk.session.session_buffer import SessionBuffer
 
 if TYPE_CHECKING:
-    from rllm.sdk.session.ephemeral import SessionStorage
+    from rllm.sdk.session.session_buffer import SessionBufferProtocol
 
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
@@ -62,7 +62,7 @@ class ContextVarSession:
     """Context-based session with pluggable storage for LLM trace collection.
 
     Features thread-safe context propagation, nested sessions with metadata inheritance,
-    and pluggable storage (InMemoryStorage default).
+    and pluggable buffer (SessionBuffer default).
 
     Example:
         >>> with ContextVarSession() as session:
@@ -73,7 +73,7 @@ class ContextVarSession:
     def __init__(
         self,
         name: str | None = None,
-        storage: "SessionStorage | None" = None,
+        storage: "SessionBufferProtocol | None" = None,
         formatter: Callable[[dict], dict] | None = None,
         persistent_tracers: list | None = None,
         _session_uid_chain: list[str] | None = None,
@@ -86,7 +86,7 @@ class ContextVarSession:
             name: Session name (auto-generated if None). If None and there's an
                   existing session name in the context (from a parent session),
                   that will be inherited instead of generating a new one.
-            storage: Storage backend for traces. If None, uses InMemoryStorage (default).
+            storage: Buffer backend for traces. If None, uses SessionBuffer (default).
             formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
             persistent_tracers: Optional list of persistent tracers (deprecated, kept for compatibility)
             _session_uid_chain: Internal parameter for context restoration (do not use directly)
@@ -124,9 +124,9 @@ class ContextVarSession:
         self.metadata = metadata
         self.formatter = formatter or (lambda x: x)
 
-        # Storage backend (defaults to InMemoryStorage for backward compatibility)
+        # Buffer backend (defaults to SessionBuffer for backward compatibility)
         if storage is None:
-            storage = InMemoryStorage()
+            storage = SessionBuffer()
         self.storage = storage
 
         # Optional persistent tracers (kept for backward compatibility)
@@ -153,7 +153,7 @@ class ContextVarSession:
         return [trace_to_step_view(trace) for trace in self.llm_calls]
 
     def clear_calls(self) -> None:
-        """Clear all traces for this session (InMemoryStorage only)."""
+        """Clear all traces for this session (SessionBuffer only)."""
         if hasattr(self.storage, "clear"):
             self.storage.clear(self._uid, self.name)
 
@@ -213,7 +213,7 @@ class ContextVarSession:
     def from_context(
         cls,
         context: dict,
-        storage: "SessionStorage | None" = None,
+        storage: "SessionBufferProtocol | None" = None,
     ) -> "ContextVarSession":
         """Restore session from serialized context (for cross-process tracing).
 

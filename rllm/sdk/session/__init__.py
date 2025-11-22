@@ -11,9 +11,9 @@ from rllm.sdk.session.contextvar import (
     get_current_cv_session,
     get_current_cv_session_name,
 )
-from rllm.sdk.session.ephemeral import (
-    InMemoryStorage,
-    SessionStorage,
+from rllm.sdk.session.session_buffer import (
+    SessionBuffer,
+    SessionBufferProtocol,
 )
 
 
@@ -138,7 +138,7 @@ __all__ = [
     "get_active_session_uids",
     # Runtime helpers
     "wrap_with_session_context",
-    # Storage
-    "SessionStorage",  # Protocol
-    "InMemoryStorage",  # Default in-memory storage
+    # Session buffer (ephemeral trace storage)
+    "SessionBufferProtocol",  # Protocol
+    "SessionBuffer",  # Default in-memory buffer
 ]
