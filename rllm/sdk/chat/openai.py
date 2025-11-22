@@ -216,12 +216,6 @@ class TrackedChatClient:
     ) -> None:
         if client is not None:
             self._client = client
-            # Preserve base_url from supplied client only if not explicitly provided
-            # (but don't pick up the default OpenAI URL - that would break proxy routing)
-            if base_url is None:
-                client_url = getattr(client, "base_url", None)
-                if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
-                    base_url = str(client_url)
         else:
             kw = dict(client_kwargs)
             if api_key:
@@ -230,7 +224,16 @@ class TrackedChatClient:
                 kw["base_url"] = base_url
             self._client = OpenAI(**kw)
 
-        self.base_url = base_url  # Only set if explicitly provided or custom client URL
+        # Resolve base_url for proxy routing:
+        # 1. Use explicit base_url if provided
+        # 2. Otherwise check client's base_url (may come from env OPENAI_BASE_URL)
+        # 3. Skip default OpenAI URL (would break if we tried to proxy-rewrite it)
+        if base_url is None:
+            client_url = getattr(self._client, "base_url", None)
+            if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
+                base_url = str(client_url)
+
+        self.base_url = base_url
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
         self._tracer = tracer
@@ -353,12 +356,6 @@ class TrackedAsyncChatClient:
     ) -> None:
         if client is not None:
             self._client = client
-            # Preserve base_url from supplied client only if not explicitly provided
-            # (but don't pick up the default OpenAI URL - that would break proxy routing)
-            if base_url is None:
-                client_url = getattr(client, "base_url", None)
-                if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
-                    base_url = str(client_url)
         else:
             kw = dict(client_kwargs)
             if api_key:
@@ -367,7 +364,16 @@ class TrackedAsyncChatClient:
                 kw["base_url"] = base_url
             self._client = AsyncOpenAI(**kw)
 
-        self.base_url = base_url  # Only set if explicitly provided or custom client URL
+        # Resolve base_url for proxy routing:
+        # 1. Use explicit base_url if provided
+        # 2. Otherwise check client's base_url (may come from env OPENAI_BASE_URL)
+        # 3. Skip default OpenAI URL (would break if we tried to proxy-rewrite it)
+        if base_url is None:
+            client_url = getattr(self._client, "base_url", None)
+            if client_url and str(client_url).rstrip("/") != "https://api.openai.com/v1":
+                base_url = str(client_url)
+
+        self.base_url = base_url
         self.use_proxy = use_proxy
         self.enable_local_tracing = enable_local_tracing
         self._tracer = tracer
