@@ -66,112 +66,53 @@ def configure_default_tracer(service_name: str = "rllm-worker") -> None:
 # Baggage helpers - single source of truth
 # ---------------------------------------------------------------------------
 def _read_baggage() -> dict[str, Any]:
-    """Read session context from W3C baggage (the single source of truth).
-
-    Returns:
-        Dict with keys: session_uid_chain, metadata (includes session_name)
-        Empty dict if no baggage is set.
-    """
-    baggage_val = otel_baggage.get_baggage(_BAGGAGE_KEY)
-    if not isinstance(baggage_val, str):
+    """Read session context from W3C baggage."""
+    val = otel_baggage.get_baggage(_BAGGAGE_KEY)
+    if not isinstance(val, str):
         return {}
-
-    text = baggage_val.strip()
-    if not (text.startswith("{") and text.endswith("}")):
-        return {}
-
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
+        return json.loads(val.strip())
+    except (json.JSONDecodeError, ValueError):
         return {}
 
 
 def _write_baggage(payload: dict[str, Any]) -> object:
-    """Write session context to W3C baggage.
-
-    Args:
-        payload: Dict with session_uid_chain, metadata
-
-    Returns:
-        Context token for later detachment
-    """
-    baggage_str = json.dumps(payload, sort_keys=True, default=str)
-    ctx = otel_baggage.set_baggage(_BAGGAGE_KEY, baggage_str)
+    """Write session context to W3C baggage, return token for detachment."""
+    ctx = otel_baggage.set_baggage(_BAGGAGE_KEY, json.dumps(payload, sort_keys=True, default=str))
     return otel_context.attach(ctx)
-
-
-def _detach_baggage(token: object | None) -> None:
-    """Detach baggage context."""
-    if token is not None:
-        otel_context.detach(token)
 
 
 # ---------------------------------------------------------------------------
 # Public getters - all read from baggage
 # ---------------------------------------------------------------------------
 def get_current_otel_session_name() -> str | None:
-    """Get current session name from baggage.
-
-    Returns:
-        Session name, or None if no session is active.
-    """
-    ctx = _read_baggage()
-    metadata = ctx.get("metadata", {})
-    name = metadata.get("session_name")
-    return name if isinstance(name, str) else None
+    """Get current session name from baggage."""
+    meta = _read_baggage().get("metadata", {})
+    return meta.get("session_name") if isinstance(meta, dict) else None
 
 
 def get_current_otel_metadata() -> dict[str, Any]:
-    """Get current metadata from baggage.
-
-    Returns:
-        Session metadata dict, or empty dict if no session is active.
-    """
-    ctx = _read_baggage()
-    metadata = ctx.get("metadata", {})
-    return dict(metadata) if isinstance(metadata, dict) else {}
+    """Get current metadata from baggage."""
+    meta = _read_baggage().get("metadata", {})
+    return dict(meta) if isinstance(meta, dict) else {}
 
 
 def get_active_otel_session_uids() -> list[str]:
-    """Get active session UID chain from baggage.
-
-    Returns:
-        List of session UIDs from root to current, or empty list.
-    """
-    ctx = _read_baggage()
-    chain = ctx.get("session_uid_chain", [])
-    if isinstance(chain, list):
-        return [str(x) for x in chain]
-    return []
+    """Get active session UID chain from baggage."""
+    chain = _read_baggage().get("session_uid_chain", [])
+    return [str(x) for x in chain] if isinstance(chain, list) else []
 
 
-def get_current_otel_session() -> OpenTelemetrySession | None:
-    """Check if there's an active session (based on baggage).
-
-    Note: This returns None since we don't store session objects anymore.
-    Use get_current_otel_metadata() or get_current_otel_session_name() instead.
-
-    Returns:
-        None (session objects are not stored in context)
-    """
-    # We no longer store session objects in context.
-    # Check if baggage has session data instead.
-    ctx = _read_baggage()
-    if ctx.get("session_uid_chain"):
-        # There's session data in baggage, but we don't have the object
-        # Return None - callers should use the getter functions instead
-        return None
-    return None
+def get_current_otel_session() -> OpenTelemetrySession:
+    """Not implemented - use get_current_otel_metadata() or get_current_otel_session_name() instead."""
+    raise NotImplementedError(
+        "get_current_otel_session() is not supported with baggage-based sessions. "
+        "Use get_current_otel_metadata(), get_current_otel_session_name(), or get_active_otel_session_uids() instead."
+    )
 
 
 def otel_session(**kwargs: Any) -> OpenTelemetrySession:
-    """Convenience factory for creating OpenTelemetry sessions.
-
-    Example:
-        >>> with otel_session(name="my-task", env="prod") as session:
-        ...     llm.chat.completions.create(...)
-        ...     print(len(session.llm_calls))
-    """
+    """Create an OpenTelemetry session context manager."""
     return OpenTelemetrySession(**kwargs)
 
 
@@ -261,54 +202,37 @@ class OpenTelemetrySession:
     # ------------------------------------------------------------------
     def __enter__(self):
         """Enter session context: read parent baggage, merge, write new baggage."""
-        # 1. Read parent context from baggage
+        # Read parent context from baggage
         parent_ctx = _read_baggage()
         parent_chain = parent_ctx.get("session_uid_chain", [])
         parent_meta = parent_ctx.get("metadata", {})
 
-        # 2. Start OpenTelemetry span (before getting UID)
-        tracer = self._ensure_tracer()
-        span_name = f"session:{self._init_name}" if self._init_name else "session"
-        self._span_scope = tracer.start_as_current_span(span_name)
+        # Start span and extract span ID as session UID
+        tracer = self._otel_tracer or otel_trace.get_tracer(self._tracer_name)
+        self._span_scope = tracer.start_as_current_span(f"session:{self._init_name}" if self._init_name else "session")
         self._span = self._span_scope.__enter__()
-
-        # 3. Extract span context and use span ID as session UID
         self._cache_span_context()
         self._uid = self._span_id or f"ctx_{uuid.uuid4().hex[:16]}"
 
-        # 4. Build UID chain: parent chain + our UID
-        if isinstance(parent_chain, list) and parent_chain:
-            self._session_uid_chain = [str(x) for x in parent_chain] + [self._uid]
-        else:
-            self._session_uid_chain = [self._uid]
-
-        # 5. Merge metadata: parent values inherited, child values override
-        self._merged_metadata = {}
-        if isinstance(parent_meta, dict):
-            self._merged_metadata.update(parent_meta)
-        self._merged_metadata.update(self._init_metadata)
-        if self._init_name is not None:
+        # Build UID chain and merge metadata
+        self._session_uid_chain = ([str(x) for x in parent_chain] if parent_chain else []) + [self._uid]
+        self._merged_metadata = {**(parent_meta if isinstance(parent_meta, dict) else {}), **self._init_metadata}
+        if self._init_name:
             self._merged_metadata["session_name"] = self._init_name
 
-        # 6. Write to baggage (SINGLE SOURCE OF TRUTH)
-        self._baggage_token = _write_baggage({
-            "session_uid_chain": self._session_uid_chain,
-            "metadata": self._merged_metadata,
-        })
-
-        # 7. Decorate span with session attributes (write-only, for observability)
+        # Write to baggage (single source of truth) and decorate span
+        self._baggage_token = _write_baggage({"session_uid_chain": self._session_uid_chain, "metadata": self._merged_metadata})
         self._decorate_span()
-
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit session context: restore parent baggage and close span."""
-        # Detach our baggage (restores parent context)
-        _detach_baggage(self._baggage_token)
-        self._baggage_token = None
-
-        # Close span
-        self._close_span(exc_type, exc_val, exc_tb)
+        if self._baggage_token:
+            otel_context.detach(self._baggage_token)
+            self._baggage_token = None
+        if self._span_scope:
+            self._span_scope.__exit__(exc_type, exc_val, exc_tb)
+            self._span_scope = self._span = self._trace_id = self._span_id = None
         return False
 
     # ------------------------------------------------------------------
@@ -370,12 +294,6 @@ class OpenTelemetrySession:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _ensure_tracer(self) -> _OtelTracer:
-        if self._otel_tracer is not None:
-            return self._otel_tracer
-        self._otel_tracer = otel_trace.get_tracer(self._tracer_name)
-        return self._otel_tracer
-
     def _ensure_store(self):
         if self._store is not None:
             return self._store
@@ -394,23 +312,10 @@ class OpenTelemetrySession:
 
     def _decorate_span(self) -> None:
         """Attach session metadata as span attributes (write-only, for observability)."""
-        if self._span is None:
+        if not self._span:
             return
-        attributes: dict[str, Any] = {
-            "session.name": self.name,
-            "session.uid": self._uid,
-            "session.uid_chain": list(self._session_uid_chain),
-        }
+        self._span.set_attribute("session.name", self.name)
+        self._span.set_attribute("session.uid", self._uid)
+        self._span.set_attribute("session.uid_chain", self._session_uid_chain)
         if self._merged_metadata:
-            attributes["session.metadata"] = json.dumps(self._merged_metadata, sort_keys=True, default=str)
-        for key, value in attributes.items():
-            self._span.set_attribute(key, value)
-
-    def _close_span(self, exc_type=None, exc_val=None, exc_tb=None) -> None:
-        """Close the OpenTelemetry span."""
-        if self._span_scope is not None:
-            self._span_scope.__exit__(exc_type, exc_val, exc_tb)
-            self._span_scope = None
-            self._span = None
-        self._trace_id = None
-        self._span_id = None
+            self._span.set_attribute("session.metadata", json.dumps(self._merged_metadata, sort_keys=True, default=str))
