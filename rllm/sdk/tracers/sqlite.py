@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from rllm.sdk.protocol import Trace
+from rllm.sdk.session import get_active_session_uids
 from rllm.sdk.store import SqliteTraceStore
 
 logger = logging.getLogger(__name__)
@@ -250,9 +251,13 @@ class SqliteTracer:
     ) -> tuple[Trace, dict[str, Any], list[str] | None]:
         """Build the Trace object plus metadata/session UID list.
 
-        This method does NOT perform any autofill or context lookups.
+        This method does NOT perform any autofill except for session_uids.
         All values are used as-is from the caller. If trace_id is None,
-        a new one is generated. All other None values remain None.
+        a new one is generated.
+
+        IMPORTANT: session_uids MUST be captured here (in the main thread)
+        because the worker thread has no access to ContextVars. If not
+        provided, we auto-detect from the current session context.
         """
         # Generate trace_id only if not provided (no extraction from output)
         if trace_id is None:
@@ -261,7 +266,10 @@ class SqliteTracer:
         # Use metadata as-is (no context merging)
         final_metadata = metadata or {}
 
-        # Use session_uids as-is (no auto-detection from context)
+        # Capture session_uids from context if not provided
+        # This MUST happen here (main thread) because worker thread has no ContextVars
+        if session_uids is None:
+            session_uids = get_active_session_uids()
         prepared_session_uids = list(session_uids) if session_uids else None
 
         trace = Trace(
