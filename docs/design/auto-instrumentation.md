@@ -657,6 +657,99 @@ with session(name="agent") as sess:
 3. **Uninstrument**: Provide `uninstrument()` for testing/debugging
 4. **Provider Isolation**: Each provider patches independently
 
+## Critical Limitation: Proxy Mode
+
+### The Problem
+
+The current `ProxyTrackedChatClient` provides a **proxy mode** that modifies the request URL
+to include session metadata:
+
+```python
+# Original URL
+base_url = "http://proxy:4000/v1"
+
+# Modified URL (with metadata slug)
+proxied_url = "http://proxy:4000/meta/rllm1:eyJzZXNzaW9uX25hbWUiOiJzb2x2ZXIifQ/v1"
+```
+
+The proxy server extracts this metadata from the URL path to:
+1. Associate traces with sessions
+2. Route requests appropriately
+3. Return token IDs for RL training
+
+**Auto-instrumentation CANNOT reproduce this** because:
+- Monkey-patching intercepts calls AFTER the URL is already set
+- We cannot modify the client's `base_url` from within the wrapper
+- The request goes to the original URL, not the proxied URL
+
+### Features Comparison
+
+| Feature | Wrapper Client | Auto-Instrumentation |
+|---------|---------------|---------------------|
+| Trace capture | ✅ | ✅ |
+| Session context from baggage | ✅ | ✅ |
+| Token extraction | ✅ | ✅ |
+| In-memory tracing | ✅ | ✅ |
+| **Proxy URL modification** | ✅ | ❌ |
+| **Per-call metadata override** | ✅ | ❌ |
+| **Default model fallback** | ✅ | ❌ |
+
+### Recommended Approach: Hybrid
+
+Given this limitation, we recommend a **hybrid approach**:
+
+```python
+# Mode 1: Direct mode (vLLM, SGLang, etc.) - Use auto-instrumentation
+from rllm.sdk import instrument, session
+from openai import AsyncOpenAI
+
+instrument()  # Enable auto-instrumentation
+
+client = AsyncOpenAI(base_url="http://vllm:8000/v1")
+
+with session(name="agent") as sess:
+    await client.chat.completions.create(...)  # Automatically traced!
+
+
+# Mode 2: Proxy mode - Use wrapper client (required for URL modification)
+from rllm.sdk import get_chat_client_async, session
+
+client = get_chat_client_async(
+    base_url="http://proxy:4000/v1",
+    use_proxy=True,  # Enables URL modification
+)
+
+with session(name="agent") as sess:
+    await client.chat.completions.create(...)  # URL modified for proxy
+```
+
+### Alternative: Transport-Level Instrumentation
+
+For users who want auto-instrumentation WITH proxy support, we can provide a custom transport:
+
+```python
+from rllm.sdk.transport import RLLMProxyTransport
+from openai import AsyncOpenAI
+import httpx
+
+# Create client with proxy-aware transport
+client = AsyncOpenAI(
+    base_url="http://proxy:4000/v1",
+    http_client=httpx.AsyncClient(
+        transport=RLLMProxyTransport()  # Modifies URLs based on session context
+    )
+)
+
+# Now standard client works with proxy mode!
+with session(name="agent") as sess:
+    await client.chat.completions.create(...)
+```
+
+This approach:
+- Uses standard OpenAI client
+- Transport layer modifies URLs before requests
+- Works with any OpenAI-compatible endpoint
+
 ## Alternatives Considered
 
 ### 1. Keep Wrapper Clients Only
