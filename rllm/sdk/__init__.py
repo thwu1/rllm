@@ -1,6 +1,7 @@
 """RLLM SDK for automatic LLM trace collection and RL training."""
 
 from rllm.sdk.decorators import trajectory
+from rllm.sdk.instrumentation import instrument, is_instrumented, uninstrument
 from rllm.sdk.protocol import StepView, Trace, TrajectoryView
 from rllm.sdk.session import (
     ContextVarSession,
@@ -42,4 +43,8 @@ __all__ = [
     "TracerProtocol",  # Tracer interface
     "InMemorySessionTracer",  # In-memory tracer for immediate access
     "SqliteTracer",  # SQLite-based persistent tracer
+    # Instrumentation
+    "instrument",  # Enable auto-instrumentation for LLM providers
+    "uninstrument",  # Disable auto-instrumentation
+    "is_instrumented",  # Check if instrumentation is active
 ]
