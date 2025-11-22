@@ -723,32 +723,211 @@ with session(name="agent") as sess:
     await client.chat.completions.create(...)  # URL modified for proxy
 ```
 
-### Alternative: Transport-Level Instrumentation
+### Solution: Patch httpx Transport Layer
 
-For users who want auto-instrumentation WITH proxy support, we can provide a custom transport:
+Since OpenAI SDK (and many other LLM SDKs) use `httpx` internally, we can patch at the
+httpx transport level to modify URLs **before** requests are sent.
 
-```python
-from rllm.sdk.transport import RLLMProxyTransport
-from openai import AsyncOpenAI
-import httpx
+#### How It Works
 
-# Create client with proxy-aware transport
-client = AsyncOpenAI(
-    base_url="http://proxy:4000/v1",
-    http_client=httpx.AsyncClient(
-        transport=RLLMProxyTransport()  # Modifies URLs based on session context
-    )
-)
-
-# Now standard client works with proxy mode!
-with session(name="agent") as sess:
-    await client.chat.completions.create(...)
+```
+User Code → OpenAI SDK → httpx Client → Patched Transport → HTTP Request
+                                              ↓
+                                    Modify URL if in session context
 ```
 
-This approach:
-- Uses standard OpenAI client
-- Transport layer modifies URLs before requests
-- Works with any OpenAI-compatible endpoint
+#### Implementation
+
+```python
+# rllm/sdk/instrumentation/httpx_transport.py
+
+import httpx
+from rllm.sdk.session.opentelemetry import get_active_otel_session_uids, get_current_otel_metadata
+from rllm.sdk.proxy.metadata_slug import encode_metadata_slug
+
+# Store original transport classes
+_original_async_transport_init = None
+_original_sync_transport_init = None
+_instrumented = False
+
+# Configurable: which base URLs should have metadata injected
+_proxy_base_urls: set[str] = set()
+
+
+def register_proxy_url(base_url: str) -> None:
+    """Register a base URL that should have session metadata injected."""
+    _proxy_base_urls.add(base_url.rstrip("/"))
+
+
+def _should_inject_metadata(url: httpx.URL) -> bool:
+    """Check if this URL should have metadata injected."""
+    base = f"{url.scheme}://{url.host}:{url.port}" if url.port else f"{url.scheme}://{url.host}"
+    return base in _proxy_base_urls or any(base.startswith(p) for p in _proxy_base_urls)
+
+
+def _inject_metadata_into_url(url: httpx.URL) -> httpx.URL:
+    """Inject session metadata into URL path."""
+    session_uids = get_active_otel_session_uids()
+    if not session_uids:
+        return url  # No session context, return unchanged
+
+    metadata = get_current_otel_metadata()
+    metadata["session_uids"] = session_uids
+
+    slug = encode_metadata_slug(metadata)
+
+    # Transform: /v1/chat/completions → /meta/{slug}/v1/chat/completions
+    path = url.path
+    if "/v1" in path:
+        # Insert before /v1
+        idx = path.index("/v1")
+        new_path = f"{path[:idx]}/meta/{slug}{path[idx:]}"
+    else:
+        # Insert at beginning
+        new_path = f"/meta/{slug}{path}"
+
+    return url.copy_with(path=new_path)
+
+
+class SessionAwareTransport(httpx.AsyncHTTPTransport):
+    """Async transport that injects session metadata into URLs."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if _should_inject_metadata(request.url):
+            new_url = _inject_metadata_into_url(request.url)
+            request = httpx.Request(
+                method=request.method,
+                url=new_url,
+                headers=request.headers,
+                content=request.content,
+            )
+        return await super().handle_async_request(request)
+
+
+class SessionAwareSyncTransport(httpx.HTTPTransport):
+    """Sync transport that injects session metadata into URLs."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if _should_inject_metadata(request.url):
+            new_url = _inject_metadata_into_url(request.url)
+            request = httpx.Request(
+                method=request.method,
+                url=new_url,
+                headers=request.headers,
+                content=request.content,
+            )
+        return super().handle_request(request)
+
+
+def instrument(proxy_urls: list[str] | None = None) -> None:
+    """
+    Enable auto-instrumentation with proxy URL modification.
+
+    Args:
+        proxy_urls: List of base URLs that should have session metadata injected.
+                   If None, no URL modification occurs (trace capture only).
+
+    Example:
+        >>> from rllm.sdk import instrument, session
+        >>> from openai import AsyncOpenAI
+        >>>
+        >>> # Enable instrumentation with proxy URL
+        >>> instrument(proxy_urls=["http://proxy:4000"])
+        >>>
+        >>> # Standard OpenAI client - URLs automatically modified!
+        >>> client = AsyncOpenAI(base_url="http://proxy:4000/v1")
+        >>>
+        >>> with session(name="agent") as sess:
+        ...     # Request URL becomes: http://proxy:4000/meta/{slug}/v1/chat/completions
+        ...     await client.chat.completions.create(...)
+    """
+    global _instrumented
+
+    if _instrumented:
+        return
+
+    # Register proxy URLs
+    if proxy_urls:
+        for url in proxy_urls:
+            register_proxy_url(url)
+
+    # Patch httpx to use our transports
+    _patch_httpx()
+
+    _instrumented = True
+
+
+def _patch_httpx() -> None:
+    """Monkey-patch httpx to use session-aware transports."""
+    global _original_async_transport_init, _original_sync_transport_init
+
+    # Store originals
+    _original_async_client_init = httpx.AsyncClient.__init__
+    _original_sync_client_init = httpx.Client.__init__
+
+    def patched_async_init(self, *args, **kwargs):
+        # If no transport specified, use our session-aware transport
+        if "transport" not in kwargs:
+            kwargs["transport"] = SessionAwareTransport()
+        _original_async_client_init(self, *args, **kwargs)
+
+    def patched_sync_init(self, *args, **kwargs):
+        if "transport" not in kwargs:
+            kwargs["transport"] = SessionAwareSyncTransport()
+        _original_sync_client_init(self, *args, **kwargs)
+
+    httpx.AsyncClient.__init__ = patched_async_init
+    httpx.Client.__init__ = patched_sync_init
+```
+
+#### User Experience
+
+```python
+from openai import AsyncOpenAI
+from rllm.sdk import instrument, session
+
+# One-time setup: register proxy URL
+instrument(proxy_urls=["http://proxy:4000"])
+
+# Standard OpenAI client - no wrapper needed!
+client = AsyncOpenAI(base_url="http://proxy:4000/v1", api_key="...")
+
+async def solve(problem: str):
+    with session(name="solver") as sess:
+        # URL automatically transformed:
+        # http://proxy:4000/v1/chat/completions
+        # → http://proxy:4000/meta/rllm1:eyJ.../v1/chat/completions
+        response = await client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": problem}]
+        )
+
+        # Traces captured automatically
+        print(f"Captured {len(sess.llm_calls)} traces")
+        return response.choices[0].message.content
+```
+
+#### Why This Works
+
+1. **OpenAI SDK uses httpx internally** - so patching httpx affects all OpenAI clients
+2. **Transport is the lowest level** - we intercept before the actual HTTP request
+3. **URL modification happens at the right time** - before the request is sent
+4. **Works with any httpx-based client** - Anthropic, Together, etc.
+
+#### Features Now Supported
+
+| Feature | Auto-Instrumentation |
+|---------|---------------------|
+| Trace capture | ✅ |
+| Session context from baggage | ✅ |
+| Token extraction | ✅ |
+| In-memory tracing | ✅ |
+| **Proxy URL modification** | ✅ |
+| Per-call metadata override | ❌ (not needed) |
+| Default model fallback | ❌ (use client default) |
 
 ## Alternatives Considered
 
