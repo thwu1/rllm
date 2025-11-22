@@ -290,7 +290,7 @@ rllm/sdk/
 │   └── storage.py           # InMemoryStorage
 ├── chat/
 │   ├── __init__.py          # Chat client exports
-│   ├── proxy_chat_client.py # Unified proxy chat client (includes OTel aliases)
+│   ├── openai.py            # Unified OpenAI chat client (includes OTel aliases)
 │   ├── simple_chat_client.py      # Simple chat client
 │   └── util.py              # Shared utilities for chat clients
 ├── proxy/

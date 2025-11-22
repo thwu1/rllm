@@ -18,7 +18,7 @@ from rllm.sdk.chat.util import (
     extract_usage_tokens,
     merge_args,
 )
-from rllm.sdk.chat.proxy_chat_client import (
+from rllm.sdk.chat.openai import (
     AsyncOpenAIOTelClient,
     OpenAIOTelClient,
     OpenTelemetryTrackedAsyncChatClient,
