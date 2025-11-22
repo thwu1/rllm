@@ -13,22 +13,20 @@ from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
 from rllm.sdk.chat.base import (
-    BaseAsyncChatClient,
-    BaseChatClient,
-    ChatCompletionsBase,
-    CompletionsBase,
     TimedCall,
     extract_completion_tokens,
     extract_usage_tokens,
+    merge_args,
 )
 from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
 from rllm.sdk.session.contextvar import get_active_cv_sessions
 
 
-class _TracingMixin:
-    """Mixin providing trace logging functionality for simple clients."""
+class _SimpleTrackedChatClientBase:
+    """Shared logic for sync and async simple tracked clients."""
 
     tracer: Any
+    default_model: str | None
 
     def _log_trace(
         self,
@@ -40,16 +38,6 @@ class _TracingMixin:
         metadata_overrides: dict[str, Any],
         latency_ms: float,
     ) -> None:
-        """Log trace to the configured tracer.
-
-        Args:
-            model: Model identifier used for the call
-            messages: Input messages sent to the model
-            response_payload: Full response dict from the API
-            completion_token_ids: Token IDs from response (if available)
-            metadata_overrides: Call-specific metadata to merge
-            latency_ms: Latency of the API call in milliseconds
-        """
         if not self.tracer:
             return
 
@@ -88,15 +76,20 @@ class _TracingMixin:
 
 
 @dataclass
-class _SimpleChatCompletions(ChatCompletionsBase):
-    """Chat completions namespace for SimpleTrackedChatClient."""
-
+class _ChatCompletions:
     parent: "SimpleTrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        """Create a chat completion and log the trace."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        messages = call_kwargs["messages"]
+        call_kwargs = merge_args(args, kwargs)
+        messages = call_kwargs.get("messages")
+        if not messages:
+            raise ValueError("messages must be provided for chat.completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         with TimedCall() as timer:
             response = self.parent._client.chat.completions.create(**call_kwargs)
@@ -117,26 +110,29 @@ class _SimpleChatCompletions(ChatCompletionsBase):
 
 
 @dataclass
-class _SimpleChatNamespace:
-    """Chat namespace for SimpleTrackedChatClient."""
-
+class _ChatNamespace:
     parent: "SimpleTrackedChatClient"
 
     @property
-    def completions(self) -> _SimpleChatCompletions:
-        return _SimpleChatCompletions(self.parent)
+    def completions(self) -> _ChatCompletions:
+        return _ChatCompletions(self.parent)
 
 
 @dataclass
-class _SimpleCompletions(CompletionsBase):
-    """Completions namespace for SimpleTrackedChatClient."""
-
+class _Completions:
     parent: "SimpleTrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> Completion:
-        """Create a completion and log the trace."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        prompt = call_kwargs["prompt"]
+        call_kwargs = merge_args(args, kwargs)
+        prompt = call_kwargs.get("prompt")
+        if prompt is None:
+            raise ValueError("prompt must be provided for completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         with TimedCall() as timer:
             response = self.parent._client.completions.create(**call_kwargs)
@@ -156,7 +152,7 @@ class _SimpleCompletions(CompletionsBase):
         return response
 
 
-class SimpleTrackedChatClient(_TracingMixin, BaseChatClient[OpenAI]):
+class SimpleTrackedChatClient(_SimpleTrackedChatClientBase):
     """Lean wrapper around OpenAI that records chat completions via a tracer."""
 
     def __init__(
@@ -169,30 +165,21 @@ class SimpleTrackedChatClient(_TracingMixin, BaseChatClient[OpenAI]):
         client: OpenAI | None = None,
         **client_kwargs: Any,
     ) -> None:
-        """Initialize the simple tracked chat client.
+        if client is not None:
+            self._client = client
+        else:
+            init_kwargs = dict(client_kwargs)
+            if api_key is not None:
+                init_kwargs["api_key"] = api_key
+            if base_url is not None:
+                init_kwargs["base_url"] = base_url
+            self._client = OpenAI(**init_kwargs)
 
-        Args:
-            api_key: OpenAI API key
-            base_url: Base URL for the API endpoint
-            tracer: Tracer instance for logging calls
-            default_model: Default model to use
-            client: Pre-configured OpenAI client
-            **client_kwargs: Additional client configuration
-        """
         self.tracer = tracer
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            **client_kwargs,
-        )
+        self.default_model = default_model
 
-    def _create_chat_namespace(self) -> _SimpleChatNamespace:
-        return _SimpleChatNamespace(self)
-
-    def _create_completions_namespace(self) -> _SimpleCompletions:
-        return _SimpleCompletions(self)
+        self.chat = _ChatNamespace(self)
+        self.completions = _Completions(self)
 
 
 # =============================================================================
@@ -201,15 +188,20 @@ class SimpleTrackedChatClient(_TracingMixin, BaseChatClient[OpenAI]):
 
 
 @dataclass
-class _SimpleAsyncChatCompletions(ChatCompletionsBase):
-    """Async chat completions namespace for SimpleTrackedAsyncChatClient."""
-
+class _AsyncChatCompletions:
     parent: "SimpleTrackedAsyncChatClient"
 
     async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        """Create a chat completion and log the trace."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        messages = call_kwargs["messages"]
+        call_kwargs = merge_args(args, kwargs)
+        messages = call_kwargs.get("messages")
+        if not messages:
+            raise ValueError("messages must be provided for chat.completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         with TimedCall() as timer:
             response = await self.parent._client.chat.completions.create(**call_kwargs)
@@ -230,26 +222,29 @@ class _SimpleAsyncChatCompletions(ChatCompletionsBase):
 
 
 @dataclass
-class _SimpleAsyncChatNamespace:
-    """Async chat namespace for SimpleTrackedAsyncChatClient."""
-
+class _AsyncChatNamespace:
     parent: "SimpleTrackedAsyncChatClient"
 
     @property
-    def completions(self) -> _SimpleAsyncChatCompletions:
-        return _SimpleAsyncChatCompletions(self.parent)
+    def completions(self) -> _AsyncChatCompletions:
+        return _AsyncChatCompletions(self.parent)
 
 
 @dataclass
-class _SimpleAsyncCompletions(CompletionsBase):
-    """Async completions namespace for SimpleTrackedAsyncChatClient."""
-
+class _AsyncCompletions:
     parent: "SimpleTrackedAsyncChatClient"
 
     async def create(self, *args: Any, **kwargs: Any) -> Completion:
-        """Create a completion and log the trace."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        prompt = call_kwargs["prompt"]
+        call_kwargs = merge_args(args, kwargs)
+        prompt = call_kwargs.get("prompt")
+        if prompt is None:
+            raise ValueError("prompt must be provided for completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         with TimedCall() as timer:
             response = await self.parent._client.completions.create(**call_kwargs)
@@ -269,7 +264,7 @@ class _SimpleAsyncCompletions(CompletionsBase):
         return response
 
 
-class SimpleTrackedAsyncChatClient(_TracingMixin, BaseAsyncChatClient[AsyncOpenAI]):
+class SimpleTrackedAsyncChatClient(_SimpleTrackedChatClientBase):
     """Async variant of the simple client that records chat completions."""
 
     def __init__(
@@ -282,27 +277,18 @@ class SimpleTrackedAsyncChatClient(_TracingMixin, BaseAsyncChatClient[AsyncOpenA
         client: AsyncOpenAI | None = None,
         **client_kwargs: Any,
     ) -> None:
-        """Initialize the async simple tracked chat client.
+        if client is not None:
+            self._client = client
+        else:
+            init_kwargs = dict(client_kwargs)
+            if api_key is not None:
+                init_kwargs["api_key"] = api_key
+            if base_url is not None:
+                init_kwargs["base_url"] = base_url
+            self._client = AsyncOpenAI(**init_kwargs)
 
-        Args:
-            api_key: OpenAI API key
-            base_url: Base URL for the API endpoint
-            tracer: Tracer instance for logging calls
-            default_model: Default model to use
-            client: Pre-configured AsyncOpenAI client
-            **client_kwargs: Additional client configuration
-        """
         self.tracer = tracer
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            **client_kwargs,
-        )
+        self.default_model = default_model
 
-    def _create_chat_namespace(self) -> _SimpleAsyncChatNamespace:
-        return _SimpleAsyncChatNamespace(self)
-
-    def _create_completions_namespace(self) -> _SimpleAsyncCompletions:
-        return _SimpleAsyncCompletions(self)
+        self.chat = _AsyncChatNamespace(self)
+        self.completions = _AsyncCompletions(self)

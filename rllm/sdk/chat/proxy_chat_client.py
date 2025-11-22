@@ -13,13 +13,10 @@ from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
 from rllm.sdk.chat.base import (
-    BaseAsyncChatClient,
-    BaseChatClient,
-    ChatCompletionsBase,
-    CompletionsBase,
     TimedCall,
     extract_completion_tokens,
     extract_usage_tokens,
+    merge_args,
 )
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
 from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
@@ -27,28 +24,17 @@ from rllm.sdk.session.contextvar import get_active_cv_sessions
 from rllm.sdk.tracers import InMemorySessionTracer
 
 
-class _ProxyClientMixin:
-    """Mixin providing proxy URL scoping and in-memory tracing for proxy clients."""
+class _ScopedClientMixin:
+    """Shared helpers for proxy client scoping and in-memory tracing."""
 
     # Shared in-memory session tracer instance for all proxy clients
     _memory_tracer = InMemorySessionTracer()
 
-    _client: Any
-    base_url: str | None
-    use_proxy: bool
-
     def _scoped_client(self, metadata: dict[str, Any] | None):
-        """Get a client scoped to the proxied base URL with metadata slug.
-
-        Args:
-            metadata: Metadata to encode in the proxy URL slug
-
-        Returns:
-            Client instance with modified base_url if proxy mode enabled
-        """
-        if not self.base_url or not metadata:
+        base_url = getattr(self, "base_url", None)
+        if not base_url or not metadata:
             return self._client
-        proxied_base = build_proxied_base_url(self.base_url, metadata)
+        proxied_base = build_proxied_base_url(base_url, metadata)
         return self._client.with_options(base_url=proxied_base)
 
     def _log_trace(
@@ -66,14 +52,6 @@ class _ProxyClientMixin:
         In proxy mode, the proxy handles persistent tracing to the backend.
         However, we still log to in-memory session for immediate access via
         session.llm_calls without any I/O.
-
-        Args:
-            model: Model identifier used for the call
-            messages: Input messages sent to the model
-            response_payload: Full response dict from the API
-            completion_token_ids: Token IDs from response (if available)
-            metadata_overrides: Call-specific metadata to merge
-            latency_ms: Latency of the API call in milliseconds
         """
         context_metadata = get_current_metadata()
         merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
@@ -105,15 +83,20 @@ class _ProxyClientMixin:
 
 
 @dataclass
-class _ProxyChatCompletions(ChatCompletionsBase):
-    """Chat completions namespace for ProxyTrackedChatClient."""
-
+class _ProxyChatCompletions:
     parent: "ProxyTrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        """Create a chat completion with proxy metadata injection."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        messages = call_kwargs["messages"]
+        call_kwargs = merge_args(args, kwargs)
+        messages = call_kwargs.get("messages")
+        if not messages:
+            raise ValueError("messages must be provided for chat.completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         # Choose client based on use_proxy setting
         if self.parent.use_proxy:
@@ -136,14 +119,11 @@ class _ProxyChatCompletions(ChatCompletionsBase):
             metadata_overrides=metadata,
             latency_ms=timer.latency_ms,
         )
-
         return response
 
 
 @dataclass
 class _ProxyChatNamespace:
-    """Chat namespace for ProxyTrackedChatClient."""
-
     parent: "ProxyTrackedChatClient"
 
     @property
@@ -152,15 +132,20 @@ class _ProxyChatNamespace:
 
 
 @dataclass
-class _ProxyCompletions(CompletionsBase):
-    """Completions namespace for ProxyTrackedChatClient."""
-
+class _ProxyCompletions:
     parent: "ProxyTrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> Completion:
-        """Create a completion with proxy metadata injection."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        prompt = call_kwargs["prompt"]
+        call_kwargs = merge_args(args, kwargs)
+        prompt = call_kwargs.get("prompt")
+        if prompt is None:
+            raise ValueError("prompt must be provided for completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         # Choose client based on use_proxy setting
         if self.parent.use_proxy:
@@ -183,11 +168,10 @@ class _ProxyCompletions(CompletionsBase):
             metadata_overrides=metadata,
             latency_ms=timer.latency_ms,
         )
-
         return response
 
 
-class ProxyTrackedChatClient(_ProxyClientMixin, BaseChatClient[OpenAI]):
+class ProxyTrackedChatClient(_ScopedClientMixin):
     """OpenAI client wrapper that injects metadata slugs into the proxy base URL."""
 
     def __init__(
@@ -201,32 +185,23 @@ class ProxyTrackedChatClient(_ProxyClientMixin, BaseChatClient[OpenAI]):
         use_proxy: bool = True,
         **client_kwargs: Any,
     ) -> None:
-        """Initialize the proxy-aware chat client.
+        if client is not None:
+            self._client = client
+        else:
+            init_kwargs = dict(client_kwargs)
+            if api_key is not None:
+                init_kwargs["api_key"] = api_key
+            if base_url is not None:
+                init_kwargs["base_url"] = base_url
+            self._client = OpenAI(**init_kwargs)
 
-        Args:
-            api_key: OpenAI API key
-            base_url: Base URL for the proxy endpoint
-            tracer: Deprecated, kept for compatibility (proxy handles tracing)
-            default_model: Default model to use
-            client: Pre-configured OpenAI client
-            use_proxy: Enable proxy metadata injection (default: True)
-            **client_kwargs: Additional client configuration
-        """
         self.tracer = tracer  # Kept for compatibility but not used
+        self.default_model = default_model
+        self.base_url = base_url
         self.use_proxy = use_proxy
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            **client_kwargs,
-        )
 
-    def _create_chat_namespace(self) -> _ProxyChatNamespace:
-        return _ProxyChatNamespace(self)
-
-    def _create_completions_namespace(self) -> _ProxyCompletions:
-        return _ProxyCompletions(self)
+        self.chat = _ProxyChatNamespace(self)
+        self.completions = _ProxyCompletions(self)
 
 
 # =============================================================================
@@ -235,15 +210,20 @@ class ProxyTrackedChatClient(_ProxyClientMixin, BaseChatClient[OpenAI]):
 
 
 @dataclass
-class _ProxyAsyncChatCompletions(ChatCompletionsBase):
-    """Async chat completions namespace for ProxyTrackedAsyncChatClient."""
-
+class _ProxyAsyncChatCompletions:
     parent: "ProxyTrackedAsyncChatClient"
 
     async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        """Create a chat completion with proxy metadata injection."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        messages = call_kwargs["messages"]
+        call_kwargs = merge_args(args, kwargs)
+        messages = call_kwargs.get("messages")
+        if not messages:
+            raise ValueError("messages must be provided for chat.completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         # Choose client based on use_proxy setting
         if self.parent.use_proxy:
@@ -266,14 +246,11 @@ class _ProxyAsyncChatCompletions(ChatCompletionsBase):
             metadata_overrides=metadata,
             latency_ms=timer.latency_ms,
         )
-
         return response
 
 
 @dataclass
 class _ProxyAsyncChatNamespace:
-    """Async chat namespace for ProxyTrackedAsyncChatClient."""
-
     parent: "ProxyTrackedAsyncChatClient"
 
     @property
@@ -282,15 +259,20 @@ class _ProxyAsyncChatNamespace:
 
 
 @dataclass
-class _ProxyAsyncCompletions(CompletionsBase):
-    """Async completions namespace for ProxyTrackedAsyncChatClient."""
-
+class _ProxyAsyncCompletions:
     parent: "ProxyTrackedAsyncChatClient"
 
     async def create(self, *args: Any, **kwargs: Any) -> Completion:
-        """Create a completion with proxy metadata injection."""
-        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
-        prompt = call_kwargs["prompt"]
+        call_kwargs = merge_args(args, kwargs)
+        prompt = call_kwargs.get("prompt")
+        if prompt is None:
+            raise ValueError("prompt must be provided for completions.create.")
+
+        model = call_kwargs.setdefault("model", self.parent.default_model)
+        if not model:
+            raise ValueError("model must be supplied either in the call or via default_model.")
+
+        metadata = call_kwargs.pop("metadata", None) or {}
 
         # Choose client based on use_proxy setting
         if self.parent.use_proxy:
@@ -313,11 +295,10 @@ class _ProxyAsyncCompletions(CompletionsBase):
             metadata_overrides=metadata,
             latency_ms=timer.latency_ms,
         )
-
         return response
 
 
-class ProxyTrackedAsyncChatClient(_ProxyClientMixin, BaseAsyncChatClient[AsyncOpenAI]):
+class ProxyTrackedAsyncChatClient(_ScopedClientMixin):
     """Async variant of the proxy-aware chat client."""
 
     def __init__(
@@ -331,29 +312,20 @@ class ProxyTrackedAsyncChatClient(_ProxyClientMixin, BaseAsyncChatClient[AsyncOp
         use_proxy: bool = True,
         **client_kwargs: Any,
     ) -> None:
-        """Initialize the async proxy-aware chat client.
+        if client is not None:
+            self._client = client
+        else:
+            init_kwargs = dict(client_kwargs)
+            if api_key is not None:
+                init_kwargs["api_key"] = api_key
+            if base_url is not None:
+                init_kwargs["base_url"] = base_url
+            self._client = AsyncOpenAI(**init_kwargs)
 
-        Args:
-            api_key: OpenAI API key
-            base_url: Base URL for the proxy endpoint
-            tracer: Deprecated, kept for compatibility (proxy handles tracing)
-            default_model: Default model to use
-            client: Pre-configured AsyncOpenAI client
-            use_proxy: Enable proxy metadata injection (default: True)
-            **client_kwargs: Additional client configuration
-        """
         self.tracer = tracer  # Kept for compatibility but not used
+        self.default_model = default_model
+        self.base_url = base_url
         self.use_proxy = use_proxy
-        super().__init__(
-            api_key=api_key,
-            base_url=base_url,
-            default_model=default_model,
-            client=client,
-            **client_kwargs,
-        )
 
-    def _create_chat_namespace(self) -> _ProxyAsyncChatNamespace:
-        return _ProxyAsyncChatNamespace(self)
-
-    def _create_completions_namespace(self) -> _ProxyAsyncCompletions:
-        return _ProxyAsyncCompletions(self)
+        self.chat = _ProxyAsyncChatNamespace(self)
+        self.completions = _ProxyAsyncCompletions(self)
