@@ -1,255 +1,122 @@
 """OpenAI SDK instrumentation provider.
 
-This module patches the OpenAI Python SDK to automatically capture LLM traces
-within session contexts, with the same functionality as ProxyTrackedChatClient
-and OpenTelemetryTrackedChatClient.
+Patches OpenAI Python SDK to automatically capture LLM traces within session contexts.
 """
 
 from __future__ import annotations
 
 import functools
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
-if TYPE_CHECKING:
-    from openai.types.chat.chat_completion import ChatCompletion
-    from openai.types.completion import Completion
-
-# Track instrumentation state
+# Instrumentation state
 _instrumented = False
-_original_sync_chat_create: Callable | None = None
-_original_async_chat_create: Callable | None = None
-_original_sync_completions_create: Callable | None = None
-_original_async_completions_create: Callable | None = None
+_originals: dict[str, Callable] = {}
 
 
-def _extract_response_content(response: Any) -> dict[str, Any]:
-    """Extract response content from OpenAI response object."""
-    result: dict[str, Any] = {}
+def _extract_response(response: Any) -> tuple[dict, dict[str, int]]:
+    """Extract response content and token usage from OpenAI response."""
+    content = response.model_dump() if hasattr(response, "model_dump") else {}
 
-    if hasattr(response, "model_dump"):
-        return response.model_dump()
+    usage = getattr(response, "usage", None)
+    tokens = {
+        "prompt": getattr(usage, "prompt_tokens", 0) or 0,
+        "completion": getattr(usage, "completion_tokens", 0) or 0,
+        "total": getattr(usage, "total_tokens", 0) or 0,
+    } if usage else {"prompt": 0, "completion": 0, "total": 0}
 
-    if hasattr(response, "choices") and response.choices:
-        choice = response.choices[0]
-        if hasattr(choice, "message"):
-            result["role"] = getattr(choice.message, "role", None)
-            result["content"] = getattr(choice.message, "content", None)
-        elif hasattr(choice, "text"):
-            result["text"] = choice.text
-
-    if hasattr(response, "id"):
-        result["id"] = response.id
-    if hasattr(response, "model"):
-        result["model"] = response.model
-
-    return result
+    return content, tokens
 
 
-def _extract_tokens(response: Any) -> dict[str, int]:
-    """Extract token usage from OpenAI response object."""
-    if hasattr(response, "usage") and response.usage:
-        return {
-            "prompt": getattr(response.usage, "prompt_tokens", 0) or 0,
-            "completion": getattr(response.usage, "completion_tokens", 0) or 0,
-            "total": getattr(response.usage, "total_tokens", 0) or 0,
-        }
-    return {"prompt": 0, "completion": 0, "total": 0}
-
-
-def _log_trace(
-    name: str,
-    messages: list[dict[str, Any]] | str,
-    response: Any,
-    model: str,
-    latency_ms: float,
-) -> None:
-    """Log trace to active sessions using InMemorySessionTracer.
-
-    This provides the same functionality as ProxyTrackedChatClient._log_trace.
-    """
+def _log_trace(name: str, input_data: Any, response: Any, model: str, latency_ms: float) -> None:
+    """Log trace to active sessions if within a session context."""
     from rllm.sdk.session import SESSION_BACKEND, get_active_session_uids, get_current_metadata, get_current_session_name
-    # Import InMemorySessionTracer directly to avoid sqlite dependencies
     from rllm.sdk.tracers.memory import InMemorySessionTracer
 
-    # Check if we're in a session context
     session_uids = get_active_session_uids()
     if not session_uids:
-        return  # Not in a session, skip tracing
+        return
 
-    # Get session info
-    session_name = get_current_session_name()
-    metadata = dict(get_current_metadata())
+    response_payload, tokens = _extract_response(response)
 
-    # Extract response data
-    response_payload = _extract_response_content(response)
-    tokens = _extract_tokens(response)
-    trace_id = response_payload.get("id")
-
-    # Get active sessions for in-memory tracing
-    if SESSION_BACKEND == "opentelemetry":
-        # OpenTelemetry backend doesn't use ContextVarSession objects
-        # Traces are captured via baggage propagation to proxy
-        sessions = None
-    else:
+    # Get sessions for in-memory tracing (ContextVar backend only)
+    sessions = None
+    if SESSION_BACKEND != "opentelemetry":
         from rllm.sdk.session.contextvar import get_active_cv_sessions
         sessions = get_active_cv_sessions()
 
-    # Format input
-    if isinstance(messages, str):
-        input_data = {"prompt": messages}
-    else:
-        input_data = {"messages": messages}
-
-    # Use shared InMemorySessionTracer (same as ProxyTrackedChatClient)
-    tracer = InMemorySessionTracer()
-    tracer.log_llm_call(
+    InMemorySessionTracer().log_llm_call(
         name=name,
-        input=input_data,
+        input={"messages": input_data} if isinstance(input_data, list) else {"prompt": input_data},
         output=response_payload,
         model=model,
         latency_ms=latency_ms,
         tokens=tokens,
-        metadata=metadata,
-        trace_id=trace_id,
-        session_name=session_name,
+        metadata=dict(get_current_metadata()),
+        trace_id=response_payload.get("id"),
+        session_name=get_current_session_name(),
         session_uids=session_uids,
         sessions=sessions,
     )
 
 
-def _wrap_sync_chat_create(original: Callable) -> Callable:
-    """Wrap synchronous chat.completions.create method."""
+def _make_wrapper(original: Callable, name: str, input_key: str, is_async: bool) -> Callable:
+    """Create a wrapper function for an OpenAI method."""
+    if is_async:
+        @functools.wraps(original)
+        async def async_wrapper(self, *args, **kwargs):
+            input_data = kwargs.get(input_key, args[0] if args else None) or []
+            model = kwargs.get("model", "unknown")
 
-    @functools.wraps(original)
-    def wrapped(self, *args, **kwargs) -> "ChatCompletion":
-        messages = kwargs.get("messages", args[0] if args else None)
-        model = kwargs.get("model", "unknown")
+            start = time.perf_counter()
+            response = await original(self, *args, **kwargs)
+            latency_ms = (time.perf_counter() - start) * 1000
 
-        start = time.perf_counter()
-        response = original(self, *args, **kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
+            _log_trace(name, input_data, response, model, latency_ms)
+            return response
+        return async_wrapper
+    else:
+        @functools.wraps(original)
+        def sync_wrapper(self, *args, **kwargs):
+            input_data = kwargs.get(input_key, args[0] if args else None) or []
+            model = kwargs.get("model", "unknown")
 
-        _log_trace(
-            name="openai.chat.completions.create",
-            messages=messages or [],
-            response=response,
-            model=model,
-            latency_ms=latency_ms,
-        )
+            start = time.perf_counter()
+            response = original(self, *args, **kwargs)
+            latency_ms = (time.perf_counter() - start) * 1000
 
-        return response
-
-    return wrapped
-
-
-def _wrap_async_chat_create(original: Callable) -> Callable:
-    """Wrap asynchronous chat.completions.create method."""
-
-    @functools.wraps(original)
-    async def wrapped(self, *args, **kwargs) -> "ChatCompletion":
-        messages = kwargs.get("messages", args[0] if args else None)
-        model = kwargs.get("model", "unknown")
-
-        start = time.perf_counter()
-        response = await original(self, *args, **kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        _log_trace(
-            name="openai.chat.completions.create",
-            messages=messages or [],
-            response=response,
-            model=model,
-            latency_ms=latency_ms,
-        )
-
-        return response
-
-    return wrapped
-
-
-def _wrap_sync_completions_create(original: Callable) -> Callable:
-    """Wrap synchronous completions.create method."""
-
-    @functools.wraps(original)
-    def wrapped(self, *args, **kwargs) -> "Completion":
-        prompt = kwargs.get("prompt", args[0] if args else None)
-        model = kwargs.get("model", "unknown")
-
-        start = time.perf_counter()
-        response = original(self, *args, **kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        _log_trace(
-            name="openai.completions.create",
-            messages=prompt or "",
-            response=response,
-            model=model,
-            latency_ms=latency_ms,
-        )
-
-        return response
-
-    return wrapped
-
-
-def _wrap_async_completions_create(original: Callable) -> Callable:
-    """Wrap asynchronous completions.create method."""
-
-    @functools.wraps(original)
-    async def wrapped(self, *args, **kwargs) -> "Completion":
-        prompt = kwargs.get("prompt", args[0] if args else None)
-        model = kwargs.get("model", "unknown")
-
-        start = time.perf_counter()
-        response = await original(self, *args, **kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        _log_trace(
-            name="openai.completions.create",
-            messages=prompt or "",
-            response=response,
-            model=model,
-            latency_ms=latency_ms,
-        )
-
-        return response
-
-    return wrapped
+            _log_trace(name, input_data, response, model, latency_ms)
+            return response
+        return sync_wrapper
 
 
 def instrument_openai() -> bool:
-    """Instrument OpenAI SDK for automatic trace capture.
-
-    Returns:
-        True if instrumentation was successful, False if OpenAI is not installed
-        or already instrumented.
-    """
+    """Instrument OpenAI SDK. Returns True if successful, False if OpenAI not installed."""
     global _instrumented
-    global _original_sync_chat_create, _original_async_chat_create
-    global _original_sync_completions_create, _original_async_completions_create
 
     if _instrumented:
         return True
 
+    # Import OpenAI classes (fails gracefully if not installed)
     try:
-        from openai.resources.chat.completions import AsyncCompletions as AsyncChatCompletions
-        from openai.resources.chat.completions import Completions as SyncChatCompletions
-        from openai.resources.completions import AsyncCompletions, Completions
+        from openai.resources.chat.completions import AsyncCompletions as AsyncChat, Completions as SyncChat
+        from openai.resources.completions import AsyncCompletions as AsyncComp, Completions as SyncComp
     except ImportError:
-        return False  # OpenAI not installed
+        return False
 
-    # Store originals
-    _original_sync_chat_create = SyncChatCompletions.create
-    _original_async_chat_create = AsyncChatCompletions.create
-    _original_sync_completions_create = Completions.create
-    _original_async_completions_create = AsyncCompletions.create
+    # Define patches: (class, method_name, trace_name, input_key, is_async)
+    patches = [
+        (SyncChat, "create", "openai.chat.completions.create", "messages", False),
+        (AsyncChat, "create", "openai.chat.completions.create", "messages", True),
+        (SyncComp, "create", "openai.completions.create", "prompt", False),
+        (AsyncComp, "create", "openai.completions.create", "prompt", True),
+    ]
 
-    # Apply patches
-    SyncChatCompletions.create = _wrap_sync_chat_create(_original_sync_chat_create)
-    AsyncChatCompletions.create = _wrap_async_chat_create(_original_async_chat_create)
-    Completions.create = _wrap_sync_completions_create(_original_sync_completions_create)
-    AsyncCompletions.create = _wrap_async_completions_create(_original_async_completions_create)
+    for cls, method, name, input_key, is_async in patches:
+        key = f"{cls.__module__}.{cls.__name__}.{method}"
+        original = getattr(cls, method)
+        _originals[key] = original
+        setattr(cls, method, _make_wrapper(original, name, input_key, is_async))
 
     _instrumented = True
     return True
@@ -258,34 +125,24 @@ def instrument_openai() -> bool:
 def uninstrument_openai() -> None:
     """Remove OpenAI SDK instrumentation."""
     global _instrumented
-    global _original_sync_chat_create, _original_async_chat_create
-    global _original_sync_completions_create, _original_async_completions_create
 
     if not _instrumented:
         return
 
     try:
-        from openai.resources.chat.completions import AsyncCompletions as AsyncChatCompletions
-        from openai.resources.chat.completions import Completions as SyncChatCompletions
-        from openai.resources.completions import AsyncCompletions, Completions
+        from openai.resources.chat.completions import AsyncCompletions as AsyncChat, Completions as SyncChat
+        from openai.resources.completions import AsyncCompletions as AsyncComp, Completions as SyncComp
     except ImportError:
         return
 
-    # Restore originals
-    if _original_sync_chat_create is not None:
-        SyncChatCompletions.create = _original_sync_chat_create
-    if _original_async_chat_create is not None:
-        AsyncChatCompletions.create = _original_async_chat_create
-    if _original_sync_completions_create is not None:
-        Completions.create = _original_sync_completions_create
-    if _original_async_completions_create is not None:
-        AsyncCompletions.create = _original_async_completions_create
+    classes = [SyncChat, AsyncChat, SyncComp, AsyncComp]
+    for cls in classes:
+        key = f"{cls.__module__}.{cls.__name__}.create"
+        if key in _originals:
+            setattr(cls, "create", _originals[key])
 
+    _originals.clear()
     _instrumented = False
-    _original_sync_chat_create = None
-    _original_async_chat_create = None
-    _original_sync_completions_create = None
-    _original_async_completions_create = None
 
 
 def is_instrumented() -> bool:
