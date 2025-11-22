@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from rllm.sdk.session import (
-    get_active_sessions,
+    get_active_session_uids,
     get_current_metadata,
     get_current_session_name,
 )
@@ -24,10 +24,10 @@ def assemble_routing_metadata(extra: Mapping[str, Any] | None = None) -> dict[st
     if session_name and "session_name" not in payload:
         payload["session_name"] = session_name
 
-    # Add session UIDs from active sessions for trace association
-    active_sessions = get_active_sessions()
-    if active_sessions:
-        payload["session_uids"] = [s._uid for s in active_sessions]
+    # Add session UIDs from active context (backend-agnostic)
+    uids = get_active_session_uids()
+    if uids:
+        payload["session_uids"] = uids
 
     if extra:
         payload.update(dict(extra))

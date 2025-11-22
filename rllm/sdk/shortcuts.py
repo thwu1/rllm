@@ -11,11 +11,16 @@ from typing import Any
 
 from openai import AsyncOpenAI, OpenAI
 
-from rllm.sdk.chat import ProxyTrackedAsyncChatClient, ProxyTrackedChatClient
-from rllm.sdk.session import SessionContext
+from rllm.sdk.chat import (
+    OpenTelemetryTrackedAsyncChatClient,
+    OpenTelemetryTrackedChatClient,
+    ProxyTrackedAsyncChatClient,
+    ProxyTrackedChatClient,
+)
+from rllm.sdk.session import SESSION_BACKEND, SessionContext, otel_session
 
 
-def _session_with_name(name: str | None = None, **metadata: Any) -> SessionContext:
+def _session_with_name(name: str | None = None, **metadata: Any):
     """Create a session context manager with explicit name (INTERNAL USE ONLY).
 
     This is an internal function that allows setting an explicit session name.
@@ -28,10 +33,12 @@ def _session_with_name(name: str | None = None, **metadata: Any) -> SessionConte
     Returns:
         SessionContext: A context manager that sets session name and metadata
     """
+    if SESSION_BACKEND == "opentelemetry":
+        return otel_session(name=name, **metadata)
     return SessionContext(name=name, **metadata)
 
 
-def session(**metadata: Any) -> SessionContext:
+def session(**metadata: Any):
     """Create session context for automatic trace tracking with auto-generated name.
 
     Session name is auto-generated. Nested sessions inherit parent metadata.
@@ -48,6 +55,8 @@ def session(**metadata: Any) -> SessionContext:
         ...     llm.chat.completions.create(...)  # Traces get metadata
     """
     assert "name" not in metadata, "name is auto-generated and cannot be specified"
+    if SESSION_BACKEND == "opentelemetry":
+        return otel_session(**metadata)
     return SessionContext(**metadata)
 
 
@@ -110,16 +119,25 @@ def get_chat_client(
     # Create OpenAI client
     client = OpenAI(**openai_kwargs)
 
-    # Wrap with proxy tracked client
-    # When use_proxy=False, behaves like normal OpenAI client (but with session tracking)
-    # When use_proxy=True, injects metadata slugs into URLs for proxy routing
-    wrapper = ProxyTrackedChatClient(
-        tracer=None,  # disable SDK-side logging; proxy handles tracing
-        default_model=model,
-        base_url=base_url,
-        use_proxy=use_proxy,
-        client=client,
-    )
+    # Wrap with backend-routed client
+    # When use_proxy=True, injects metadata slugs for proxy routing
+    # OTel backend uses OpenTelemetry-aware client; ContextVar uses proxy client
+    if SESSION_BACKEND == "opentelemetry":
+        wrapper = OpenTelemetryTrackedChatClient(
+            api_key=resolved_api_key,
+            base_url=base_url,
+            default_model=model,
+            client=client,
+            use_proxy=use_proxy,
+        )
+    else:
+        wrapper = ProxyTrackedChatClient(
+            tracer=None,
+            default_model=model,
+            base_url=base_url,
+            client=client,
+            use_proxy=use_proxy,
+        )
 
     return wrapper
 
@@ -171,15 +189,22 @@ def get_chat_client_async(
     # Create AsyncOpenAI client
     client = AsyncOpenAI(**openai_kwargs)
 
-    # Wrap with proxy tracked client
-    # When use_proxy=False, behaves like normal OpenAI client (but with session tracking)
-    # When use_proxy=True, injects metadata slugs into URLs for proxy routing
-    wrapper = ProxyTrackedAsyncChatClient(
-        tracer=None,  # disable SDK-side logging; proxy handles tracing
-        default_model=model,
-        base_url=base_url,
-        use_proxy=use_proxy,
-        client=client,
-    )
+    # Wrap with backend-routed client
+    if SESSION_BACKEND == "opentelemetry":
+        wrapper = OpenTelemetryTrackedAsyncChatClient(
+            api_key=resolved_api_key,
+            base_url=base_url,
+            default_model=model,
+            client=client,
+            use_proxy=use_proxy,
+        )
+    else:
+        wrapper = ProxyTrackedAsyncChatClient(
+            tracer=None,
+            default_model=model,
+            base_url=base_url,
+            use_proxy=use_proxy,
+            client=client,
+        )
 
     return wrapper

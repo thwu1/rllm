@@ -48,16 +48,15 @@ def _read_baggage_if_no_session(metadata: dict[str, Any]) -> dict[str, Any]:
             return metadata
 
         ctx = json.loads(baggage_val)
-        session_name = ctx.get("session_name")
         session_uid_chain = ctx.get("session_uid_chain", [])
         session_metadata = ctx.get("metadata", {})
 
-        if session_name:
-            metadata.setdefault("session_name", session_name)
         if session_uid_chain:
             metadata["session_uids"] = session_uid_chain
+        # Merge session metadata directly into top-level (includes session_name)
         if session_metadata:
-            metadata.setdefault("session_metadata", session_metadata)
+            for key, value in session_metadata.items():
+                metadata.setdefault(key, value)
 
         # Also extract OpenTelemetry trace ID from current span context (propagated via trace headers)
         if otel_trace is not None:
@@ -84,7 +83,6 @@ def _build_routing_metadata(user_metadata: Mapping[str, Any] | None = None) -> d
     # Active session exists - use its context
     payload = session.to_context_payload()
     metadata.setdefault("session_uid", payload["session_uid"])
-    metadata.setdefault("session_name", payload["session_name"])
 
     # Add session UIDs for trace association (proxy expects this list)
     # Include all UIDs in the chain for proper hierarchy tracking
@@ -93,8 +91,10 @@ def _build_routing_metadata(user_metadata: Mapping[str, Any] | None = None) -> d
         # Overwrite any session_uids from ContextVarSession with our OTel chain
         metadata["session_uids"] = session_uid_chain
 
+    # Merge session metadata directly into top-level (includes session_name)
     if payload.get("metadata"):
-        metadata.setdefault("session_metadata", payload["metadata"])
+        for key, value in payload["metadata"].items():
+            metadata.setdefault(key, value)
     if payload.get("trace_id"):
         metadata["otel_trace_id"] = payload["trace_id"]
     if payload.get("span_id"):

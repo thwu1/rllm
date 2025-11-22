@@ -112,8 +112,16 @@ class ProxyManager:
         db_path: str | None = None,
         project: str | None = None,
         snapshot_directory: str | None = None,
+        sync_tracer: bool = False,
     ) -> str:
         """Start LiteLLM proxy as subprocess (no GIL contention).
+
+        Args:
+            config: LiteLLM configuration dict.
+            db_path: Path to SQLite database file.
+            project: Project name/namespace for the tracer.
+            snapshot_directory: Directory to save config snapshot.
+            sync_tracer: If True, enable synchronous tracer persistence (waits for traces to be stored before returning response).
 
         Returns:
             Path to the config snapshot on disk.
@@ -147,6 +155,9 @@ class ProxyManager:
         if project:
             cmd.extend(["--project", project])
 
+        if sync_tracer:
+            cmd.extend(["--sync-tracer"])
+
         env = os.environ.copy()
         env["AIOHTTP_CONNECTOR_LIMIT"] = "4096"
         env["AIOHTTP_KEEPALIVE_TIMEOUT"] = "60"
@@ -169,7 +180,7 @@ class ProxyManager:
         )
 
         try:
-            self._wait_for_server_start(timeout=10.0)
+            self._wait_for_server_start(timeout=30.0)
             logger.info("Proxy server started, sending configuration...")
             self.reload_proxy_config(config=config)
             logger.info("Proxy configuration loaded successfully")

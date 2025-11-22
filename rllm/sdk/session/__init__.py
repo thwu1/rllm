@@ -13,7 +13,7 @@ from rllm.sdk.session.contextvar import (
 )
 from rllm.sdk.session.opentelemetry import (
     OpenTelemetrySession,
-    get_active_otel_sessions,
+    get_active_otel_session_uids,
     get_current_otel_metadata,
     get_current_otel_session,
     get_current_otel_session_name,
@@ -96,17 +96,17 @@ def get_current_metadata() -> dict[str, Any]:
     return get_current_cv_metadata()
 
 
-def get_active_sessions() -> list[ContextVarSession | OpenTelemetrySession]:
-    """Get a copy of the current stack of active sessions.
-
-    Routes to the appropriate backend based on SESSION_BACKEND configuration.
+def get_active_session_uids() -> list[str]:
+    """Get active session UID list for the current backend.
 
     Returns:
-        List of active sessions or empty list.
+        - contextvar backend: [outer_uid, ..., inner_uid]
+        - opentelemetry backend: the active session's UID chain
+        - no active session: []
     """
     if SESSION_BACKEND == "opentelemetry":
-        return get_active_otel_sessions()  # type: ignore[return-value]
-    return get_active_cv_sessions()
+        return get_active_otel_session_uids()
+    return [s._uid for s in get_active_cv_sessions()]
 
 
 # Default session type (alias for convenience)
@@ -126,7 +126,7 @@ __all__ = [
     "get_current_session",
     "get_current_session_name",
     "get_current_metadata",
-    "get_active_sessions",
+    "get_active_session_uids",
     # Storage
     "SessionStorage",  # Protocol
     "InMemoryStorage",  # Default in-memory storage

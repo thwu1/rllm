@@ -11,7 +11,7 @@ from typing import Any
 
 import aiosqlite
 
-from rllm.sdk.session import get_active_sessions
+from rllm.sdk.session import get_active_session_uids
 
 logger = logging.getLogger(__name__)
 
@@ -159,20 +159,6 @@ class SqliteTraceStore:
         finally:
             await conn.close()
 
-    def _get_active_session_uids(self) -> list[str]:
-        """
-        Get session UIDs from active sessions.
-
-        Returns:
-            List of session UIDs (one per active session, outer → inner)
-        """
-        try:
-            sessions = get_active_sessions()
-            return [sess._uid for sess in sessions]
-        except Exception:
-            # If no sessions or import fails, return empty list
-            return []
-
     async def store(
         self,
         trace_id: str,
@@ -201,7 +187,7 @@ class SqliteTraceStore:
 
         # Use provided session_uids, or auto-detect from active sessions
         if session_uids is None:
-            session_uids = self._get_active_session_uids()
+            session_uids = get_active_session_uids()
 
         conn = await self._connect()
         try:
@@ -273,7 +259,7 @@ class SqliteTraceStore:
         """
         await self._ensure_initialized()
         now = time.time()
-        session_uids = self._get_active_session_uids()
+        session_uids = get_active_session_uids()
         stored = []
 
         conn = await self._connect()

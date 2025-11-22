@@ -11,7 +11,7 @@ import uuid
 from typing import Any
 
 from rllm.sdk.protocol import Trace
-from rllm.sdk.session import get_active_sessions, get_current_metadata, get_current_session_name
+from rllm.sdk.session import get_active_session_uids, get_current_metadata, get_current_session_name
 from rllm.sdk.store import SqliteTraceStore
 
 logger = logging.getLogger(__name__)
@@ -264,8 +264,7 @@ class SqliteTracer:
 
         sessions_list = session_uids
         if sessions_list is None:
-            active_sessions = get_active_sessions()
-            sessions_list = [s._uid for s in active_sessions]
+            sessions_list = get_active_session_uids()
 
         prepared_session_uids = list(sessions_list) if sessions_list else None
 

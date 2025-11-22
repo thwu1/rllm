@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from rllm.sdk.protocol import Trace
-from rllm.sdk.session import get_active_sessions
+from rllm.sdk.session.contextvar import get_active_cv_sessions
 
 
 class InMemorySessionTracer:
@@ -134,8 +134,8 @@ class InMemorySessionTracer:
               the trace is silently dropped. This is intentional - in-memory tracer
               only works within sessions.
         """
-        # Get all active sessions (outer → inner)
-        sessions = get_active_sessions()
+        # Get all active ContextVar sessions (outer → inner)
+        sessions = get_active_cv_sessions()
 
         if not sessions:
             # Not in a session context - nothing to do

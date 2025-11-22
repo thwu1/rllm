@@ -128,8 +128,9 @@ class TracingCallback(CustomLogger):
         # This ensures the context_id matches the actual completion ID from the provider
         response_id = response_payload.get("id", None)
 
-        # Extract session_uids from metadata (sent from client via metadata routing)
+        # Extract session_uids and session_name from metadata (sent from client)
         session_uids = metadata.get("session_uids", None)
+        session_name = metadata.get("session_name")
 
         log_kwargs = dict(
             name=f"proxy/{model}",
@@ -137,7 +138,7 @@ class TracingCallback(CustomLogger):
             input={"messages": messages},
             output=response_payload,
             metadata=metadata,
-            session_name=metadata.get("session_name", None),
+            session_name=session_name,
             latency_ms=latency_ms,
             tokens=tokens,
             trace_id=response_id,
