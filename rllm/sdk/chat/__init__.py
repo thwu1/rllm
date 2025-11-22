@@ -1,6 +1,15 @@
 """Chat provider clients exposed by the RLLM SDK."""
 
-# from rllm.sdk.chat.openai_client import OpenAIChatClient  # TODO: Module doesn't exist yet
+from rllm.sdk.chat.base import (
+    BaseAsyncChatClient,
+    BaseChatClient,
+    ChatCompletionsBase,
+    CompletionsBase,
+    TimedCall,
+    extract_completion_tokens,
+    extract_usage_tokens,
+    merge_args,
+)
 from rllm.sdk.chat.proxy_chat_client import ProxyTrackedAsyncChatClient, ProxyTrackedChatClient
 from rllm.sdk.chat.simple_chat_client import SimpleTrackedAsyncChatClient, SimpleTrackedChatClient
 from rllm.sdk.session import SESSION_BACKEND
@@ -21,7 +30,16 @@ else:
     AsyncOpenAIOTelClient = None  # type: ignore
 
 __all__ = [
-    # "OpenAIChatClient",  # TODO: Module doesn't exist yet
+    # Base classes and utilities
+    "BaseChatClient",
+    "BaseAsyncChatClient",
+    "ChatCompletionsBase",
+    "CompletionsBase",
+    "TimedCall",
+    "merge_args",
+    "extract_completion_tokens",
+    "extract_usage_tokens",
+    # Client implementations
     "SimpleTrackedChatClient",
     "SimpleTrackedAsyncChatClient",
     "ProxyTrackedChatClient",

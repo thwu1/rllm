@@ -1,8 +1,10 @@
-"""OpenTelemetry-aware OpenAI chat client that reads session context from baggage."""
+"""OpenTelemetry-aware OpenAI chat client that reads session context from baggage.
+
+This client reads session metadata from OTel baggage for cross-process context propagation.
+"""
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -11,22 +13,19 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion import Completion
 
+from rllm.sdk.chat.base import (
+    BaseAsyncChatClient,
+    BaseChatClient,
+    ChatCompletionsBase,
+    CompletionsBase,
+    TimedCall,
+)
 from rllm.sdk.proxy.metadata_slug import build_proxied_base_url
 from rllm.sdk.session.opentelemetry import (
     get_active_otel_session_uids,
     get_current_otel_metadata,
     get_current_otel_session_name,
 )
-
-
-def _merge_args(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
-    if args:
-        if len(args) == 1 and isinstance(args[0], Mapping):
-            merged = dict(args[0])
-            merged.update(kwargs)
-            return merged
-        raise TypeError("Positional arguments are not supported; pass keyword arguments.")
-    return dict(kwargs)
 
 
 def _build_routing_metadata(user_metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -42,39 +41,41 @@ def _build_routing_metadata(user_metadata: Mapping[str, Any] | None = None) -> d
     Returns:
         Dict with session_name, session_uids, and merged metadata
     """
-    # Read from baggage - the single source of truth
     session_name = get_current_otel_session_name()
     session_uids = get_active_otel_session_uids()
     session_metadata = get_current_otel_metadata()
 
-    # Build result: session metadata as base, user metadata can override
     result: dict[str, Any] = {}
 
-    # Add session metadata
     if session_metadata:
         result.update(session_metadata)
-
-    # Add session identifiers
     if session_name:
         result["session_name"] = session_name
     if session_uids:
         result["session_uids"] = session_uids
-
-    # User metadata can override anything
     if user_metadata:
         result.update(dict(user_metadata))
 
     return result
 
 
-class _ScopedClientMixin:
-    """Shared helpers for sync/async variants."""
+class _OTelClientMixin:
+    """Mixin providing OTel-specific client scoping with headers support."""
 
+    _client: Any
     _base_headers: dict[str, str]
     base_url: str | None
     use_proxy: bool
 
     def _scoped_client(self, metadata: Mapping[str, Any] | None):
+        """Get a client scoped to the proxied base URL with metadata slug.
+
+        Args:
+            metadata: Metadata to encode in the proxy URL slug
+
+        Returns:
+            Client instance with modified base_url and/or headers
+        """
         client = self._client
 
         if self.use_proxy and metadata:
@@ -89,33 +90,35 @@ class _ScopedClientMixin:
         return client
 
 
+# =============================================================================
+# Sync Client Implementation
+# =============================================================================
+
+
 @dataclass
-class _OTelChatCompletions:
-    parent: OpenTelemetryTrackedChatClient
+class _OTelChatCompletions(ChatCompletionsBase):
+    """Chat completions namespace for OpenTelemetryTrackedChatClient."""
+
+    parent: "OpenTelemetryTrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        call_kwargs = _merge_args(args, kwargs)
-        messages = call_kwargs.get("messages")
-        if not messages:
-            raise ValueError("messages must be provided for chat.completions.create.")
+        """Create a chat completion with OTel context propagation."""
+        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
 
-        model = call_kwargs.setdefault("model", self.parent.default_model)
-        if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
-
-        metadata = call_kwargs.pop("metadata", None) or {}
         routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        start = time.perf_counter()
-        response = scoped_client.chat.completions.create(**call_kwargs)
-        _ = (time.perf_counter() - start) * 1000  # Latency measured for debugging if needed
+        with TimedCall():
+            response = scoped_client.chat.completions.create(**call_kwargs)
+
         return response
 
 
 @dataclass
 class _OTelChatNamespace:
-    parent: OpenTelemetryTrackedChatClient
+    """Chat namespace for OpenTelemetryTrackedChatClient."""
+
+    parent: "OpenTelemetryTrackedChatClient"
 
     @property
     def completions(self) -> _OTelChatCompletions:
@@ -123,30 +126,25 @@ class _OTelChatNamespace:
 
 
 @dataclass
-class _OTelCompletions:
-    parent: OpenTelemetryTrackedChatClient
+class _OTelCompletions(CompletionsBase):
+    """Completions namespace for OpenTelemetryTrackedChatClient."""
+
+    parent: "OpenTelemetryTrackedChatClient"
 
     def create(self, *args: Any, **kwargs: Any) -> Completion:
-        call_kwargs = _merge_args(args, kwargs)
-        prompt = call_kwargs.get("prompt")
-        if prompt is None:
-            raise ValueError("prompt must be provided for completions.create.")
+        """Create a completion with OTel context propagation."""
+        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
 
-        model = call_kwargs.setdefault("model", self.parent.default_model)
-        if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
-
-        metadata = call_kwargs.pop("metadata", None) or {}
         routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        start = time.perf_counter()
-        response = scoped_client.completions.create(**call_kwargs)
-        _ = (time.perf_counter() - start) * 1000
+        with TimedCall():
+            response = scoped_client.completions.create(**call_kwargs)
+
         return response
 
 
-class OpenTelemetryTrackedChatClient(_ScopedClientMixin):
+class OpenTelemetryTrackedChatClient(_OTelClientMixin, BaseChatClient[OpenAI]):
     """OpenAI client wrapper that forwards OTel session metadata to the proxy."""
 
     def __init__(
@@ -160,53 +158,70 @@ class OpenTelemetryTrackedChatClient(_ScopedClientMixin):
         extra_headers: Mapping[str, str] | None = None,
         **client_kwargs: Any,
     ) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            init_kwargs = dict(client_kwargs)
-            if api_key is not None:
-                init_kwargs["api_key"] = api_key
-            if base_url is not None:
-                init_kwargs["base_url"] = base_url
-            self._client = OpenAI(**init_kwargs)
+        """Initialize the OTel-aware chat client.
 
-        resolved_base_url = base_url or getattr(self._client, "base_url", None)
-        self.default_model = default_model
-        self.base_url = resolved_base_url
+        Args:
+            api_key: OpenAI API key
+            base_url: Base URL for the proxy endpoint
+            default_model: Default model to use
+            client: Pre-configured OpenAI client
+            use_proxy: Enable proxy metadata injection (default: True)
+            extra_headers: Additional headers to include in requests
+            **client_kwargs: Additional client configuration
+        """
         self.use_proxy = use_proxy
         self._base_headers = dict(extra_headers or {})
 
-        self.chat = _OTelChatNamespace(self)
-        self.completions = _OTelCompletions(self)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_model=default_model,
+            client=client,
+            **client_kwargs,
+        )
+
+        # Resolve base_url from client if not provided
+        if base_url is None and self._client is not None:
+            resolved = getattr(self._client, "base_url", None)
+            if resolved:
+                self.base_url = str(resolved)
+
+    def _create_chat_namespace(self) -> _OTelChatNamespace:
+        return _OTelChatNamespace(self)
+
+    def _create_completions_namespace(self) -> _OTelCompletions:
+        return _OTelCompletions(self)
+
+
+# =============================================================================
+# Async Client Implementation
+# =============================================================================
 
 
 @dataclass
-class _OTelAsyncChatCompletions:
-    parent: OpenTelemetryTrackedAsyncChatClient
+class _OTelAsyncChatCompletions(ChatCompletionsBase):
+    """Async chat completions namespace for OpenTelemetryTrackedAsyncChatClient."""
+
+    parent: "OpenTelemetryTrackedAsyncChatClient"
 
     async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
-        call_kwargs = _merge_args(args, kwargs)
-        messages = call_kwargs.get("messages")
-        if not messages:
-            raise ValueError("messages must be provided for chat.completions.create.")
+        """Create a chat completion with OTel context propagation."""
+        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
 
-        model = call_kwargs.setdefault("model", self.parent.default_model)
-        if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
-
-        metadata = call_kwargs.pop("metadata", None) or {}
         routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        start = time.perf_counter()
-        response = await scoped_client.chat.completions.create(**call_kwargs)
-        _ = (time.perf_counter() - start) * 1000
+        with TimedCall():
+            response = await scoped_client.chat.completions.create(**call_kwargs)
+
         return response
 
 
 @dataclass
 class _OTelAsyncChatNamespace:
-    parent: OpenTelemetryTrackedAsyncChatClient
+    """Async chat namespace for OpenTelemetryTrackedAsyncChatClient."""
+
+    parent: "OpenTelemetryTrackedAsyncChatClient"
 
     @property
     def completions(self) -> _OTelAsyncChatCompletions:
@@ -214,31 +229,26 @@ class _OTelAsyncChatNamespace:
 
 
 @dataclass
-class _OTelAsyncCompletions:
-    parent: OpenTelemetryTrackedAsyncChatClient
+class _OTelAsyncCompletions(CompletionsBase):
+    """Async completions namespace for OpenTelemetryTrackedAsyncChatClient."""
+
+    parent: "OpenTelemetryTrackedAsyncChatClient"
 
     async def create(self, *args: Any, **kwargs: Any) -> Completion:
-        call_kwargs = _merge_args(args, kwargs)
-        prompt = call_kwargs.get("prompt")
-        if prompt is None:
-            raise ValueError("prompt must be provided for completions.create.")
+        """Create a completion with OTel context propagation."""
+        call_kwargs, model, metadata = self._validate_and_prepare(args, kwargs)
 
-        model = call_kwargs.setdefault("model", self.parent.default_model)
-        if not model:
-            raise ValueError("model must be supplied either in the call or via default_model.")
-
-        metadata = call_kwargs.pop("metadata", None) or {}
         routing_metadata = _build_routing_metadata(metadata) if self.parent.use_proxy else None
         scoped_client = self.parent._scoped_client(routing_metadata)
 
-        start = time.perf_counter()
-        response = await scoped_client.completions.create(**call_kwargs)
-        _ = (time.perf_counter() - start) * 1000
+        with TimedCall():
+            response = await scoped_client.completions.create(**call_kwargs)
+
         return response
 
 
-class OpenTelemetryTrackedAsyncChatClient(_ScopedClientMixin):
-    """Async variant that mirrors `OpenTelemetryTrackedChatClient`."""
+class OpenTelemetryTrackedAsyncChatClient(_OTelClientMixin, BaseAsyncChatClient[AsyncOpenAI]):
+    """Async variant that mirrors OpenTelemetryTrackedChatClient."""
 
     def __init__(
         self,
@@ -251,24 +261,39 @@ class OpenTelemetryTrackedAsyncChatClient(_ScopedClientMixin):
         extra_headers: Mapping[str, str] | None = None,
         **client_kwargs: Any,
     ) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            init_kwargs = dict(client_kwargs)
-            if api_key is not None:
-                init_kwargs["api_key"] = api_key
-            if base_url is not None:
-                init_kwargs["base_url"] = base_url
-            self._client = AsyncOpenAI(**init_kwargs)
+        """Initialize the async OTel-aware chat client.
 
-        resolved_base_url = base_url or getattr(self._client, "base_url", None)
-        self.default_model = default_model
-        self.base_url = resolved_base_url
+        Args:
+            api_key: OpenAI API key
+            base_url: Base URL for the proxy endpoint
+            default_model: Default model to use
+            client: Pre-configured AsyncOpenAI client
+            use_proxy: Enable proxy metadata injection (default: True)
+            extra_headers: Additional headers to include in requests
+            **client_kwargs: Additional client configuration
+        """
         self.use_proxy = use_proxy
         self._base_headers = dict(extra_headers or {})
 
-        self.chat = _OTelAsyncChatNamespace(self)
-        self.completions = _OTelAsyncCompletions(self)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            default_model=default_model,
+            client=client,
+            **client_kwargs,
+        )
+
+        # Resolve base_url from client if not provided
+        if base_url is None and self._client is not None:
+            resolved = getattr(self._client, "base_url", None)
+            if resolved:
+                self.base_url = str(resolved)
+
+    def _create_chat_namespace(self) -> _OTelAsyncChatNamespace:
+        return _OTelAsyncChatNamespace(self)
+
+    def _create_completions_namespace(self) -> _OTelAsyncCompletions:
+        return _OTelAsyncCompletions(self)
 
 
 # Backwards-compatible shorthand names used in docs/design discussions
