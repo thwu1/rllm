@@ -85,7 +85,7 @@ class SqliteTraceStore:
                     logger.warning(f"Failed to create directory {db_dir}: {e}")
 
         self.db_path = db_path
-        self._sqlite_busy_timeout_ms = 5000
+        self._sqlite_busy_timeout_ms = 20000
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:

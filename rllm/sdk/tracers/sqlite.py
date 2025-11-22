@@ -146,6 +146,14 @@ class SqliteTracer:
         trace_id = item.get("trace_id", "unknown")
         session_uids = item.get("session_uids")
 
+        # Critical invariant: we must have session_uids to build session mapping.
+        # If missing, persistence would succeed but retrieval by session would be impossible.
+        # Treat this as a hard error (sync mode -> HTTP error; non-sync -> logged by worker).
+        if not session_uids:
+            error_msg = f"SqliteTracer: missing session_uids for trace {trace_id}. Cannot create session mapping; retrieval by session will fail."
+            logger.error(f"[SqliteTracer._store_trace_with_retry] {error_msg}")
+            raise RuntimeError(error_msg)
+
         for attempt in range(max_retries):
             try:
                 await self.store.store(
@@ -162,7 +170,10 @@ class SqliteTracer:
                     logger.warning(f"[SqliteTracer._store_trace_with_retry] Failed to store trace {trace_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delays[attempt]}s...")
                     await asyncio.sleep(retry_delays[attempt])
                 else:
-                    logger.exception(f"[SqliteTracer._store_trace_with_retry] Dropping trace {trace_id} after {max_retries} failed attempts: {e}")
+                    # On final failure, log and re-raise so sync callers fail the request
+                    error_msg = f"SqliteTracer: failed to persist trace {trace_id} after {max_retries} attempts (session_uids={session_uids}). Last error: {e}"
+                    logger.exception(f"[SqliteTracer._store_trace_with_retry] {error_msg}")
+                    raise RuntimeError(error_msg) from e
 
     def _stop_worker_loop(self) -> None:
         """Stop the worker event loop gracefully."""
