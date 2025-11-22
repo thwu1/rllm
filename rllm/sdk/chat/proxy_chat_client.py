@@ -13,7 +13,7 @@ from openai.types.completion import Completion
 
 from rllm.sdk.chat.simple_chat_client import _SimpleTrackedChatClientBase
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
-from rllm.sdk.session import get_current_metadata
+from rllm.sdk.session import get_current_metadata, get_current_session_name
 from rllm.sdk.tracers import InMemorySessionTracer
 
 
@@ -51,6 +51,9 @@ class _ScopedClientMixin:
         context_metadata = get_current_metadata()
         merged_metadata = {**context_metadata, **(dict(metadata_overrides) if metadata_overrides else {})}
 
+        # Extract session_name from context
+        session_name = get_current_session_name()
+
         # Extract token usage for the tracer
         usage = response_payload.get("usage") or {}
         tokens = {
@@ -72,6 +75,7 @@ class _ScopedClientMixin:
             tokens=tokens,
             metadata=merged_metadata,
             trace_id=trace_id,
+            session_name=session_name,
         )
 
 
