@@ -98,6 +98,7 @@ class InMemorySessionTracer:
         tools: list[dict] | None = None,
         contexts: list[str | dict] | None = None,
         tags: list[str] | None = None,
+        session_uids: list[str] | None = None,  # Ignored - uses active CV sessions
     ) -> None:
         """
         Log trace to all active sessions' in-memory storage.
@@ -105,6 +106,9 @@ class InMemorySessionTracer:
         This method does NOT perform any autofill or overwrites.
         All values are used as-is from the caller. If trace_id is None,
         a new one is generated. All other None values remain None.
+
+        Note: session_uids parameter is ignored. This tracer determines
+        where to store based on active ContextVar sessions, not passed UIDs.
 
         Algorithm:
         1. Get active sessions from context via get_active_sessions()
