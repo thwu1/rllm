@@ -139,8 +139,6 @@ class ProxyManager:
             sys.executable,
             "-m",
             "rllm.sdk.proxy.litellm_server",
-            "--config",
-            snapshot_path,
             "--host",
             self.proxy_host,
             "--port",
