@@ -23,11 +23,12 @@ pip install rllm[otel]
 ```python
 from rllm.sdk import session, get_chat_client
 
-llm = get_chat_client(api_key="sk-...", model="gpt-4")
+llm = get_chat_client(api_key="sk-...")
 
 # Create a session to track all LLM calls
 with session(experiment="v1") as sess:
     response = llm.chat.completions.create(
+        model="gpt-4",
         messages=[{"role": "user", "content": "Hello"}]
     )
     # Access all traces from this session
@@ -39,15 +40,17 @@ with session(experiment="v1") as sess:
 ```python
 from rllm.sdk import trajectory, get_chat_client_async
 
-llm = get_chat_client_async(api_key="sk-...", model="gpt-4")
+llm = get_chat_client_async(api_key="sk-...")
 
 @trajectory(name="solver")
 async def solve_math_problem(problem: str):
     # Each LLM call automatically becomes a step
     response1 = await llm.chat.completions.create(
+        model="gpt-4",
         messages=[{"role": "user", "content": f"Solve: {problem}"}]
     )
     response2 = await llm.chat.completions.create(
+        model="gpt-4",
         messages=[{"role": "user", "content": "Is this correct?"}]
     )
     return response2.choices[0].message.content
@@ -186,8 +189,8 @@ otel_session(name=None, **metadata) -> OpenTelemetrySession
 configure_default_tracer(service_name="rllm-worker") -> None
 
 # Chat clients
-get_chat_client(api_key, model, ...) -> ProxyTrackedChatClient | OpenTelemetryTrackedChatClient
-get_chat_client_async(api_key, model, ...) -> ProxyTrackedAsyncChatClient | OpenTelemetryTrackedAsyncChatClient
+get_chat_client(api_key, base_url, ...) -> ProxyTrackedChatClient | OpenTelemetryTrackedChatClient
+get_chat_client_async(api_key, base_url, ...) -> ProxyTrackedAsyncChatClient | OpenTelemetryTrackedAsyncChatClient
 
 # Decorators
 @trajectory(name: str, **metadata) -> Callable
@@ -289,9 +292,8 @@ rllm/sdk/
 │   └── session_buffer.py    # SessionBuffer (ephemeral trace storage)
 ├── chat/
 │   ├── __init__.py          # Chat client exports
-│   ├── proxy_chat_client.py       # Proxy-enabled chat client (ContextVar)
-│   ├── simple_chat_client.py      # Simple chat client
-│   └── otel_tracked_client.py     # OpenTelemetry-aware chat client
+│   ├── openai.py            # Unified OpenAI chat client (all client types)
+│   └── util.py              # Shared utilities for chat clients
 ├── proxy/
 │   ├── __init__.py          # Proxy module exports
 │   ├── litellm_callbacks.py # TracingCallback, SamplingParametersCallback

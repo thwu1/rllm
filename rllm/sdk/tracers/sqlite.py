@@ -37,10 +37,10 @@ class SqliteTracer:
         >>> from rllm.sdk import get_chat_client
         >>>
         >>> tracer = SqliteTracer(db_path="traces.db")
-        >>> llm = get_chat_client(tracer=tracer, model="gpt-4")
+        >>> llm = get_chat_client(tracer=tracer)
         >>>
         >>> with SessionContext() as session:
-        ...     llm.chat.completions.create(...)
+        ...     llm.chat.completions.create(model="gpt-4", messages=[...])
         ... # Trace is stored in SQLite with session UID
         >>>
         >>> # Query traces by session UID
