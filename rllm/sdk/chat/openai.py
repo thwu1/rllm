@@ -25,13 +25,20 @@ Aliases (backward compatible):
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, Union, overload
 
 from openai import AsyncOpenAI, OpenAI
+from openai._streaming import AsyncStream, Stream
 from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
+
+if TYPE_CHECKING:
+    from typing import AsyncIterator, Literal
+
+_T = TypeVar("_T")
 
 from rllm.sdk.chat.util import extract_completion_tokens, extract_usage_tokens, merge_args
 from rllm.sdk.proxy.metadata_slug import assemble_routing_metadata, build_proxied_base_url
@@ -86,6 +93,271 @@ def _log_trace(
 
 
 # =============================================================================
+# Streaming Wrappers
+# =============================================================================
+
+
+def _accumulate_stream_content(chunks: list[ChatCompletionChunk]) -> dict:
+    """Reconstruct a response dict from accumulated stream chunks for tracing.
+
+    Args:
+        chunks: List of ChatCompletionChunk objects accumulated during streaming
+
+    Returns:
+        A dict mimicking ChatCompletion structure for logging purposes
+    """
+    if not chunks:
+        return {}
+
+    # Get metadata from first chunk
+    first = chunks[0]
+    result: dict[str, Any] = {
+        "id": first.id,
+        "model": first.model,
+        "object": "chat.completion",  # Synthesized
+        "created": first.created,
+    }
+
+    # Accumulate content from all chunks
+    content_parts: list[str] = []
+    role = "assistant"
+    finish_reason = None
+    tool_calls: list[dict] = []
+    tool_call_map: dict[int, dict] = {}  # Track tool calls by index
+
+    for chunk in chunks:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta:
+            if delta.role:
+                role = delta.role
+            if delta.content:
+                content_parts.append(delta.content)
+            # Handle tool calls streaming
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_call_map:
+                        tool_call_map[idx] = {
+                            "id": tc.id or "",
+                            "type": tc.type or "function",
+                            "function": {"name": "", "arguments": ""},
+                        }
+                    if tc.id:
+                        tool_call_map[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_call_map[idx]["function"]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            tool_call_map[idx]["function"]["arguments"] += tc.function.arguments
+        if chunk.choices[0].finish_reason:
+            finish_reason = chunk.choices[0].finish_reason
+
+    # Build tool_calls list from map
+    if tool_call_map:
+        tool_calls = [tool_call_map[i] for i in sorted(tool_call_map.keys())]
+
+    # Build message
+    message: dict[str, Any] = {
+        "role": role,
+        "content": "".join(content_parts) if content_parts else None,
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    result["choices"] = [{
+        "index": 0,
+        "message": message,
+        "finish_reason": finish_reason,
+    }]
+
+    # Check for usage in last chunk (some providers include it)
+    last = chunks[-1]
+    if hasattr(last, "usage") and last.usage:
+        result["usage"] = {
+            "prompt_tokens": last.usage.prompt_tokens or 0,
+            "completion_tokens": last.usage.completion_tokens or 0,
+            "total_tokens": last.usage.total_tokens or 0,
+        }
+
+    return result
+
+
+def _accumulate_completion_content(chunks: list[Completion]) -> dict:
+    """Reconstruct a response dict from accumulated completion stream chunks.
+
+    Args:
+        chunks: List of Completion objects accumulated during streaming
+
+    Returns:
+        A dict mimicking Completion structure for logging purposes
+    """
+    if not chunks:
+        return {}
+
+    # Get metadata from first chunk
+    first = chunks[0]
+    result: dict[str, Any] = {
+        "id": first.id,
+        "model": first.model,
+        "object": "text_completion",
+        "created": first.created,
+    }
+
+    # Accumulate text from all chunks
+    text_parts: list[str] = []
+    finish_reason = None
+
+    for chunk in chunks:
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        if choice.text:
+            text_parts.append(choice.text)
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+
+    result["choices"] = [{
+        "index": 0,
+        "text": "".join(text_parts),
+        "finish_reason": finish_reason,
+    }]
+
+    # Check for usage in last chunk
+    last = chunks[-1]
+    if hasattr(last, "usage") and last.usage:
+        result["usage"] = {
+            "prompt_tokens": last.usage.prompt_tokens or 0,
+            "completion_tokens": last.usage.completion_tokens or 0,
+            "total_tokens": last.usage.total_tokens or 0,
+        }
+
+    return result
+
+
+@dataclass
+class TrackedStream(Generic[_T]):
+    """Wrapper around OpenAI Stream that logs trace when fully consumed.
+
+    This wrapper transparently passes through chunks from the underlying stream
+    while accumulating them. When the stream is exhausted, it logs the trace
+    with accurate latency and reconstructed response content.
+    """
+
+    _stream: Stream[_T]
+    _start_time: float
+    _tracer: Any
+    _model: str
+    _messages: list[dict]
+    _metadata: dict
+    _enable_tracing: bool
+    _accumulator: Any  # Callable[[list[_T]], dict]
+    _chunks: list[_T] = field(default_factory=list)
+    _exhausted: bool = False
+
+    def __iter__(self) -> Iterator[_T]:
+        return self
+
+    def __next__(self) -> _T:
+        try:
+            chunk = next(self._stream)
+            self._chunks.append(chunk)
+            return chunk
+        except StopIteration:
+            self._on_stream_end()
+            raise
+
+    def _on_stream_end(self) -> None:
+        """Called when stream is exhausted - logs the trace."""
+        if self._exhausted or not self._enable_tracing:
+            return
+        self._exhausted = True
+
+        latency_ms = (time.perf_counter() - self._start_time) * 1000
+        resp_dict = self._accumulator(self._chunks)
+
+        _log_trace(
+            self._tracer,
+            model=self._model,
+            messages=self._messages,
+            response=resp_dict,
+            token_ids=extract_completion_tokens(resp_dict),
+            metadata=self._metadata,
+            latency_ms=latency_ms,
+        )
+
+    def close(self) -> None:
+        """Close the underlying stream."""
+        self._on_stream_end()
+        self._stream.close()
+
+    def __enter__(self) -> "TrackedStream[_T]":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
+
+
+@dataclass
+class TrackedAsyncStream(Generic[_T]):
+    """Async wrapper around OpenAI AsyncStream that logs trace when fully consumed."""
+
+    _stream: AsyncStream[_T]
+    _start_time: float
+    _tracer: Any
+    _model: str
+    _messages: list[dict]
+    _metadata: dict
+    _enable_tracing: bool
+    _accumulator: Any  # Callable[[list[_T]], dict]
+    _chunks: list[_T] = field(default_factory=list)
+    _exhausted: bool = False
+
+    def __aiter__(self) -> "TrackedAsyncStream[_T]":
+        return self
+
+    async def __anext__(self) -> _T:
+        try:
+            chunk = await self._stream.__anext__()
+            self._chunks.append(chunk)
+            return chunk
+        except StopAsyncIteration:
+            self._on_stream_end()
+            raise
+
+    def _on_stream_end(self) -> None:
+        """Called when stream is exhausted - logs the trace."""
+        if self._exhausted or not self._enable_tracing:
+            return
+        self._exhausted = True
+
+        latency_ms = (time.perf_counter() - self._start_time) * 1000
+        resp_dict = self._accumulator(self._chunks)
+
+        _log_trace(
+            self._tracer,
+            model=self._model,
+            messages=self._messages,
+            response=resp_dict,
+            token_ids=extract_completion_tokens(resp_dict),
+            metadata=self._metadata,
+            latency_ms=latency_ms,
+        )
+
+    async def close(self) -> None:
+        """Close the underlying stream."""
+        self._on_stream_end()
+        await self._stream.close()
+
+    async def __aenter__(self) -> "TrackedAsyncStream[_T]":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+
+# =============================================================================
 # Sync Implementation
 # =============================================================================
 
@@ -96,7 +368,20 @@ class _ChatCompletions:
 
     parent: "TrackedChatClient"
 
-    def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
+    @overload
+    def create(
+        self, *args: Any, stream: "Literal[True]", **kwargs: Any
+    ) -> TrackedStream[ChatCompletionChunk]: ...
+
+    @overload
+    def create(
+        self, *args: Any, stream: "Literal[False]" = ..., **kwargs: Any
+    ) -> ChatCompletion: ...
+
+    @overload
+    def create(self, *args: Any, **kwargs: Any) -> Union[ChatCompletion, TrackedStream[ChatCompletionChunk]]: ...
+
+    def create(self, *args: Any, **kwargs: Any) -> Union[ChatCompletion, TrackedStream[ChatCompletionChunk]]:
         p = self.parent
         call_kwargs = merge_args(args, kwargs)
 
@@ -106,6 +391,7 @@ class _ChatCompletions:
 
         model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
+        is_streaming = call_kwargs.get("stream", False)
 
         # Get client (with proxy URL if enabled)
         if p.use_proxy:
@@ -117,9 +403,22 @@ class _ChatCompletions:
 
         start = time.perf_counter()
         response = client.chat.completions.create(**call_kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
 
-        # Log trace (if enabled)
+        # Handle streaming responses
+        if is_streaming:
+            return TrackedStream(
+                _stream=response,  # type: ignore[arg-type]
+                _start_time=start,
+                _tracer=p._tracer or _SHARED_TRACER,
+                _model=model or "",
+                _messages=list(messages),
+                _metadata=metadata,
+                _enable_tracing=p.enable_local_tracing,
+                _accumulator=_accumulate_stream_content,
+            )
+
+        # Non-streaming: log trace immediately
+        latency_ms = (time.perf_counter() - start) * 1000
         if p.enable_local_tracing:
             resp_dict = response.model_dump()
             _log_trace(
@@ -141,7 +440,20 @@ class _Completions:
 
     parent: "TrackedChatClient"
 
-    def create(self, *args: Any, **kwargs: Any) -> Completion:
+    @overload
+    def create(
+        self, *args: Any, stream: "Literal[True]", **kwargs: Any
+    ) -> TrackedStream[Completion]: ...
+
+    @overload
+    def create(
+        self, *args: Any, stream: "Literal[False]" = ..., **kwargs: Any
+    ) -> Completion: ...
+
+    @overload
+    def create(self, *args: Any, **kwargs: Any) -> Union[Completion, TrackedStream[Completion]]: ...
+
+    def create(self, *args: Any, **kwargs: Any) -> Union[Completion, TrackedStream[Completion]]:
         p = self.parent
         call_kwargs = merge_args(args, kwargs)
 
@@ -151,6 +463,7 @@ class _Completions:
 
         model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
+        is_streaming = call_kwargs.get("stream", False)
 
         if p.use_proxy:
             client = _get_scoped_client(
@@ -161,8 +474,24 @@ class _Completions:
 
         start = time.perf_counter()
         response = client.completions.create(**call_kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
 
+        # Handle streaming responses
+        if is_streaming:
+            # Convert prompt to messages format for tracing
+            prompt_str = prompt if isinstance(prompt, str) else str(prompt)
+            return TrackedStream(
+                _stream=response,  # type: ignore[arg-type]
+                _start_time=start,
+                _tracer=p._tracer or _SHARED_TRACER,
+                _model=model or "",
+                _messages=[{"role": "user", "content": prompt_str}],
+                _metadata=metadata,
+                _enable_tracing=p.enable_local_tracing,
+                _accumulator=_accumulate_completion_content,
+            )
+
+        # Non-streaming: log trace immediately
+        latency_ms = (time.perf_counter() - start) * 1000
         if p.enable_local_tracing:
             resp_dict = response.model_dump()
             _log_trace(
@@ -236,7 +565,24 @@ class TrackedChatClient:
 class _AsyncChatCompletions:
     parent: "TrackedAsyncChatClient"
 
-    async def create(self, *args: Any, **kwargs: Any) -> ChatCompletion:
+    @overload
+    async def create(
+        self, *args: Any, stream: "Literal[True]", **kwargs: Any
+    ) -> TrackedAsyncStream[ChatCompletionChunk]: ...
+
+    @overload
+    async def create(
+        self, *args: Any, stream: "Literal[False]" = ..., **kwargs: Any
+    ) -> ChatCompletion: ...
+
+    @overload
+    async def create(
+        self, *args: Any, **kwargs: Any
+    ) -> Union[ChatCompletion, TrackedAsyncStream[ChatCompletionChunk]]: ...
+
+    async def create(
+        self, *args: Any, **kwargs: Any
+    ) -> Union[ChatCompletion, TrackedAsyncStream[ChatCompletionChunk]]:
         p = self.parent
         call_kwargs = merge_args(args, kwargs)
 
@@ -246,6 +592,7 @@ class _AsyncChatCompletions:
 
         model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
+        is_streaming = call_kwargs.get("stream", False)
 
         if p.use_proxy:
             client = _get_scoped_client(
@@ -256,8 +603,22 @@ class _AsyncChatCompletions:
 
         start = time.perf_counter()
         response = await client.chat.completions.create(**call_kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
 
+        # Handle streaming responses
+        if is_streaming:
+            return TrackedAsyncStream(
+                _stream=response,  # type: ignore[arg-type]
+                _start_time=start,
+                _tracer=p._tracer or _SHARED_TRACER,
+                _model=model or "",
+                _messages=list(messages),
+                _metadata=metadata,
+                _enable_tracing=p.enable_local_tracing,
+                _accumulator=_accumulate_stream_content,
+            )
+
+        # Non-streaming: log trace immediately
+        latency_ms = (time.perf_counter() - start) * 1000
         if p.enable_local_tracing:
             resp_dict = response.model_dump()
             _log_trace(
@@ -277,7 +638,24 @@ class _AsyncChatCompletions:
 class _AsyncCompletions:
     parent: "TrackedAsyncChatClient"
 
-    async def create(self, *args: Any, **kwargs: Any) -> Completion:
+    @overload
+    async def create(
+        self, *args: Any, stream: "Literal[True]", **kwargs: Any
+    ) -> TrackedAsyncStream[Completion]: ...
+
+    @overload
+    async def create(
+        self, *args: Any, stream: "Literal[False]" = ..., **kwargs: Any
+    ) -> Completion: ...
+
+    @overload
+    async def create(
+        self, *args: Any, **kwargs: Any
+    ) -> Union[Completion, TrackedAsyncStream[Completion]]: ...
+
+    async def create(
+        self, *args: Any, **kwargs: Any
+    ) -> Union[Completion, TrackedAsyncStream[Completion]]:
         p = self.parent
         call_kwargs = merge_args(args, kwargs)
 
@@ -287,6 +665,7 @@ class _AsyncCompletions:
 
         model = call_kwargs.get("model")  # Let OpenAI client handle model validation
         metadata = call_kwargs.pop("metadata", None) or {}
+        is_streaming = call_kwargs.get("stream", False)
 
         if p.use_proxy:
             client = _get_scoped_client(
@@ -297,8 +676,23 @@ class _AsyncCompletions:
 
         start = time.perf_counter()
         response = await client.completions.create(**call_kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
 
+        # Handle streaming responses
+        if is_streaming:
+            prompt_str = prompt if isinstance(prompt, str) else str(prompt)
+            return TrackedAsyncStream(
+                _stream=response,  # type: ignore[arg-type]
+                _start_time=start,
+                _tracer=p._tracer or _SHARED_TRACER,
+                _model=model or "",
+                _messages=[{"role": "user", "content": prompt_str}],
+                _metadata=metadata,
+                _enable_tracing=p.enable_local_tracing,
+                _accumulator=_accumulate_completion_content,
+            )
+
+        # Non-streaming: log trace immediately
+        latency_ms = (time.perf_counter() - start) * 1000
         if p.enable_local_tracing:
             resp_dict = response.model_dump()
             _log_trace(
