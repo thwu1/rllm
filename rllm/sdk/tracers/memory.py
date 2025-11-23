@@ -41,12 +41,10 @@ class InMemorySessionTracer:
         >>> from rllm.sdk.session import get_active_cv_sessions
         >>>
         >>> tracer = InMemorySessionTracer()
-        >>> llm = get_chat_client(tracer=tracer, model="gpt-4")
+        >>> llm = get_chat_client(tracer=tracer)
         >>>
         >>> with SessionContext() as session:
-        ...     # Caller must get sessions and pass to tracer
-        ...     sessions = get_active_cv_sessions()
-        ...     # ... make LLM call with sessions passed ...
+        ...     llm.chat.completions.create(model="gpt-4", messages=[...])
     """
 
     def __init__(self, formatter: Callable[[dict], dict] | None = None):
