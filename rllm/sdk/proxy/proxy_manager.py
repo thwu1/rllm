@@ -161,6 +161,19 @@ class ProxyManager:
         env = os.environ.copy()
         env["AIOHTTP_CONNECTOR_LIMIT"] = "4096"
         env["AIOHTTP_KEEPALIVE_TIMEOUT"] = "60"
+        # Ensure the proxy subprocess has a working CA bundle for outbound HTTPS
+        # (fixes SSLCertVerificationError on hosts with incomplete system CAs)
+        try:
+            import certifi  # type: ignore
+
+            ca_path = certifi.where()
+            env["SSL_CERT_FILE"] = ca_path
+            env["REQUESTS_CA_BUNDLE"] = ca_path
+            env["CURL_CA_BUNDLE"] = ca_path
+            env["OPENAI_CA_BUNDLE"] = ca_path
+        except Exception:
+            # Best-effort; if certifi is unavailable, rely on system CA store
+            pass
 
         def set_limits() -> None:
             """Set resource limits for the proxy subprocess."""
