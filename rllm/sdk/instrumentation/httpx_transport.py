@@ -107,15 +107,13 @@ class _TransportWrapper:
 
         new_url = _inject_metadata(request.url)
 
-        # Preserve the original stream to avoid consuming/buffering request bodies.
-        # Using stream= instead of content= keeps streaming uploads intact.
-        return httpx.Request(
-            method=request.method,
-            url=new_url,
-            headers=request.headers,
-            stream=request.stream,
-            extensions=request.extensions,
-        )
+        # Modify URL in-place to avoid httpx.Request constructor compatibility issues.
+        # httpx.Request doesn't accept 'stream' kwarg in all versions, and using
+        # 'content' would consume streaming request bodies.
+        if not isinstance(new_url, httpx.URL):
+            new_url = httpx.URL(new_url)
+        object.__setattr__(request, "_url", new_url)
+        return request
 
 
 class AsyncTransportWrapper(_TransportWrapper):
