@@ -87,7 +87,12 @@ def _store_to_sqlite(trace_id: str, trace_data: dict, session_uids: list[str]) -
 
 
 def _store_to_sessions(trace_id: str, trace_data: dict, session_uids: list[str]) -> None:
-    """Store trace to in-memory session storage for ContextVar backend."""
+    """Store trace to in-memory session storage for ContextVar backend.
+
+    Handles both shared and separate storage scenarios:
+    - Separate storage (default): stores to each session's buffer so parents can see traces
+    - Shared storage: stores only once using innermost chain to avoid duplicates
+    """
     from rllm.sdk.protocol import Trace
     from rllm.sdk.session.contextvar import get_active_cv_sessions
 
@@ -97,8 +102,18 @@ def _store_to_sessions(trace_id: str, trace_data: dict, session_uids: list[str])
 
     trace_obj = Trace(trace_id=trace_id, **trace_data)
 
+    # Group sessions by storage to handle both shared and separate storage
+    storage_to_sessions: dict[int, list] = {}
     for sess in sessions:
-        sess.storage.add_trace(sess._session_uid_chain, sess.name, trace_obj)
+        storage_id = id(sess.storage)
+        if storage_id not in storage_to_sessions:
+            storage_to_sessions[storage_id] = []
+        storage_to_sessions[storage_id].append(sess)
+
+    # For each unique storage, use the innermost session's chain (covers all UIDs)
+    for storage_sessions in storage_to_sessions.values():
+        innermost = storage_sessions[-1]  # Last in list has longest chain
+        innermost.storage.add_trace(innermost._session_uid_chain, innermost.name, trace_obj)
 
 
 def _make_wrapper(original: Callable, name: str, input_key: str, is_async: bool) -> Callable:
