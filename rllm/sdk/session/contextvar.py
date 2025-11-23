@@ -3,13 +3,10 @@
 import contextvars
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from rllm.sdk.protocol import StepView, Trace, trace_to_step_view
 from rllm.sdk.session.session_buffer import SessionBuffer
-
-if TYPE_CHECKING:
-    from rllm.sdk.session.session_buffer import SessionBufferProtocol
 
 # Session-specific context variables
 _current_session: contextvars.ContextVar["ContextVarSession | None"] = contextvars.ContextVar("current_session", default=None)
@@ -59,10 +56,10 @@ def get_active_cv_sessions() -> list["ContextVarSession"]:
 
 
 class ContextVarSession:
-    """Context-based session with pluggable storage for LLM trace collection.
+    """Context-based session for in-process LLM trace collection.
 
     Features thread-safe context propagation, nested sessions with metadata inheritance,
-    and pluggable buffer (SessionBuffer default).
+    and lightweight in-memory buffer. For distributed/shared storage, use OTEL tracing.
 
     Example:
         >>> with ContextVarSession() as session:
@@ -73,10 +70,8 @@ class ContextVarSession:
     def __init__(
         self,
         name: str | None = None,
-        storage: "SessionBufferProtocol | None" = None,
         formatter: Callable[[dict], dict] | None = None,
         persistent_tracers: list | None = None,
-        _session_uid_chain: list[str] | None = None,
         **metadata,
     ):
         """
@@ -86,10 +81,8 @@ class ContextVarSession:
             name: Session name (auto-generated if None). If None and there's an
                   existing session name in the context (from a parent session),
                   that will be inherited instead of generating a new one.
-            storage: Buffer backend for traces. If None, uses SessionBuffer (default).
             formatter: Optional formatter to transform trace data (deprecated, kept for compatibility)
             persistent_tracers: Optional list of persistent tracers (deprecated, kept for compatibility)
-            _session_uid_chain: Internal parameter for context restoration (do not use directly)
             **metadata: Session metadata
         """
         # If name is not explicitly provided, check if there's one in the context
@@ -108,26 +101,20 @@ class ContextVarSession:
         self._uid = f"ctx_{uuid.uuid4().hex[:16]}"
 
         # Build session UID chain for tree hierarchy support
-        if _session_uid_chain is not None:
-            # Restoring from serialized context (distributed case)
-            self._session_uid_chain = _session_uid_chain + [self._uid]
+        parent_session = get_current_cv_session()
+        if parent_session is not None:
+            # Inherit parent's chain and append our UID
+            self._session_uid_chain = parent_session._session_uid_chain + [self._uid]
         else:
-            # Check for parent session in current context (nested local case)
-            parent_session = get_current_cv_session()
-            if parent_session is not None:
-                # Inherit parent's chain and append our UID
-                self._session_uid_chain = parent_session._session_uid_chain + [self._uid]
-            else:
-                # Root session - start new chain
-                self._session_uid_chain = [self._uid]
+            # Root session - start new chain
+            self._session_uid_chain = [self._uid]
 
         self.metadata = metadata
         self.formatter = formatter or (lambda x: x)
 
-        # Buffer backend (defaults to SessionBuffer for backward compatibility)
-        if storage is None:
-            storage = SessionBuffer()
-        self.storage = storage
+        # Each session gets its own lightweight in-memory buffer
+        # (distributed/shared storage is handled by OTEL, not ContextVarSession)
+        self.storage = SessionBuffer()
 
         # Optional persistent tracers (kept for backward compatibility)
         self._persistent_tracers = persistent_tracers or []
@@ -143,7 +130,6 @@ class ContextVarSession:
         """Get all LLM traces from this session and nested child sessions.
 
         Parent sessions automatically see traces from nested children via session UID hierarchy.
-        For multi-process scenarios, use to_context()/from_context() for hierarchy propagation.
         """
         return self.storage.get_traces(self._uid, self.name)
 
@@ -197,34 +183,6 @@ class ContextVarSession:
     def __len__(self) -> int:
         """Return number of calls in this session."""
         return len(self.llm_calls)
-
-    def to_context(self) -> dict:
-        """Serialize session context for cross-process propagation.
-
-        Returns dict with name, session_uid_chain (for hierarchy), and metadata.
-        """
-        return {
-            "name": self.name,
-            "session_uid_chain": self._session_uid_chain[:-1],  # Exclude current UID
-            "metadata": self.metadata,
-        }
-
-    @classmethod
-    def from_context(
-        cls,
-        context: dict,
-        storage: "SessionBufferProtocol | None" = None,
-    ) -> "ContextVarSession":
-        """Restore session from serialized context (for cross-process tracing).
-
-        Creates new session that continues parent hierarchy via inherited UID chain.
-        """
-        return cls(
-            name=context["name"],
-            _session_uid_chain=context["session_uid_chain"],
-            storage=storage,
-            **context.get("metadata", {}),
-        )
 
     def __repr__(self):
         return f"ContextVarSession(name={self.name!r}, _uid={self._uid!r}, chain_depth={len(self._session_uid_chain)}, storage={self.storage!r})"
