@@ -3,7 +3,6 @@
 
 Example:
     python -m rllm.sdk.proxy.litellm_server \
-        --config /tmp/litellm_proxy_config_autogen.yaml \
         --host 127.0.0.1 --port 4000 \
         --db-path ~/.rllm/traces.db --project my-app \
         --admin-token my-shared-secret
@@ -51,13 +50,12 @@ class LiteLLMProxyRuntime:
 
     def __init__(
         self,
-        initial_config: Path,
         state_dir: Path,
         tracer: SqliteTracer | None,
         *,
         await_tracer_persistence: bool = False,
     ):
-        self._current_config = initial_config
+        self._current_config: Path | None = None
         self._state_dir = state_dir
         self._tracer = tracer
         self._lock = asyncio.Lock()
@@ -82,8 +80,8 @@ class LiteLLMProxyRuntime:
             raise FileNotFoundError(f"Config file does not exist: {config_path}")
 
         async with self._lock:
-            # Clean up existing LiteLLM state if this is a reload
-            if self._current_config != config_path:
+            # Clean up existing LiteLLM state if this is a reload (not first-time initialization)
+            if self._current_config is not None:
                 logging.info("Reloading LiteLLM configuration...")
                 # Clear existing router and model list
                 if hasattr(litellm, "model_list"):
@@ -143,8 +141,8 @@ class LiteLLMProxyRuntime:
         return len(data.get("model_list", []))
 
     @property
-    def config_path(self) -> str:
-        return str(self._current_config)
+    def config_path(self) -> str | None:
+        return str(self._current_config) if self._current_config else None
 
 
 def _build_tracer(db_path: str | None, project: str | None) -> SqliteTracer | None:
@@ -156,7 +154,6 @@ def _build_tracer(db_path: str | None, project: str | None) -> SqliteTracer | No
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="LiteLLM proxy server with reload endpoint.")
-    parser.add_argument("--config", required=True, help="Initial LiteLLM config YAML.")
     parser.add_argument("--host", default=os.getenv("LITELLM_PROXY_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("LITELLM_PROXY_PORT", "4000")))
     parser.add_argument("--state-dir", default=os.getenv("LITELLM_PROXY_STATE_DIR", "./.litellm_proxy"))
@@ -180,7 +177,6 @@ def main() -> None:
     )
 
     runtime = LiteLLMProxyRuntime(
-        initial_config=Path(args.config).expanduser().resolve(),
         state_dir=Path(args.state_dir).expanduser().resolve(),
         tracer=_build_tracer(args.db_path, args.project),
         await_tracer_persistence=args.sync_tracer,
