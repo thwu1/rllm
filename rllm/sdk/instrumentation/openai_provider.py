@@ -135,7 +135,8 @@ def _make_wrapper(original: Callable, name: str, input_key: str, is_async: bool)
             # Skip tracing for streaming responses - they return iterators
             # without usage/content data until fully consumed
             if not is_streaming:
-                input_data = kwargs.get(input_key, args[0] if args else None) or []
+                # Preserve empty inputs (don't coerce "" or [] to default)
+                input_data = kwargs.get(input_key) if input_key in kwargs else (args[0] if args else None)
                 model = kwargs.get("model", "unknown")
                 _log_trace(name, input_data, response, model, latency_ms)
 
@@ -152,7 +153,8 @@ def _make_wrapper(original: Callable, name: str, input_key: str, is_async: bool)
 
             # Skip tracing for streaming responses
             if not is_streaming:
-                input_data = kwargs.get(input_key, args[0] if args else None) or []
+                # Preserve empty inputs (don't coerce "" or [] to default)
+                input_data = kwargs.get(input_key) if input_key in kwargs else (args[0] if args else None)
                 model = kwargs.get("model", "unknown")
                 _log_trace(name, input_data, response, model, latency_ms)
 

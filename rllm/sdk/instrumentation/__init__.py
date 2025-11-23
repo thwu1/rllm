@@ -51,13 +51,7 @@ def instrument(
         return
 
     try:
-        # Setup proxy URL modification if requested
-        if proxy_urls:
-            for url in proxy_urls:
-                register_proxy_url(url)
-            patch_httpx()
-
-        # Instrument providers - only mark as instrumented if at least one succeeds
+        # Instrument providers first - only setup httpx if at least one succeeds
         any_success = False
         for name in (providers or SUPPORTED_PROVIDERS):
             if name.lower() == "openai":
@@ -65,6 +59,12 @@ def instrument(
                     any_success = True
             else:
                 raise ValueError(f"Unknown provider: {name}. Supported: {SUPPORTED_PROVIDERS}")
+
+        # Only setup proxy URL modification if instrumentation succeeded
+        if any_success and proxy_urls:
+            for url in proxy_urls:
+                register_proxy_url(url)
+            patch_httpx()
 
         _instrumented = any_success
     except Exception:
