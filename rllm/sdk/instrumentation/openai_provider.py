@@ -117,31 +117,45 @@ def _store_to_sessions(trace_id: str, trace_data: dict, session_uids: list[str])
 
 
 def _make_wrapper(original: Callable, name: str, input_key: str, is_async: bool) -> Callable:
-    """Create a wrapper function for an OpenAI method."""
+    """Create a wrapper function for an OpenAI method.
+
+    Skips tracing for streaming responses (stream=True) since they return
+    iterators without complete response data. Non-streaming calls are traced
+    with full response content, latency, and token usage.
+    """
     if is_async:
         @functools.wraps(original)
         async def async_wrapper(self, *args, **kwargs):
-            input_data = kwargs.get(input_key, args[0] if args else None) or []
-            model = kwargs.get("model", "unknown")
+            is_streaming = kwargs.get("stream", False)
 
             start = time.perf_counter()
             response = await original(self, *args, **kwargs)
             latency_ms = (time.perf_counter() - start) * 1000
 
-            _log_trace(name, input_data, response, model, latency_ms)
+            # Skip tracing for streaming responses - they return iterators
+            # without usage/content data until fully consumed
+            if not is_streaming:
+                input_data = kwargs.get(input_key, args[0] if args else None) or []
+                model = kwargs.get("model", "unknown")
+                _log_trace(name, input_data, response, model, latency_ms)
+
             return response
         return async_wrapper
     else:
         @functools.wraps(original)
         def sync_wrapper(self, *args, **kwargs):
-            input_data = kwargs.get(input_key, args[0] if args else None) or []
-            model = kwargs.get("model", "unknown")
+            is_streaming = kwargs.get("stream", False)
 
             start = time.perf_counter()
             response = original(self, *args, **kwargs)
             latency_ms = (time.perf_counter() - start) * 1000
 
-            _log_trace(name, input_data, response, model, latency_ms)
+            # Skip tracing for streaming responses
+            if not is_streaming:
+                input_data = kwargs.get(input_key, args[0] if args else None) or []
+                model = kwargs.get("model", "unknown")
+                _log_trace(name, input_data, response, model, latency_ms)
+
             return response
         return sync_wrapper
 

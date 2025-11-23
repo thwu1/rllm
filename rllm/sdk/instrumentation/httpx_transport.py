@@ -47,11 +47,18 @@ def clear_proxy_urls() -> None:
 
 
 def _should_inject(url: Any) -> bool:
-    """Check if URL matches a registered proxy URL."""
+    """Check if URL matches a registered proxy URL and doesn't already have metadata."""
     if not _proxy_urls:
         return False
-    parsed = urlparse(str(url))
-    return f"{parsed.scheme}://{parsed.netloc}" in _proxy_urls
+    url_str = str(url)
+    parsed = urlparse(url_str)
+    # Skip if not a registered proxy URL
+    if f"{parsed.scheme}://{parsed.netloc}" not in _proxy_urls:
+        return False
+    # Skip if already has metadata slug to avoid double injection
+    if "/meta/" in parsed.path:
+        return False
+    return True
 
 
 def _inject_metadata(url: Any) -> Any:
