@@ -162,6 +162,7 @@ class TaskRunner:
             trainer = AgentSdkTrainer(
                 config=config,
                 tokenizer=tokenizer,
+                processor=processor,
                 role_worker_mapping=role_worker_mapping,
                 resource_pool_manager=resource_pool_manager,
                 ray_worker_group_cls=ray_worker_group_cls,

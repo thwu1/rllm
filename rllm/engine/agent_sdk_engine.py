@@ -2,6 +2,7 @@ import asyncio
 import functools
 import inspect
 import logging
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -164,7 +165,7 @@ class AgentSdkEngine:
     async def _execute_with_exception_handling(self, func, task, task_id, rollout_idx, attempt_idx, **kwargs):
         # Format: "{task_id}:{rollout_idx}:{attempt_idx}"
         # This uniquely identifies each rollout attempt
-        metadata = {"session_name": f"{task_id}:{rollout_idx}:{attempt_idx}", "task": task}
+        metadata = {"session_name": f"{task_id}:{rollout_idx}:{attempt_idx}"}
         try:
             if inspect.iscoroutinefunction(self.wrapped_agent_run_func):
                 output, session_uid = await func(metadata, **task, **kwargs)
@@ -446,6 +447,7 @@ class AgentSdkEngine:
         traj_mask = []
         termination_reasons = []
         metrics = []
+        multi_modal_inputs_list = []
 
         for i, episode in enumerate(episodes):
             total_steps = 0
@@ -523,6 +525,131 @@ class AgentSdkEngine:
                         mask = torch.ones_like(response_ids, dtype=torch.long)
                         traj_mask.append(mask)
 
+                        # Extract and process multimodal inputs from step.chat_completions
+                        # Extract only user messages (before assistant response) for prompt reconstruction
+                        user_messages = [msg for msg in step.chat_completions if msg.get("role") == "user"]
+
+                        # Process images using the same method as vLLM does when it receives messages
+                        # vLLM receives messages via OpenAI API, applies chat template, then calls processor
+                        # We replicate this: processor.apply_chat_template(messages) -> prompt text, then processor(text=prompt, images=...)
+                        if any(isinstance(msg.get("content"), list) and any(item.get("type") == "image_url" for item in msg.get("content", []) if isinstance(item, dict)) for msg in user_messages) and self.rollout_engine.processor is not None:
+                            # Convert OpenAI format (content as list) to format for processor.apply_chat_template
+                            # For Qwen3-VL, processor.apply_chat_template needs messages with images in content
+                            # We need to preserve image placeholders in the messages for apply_chat_template
+                            converted_messages = []
+                            for m in user_messages:
+                                if isinstance(m.get("content"), list):
+                                    # Extract text parts
+                                    text_parts = [i.get("text", "") for i in m["content"] if isinstance(i, dict) and i.get("type") == "text"]
+                                    text = "".join(text_parts)
+                                    # Check if there are images - processor.apply_chat_template needs to know about them
+                                    has_images = any(i.get("type") == "image_url" for i in m["content"] if isinstance(i, dict))
+                                else:
+                                    text = m.get("content", "")
+                                    has_images = False
+
+                                # For Qwen3-VL, if there are images, we need to include image placeholders in content
+                                # The processor's apply_chat_template will handle the image placeholders
+                                if has_images:
+                                    # Include image placeholder in content so apply_chat_template knows about images
+                                    # The exact format depends on the processor, but typically it's just the text
+                                    # and the processor will add placeholders based on the chat template
+                                    converted_messages.append({"role": m["role"], "content": text})
+                                else:
+                                    converted_messages.append({"role": m["role"], "content": text})
+
+                            # Extract image URLs and convert to PIL Images using chat_parser
+                            # First convert to chat parser format to extract images
+                            chat_parser_messages = []
+                            for m in user_messages:
+                                if isinstance(m.get("content"), list):
+                                    text = "".join(i.get("text", "") for i in m["content"] if isinstance(i, dict) and i.get("type") == "text")
+                                    images = [i.get("image_url", {}).get("url") if isinstance(i.get("image_url"), dict) else i.get("image_url") for i in m["content"] if isinstance(i, dict) and i.get("type") == "image_url"]
+                                else:
+                                    text = m.get("content", "")
+                                    images = None
+                                chat_parser_messages.append({"role": m["role"], "content": text, "images": images or None})
+                            image_data = self.rollout_engine.chat_parser.process_image_data(chat_parser_messages)
+
+                            # Decode trace prompt_ids to get text, then remove image placeholder sections
+                            # vLLM tokenizes the original text (without placeholders) and adds image tokens separately
+                            # We need to extract just the text part (without <|vision_start|><|image_pad|>...<|vision_end|>)
+                            trace_prompt_ids = step.model_output.prompt_ids
+                            decoded_full = self.rollout_engine.tokenizer.decode(trace_prompt_ids, skip_special_tokens=False)
+
+                            # Remove image placeholder sections: <|vision_start|><|image_pad|>...<|vision_end|>
+                            # This pattern may repeat multiple times for multiple images
+                            # Pattern matches: <|vision_start|> followed by any number of <|image_pad|> followed by <|vision_end|>
+                            prompt_text = re.sub(r"<\|vision_start\|>(<\|image_pad\|>)*<\|vision_end\|>", "", decoded_full)
+
+                            # Ensure image_data is not empty
+                            if not image_data:
+                                # No images found, skip multimodal processing
+                                multi_modal_inputs = {}
+                            else:
+                                # Count image tokens in original trace prompt_ids
+                                # This is what vLLM actually used and what we'll use in training
+                                trace_prompt_ids = step.model_output.prompt_ids
+                                image_token_id = self.rollout_engine.processor.image_processor.image_token_id
+                                n_image_tokens_trace = sum(1 for tid in trace_prompt_ids if tid == image_token_id)
+
+                                # Call processor with cleaned prompt text (without placeholders) and images
+                                # This matches what vLLM does: processor(text=original_text, images=images)
+                                # The processor will add image tokens internally
+                                processor_output = self.rollout_engine.processor(text=[prompt_text], images=image_data, return_tensors="pt")
+
+                                # Count image tokens and features from processor output
+                                processor_prompt_ids = processor_output["input_ids"][0].tolist()
+                                n_image_tokens_processor = sum(1 for tid in processor_prompt_ids if tid == image_token_id)
+
+                                # Count image features from image_grid_thw
+                                image_grid_thw = processor_output.get("image_grid_thw")
+                                if image_grid_thw is not None:
+                                    # image_grid_thw shape: (num_images, 3) where 3 = (t, h, w)
+                                    # Total features = sum of t * h * w for all images
+                                    if isinstance(image_grid_thw, torch.Tensor):
+                                        n_image_features = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]).sum().item()
+                                    else:
+                                        # Handle numpy array or list
+                                        import numpy as np
+
+                                        grid_thw = np.array(image_grid_thw)
+                                        n_image_features = (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]).sum()
+                                else:
+                                    # Fallback: count from pixel_values if available
+                                    pixel_values = processor_output.get("pixel_values")
+                                    if pixel_values is not None:
+                                        if isinstance(pixel_values, torch.Tensor):
+                                            n_image_features = pixel_values.shape[0]
+                                        else:
+                                            n_image_features = len(pixel_values)
+                                    else:
+                                        n_image_features = 0
+
+                                # Validate image token/feature counts match
+                                # CRITICAL: The number of image tokens in trace_prompt_ids (used as input_ids in training)
+                                # must match the number of image features in multi_modal_inputs
+                                if n_image_tokens_trace != n_image_features:
+                                    logger.error(f"Image token/feature mismatch detected:\n  - Trace prompt_ids has {n_image_tokens_trace} image tokens (this is what will be used in training)\n  - Processor generated {n_image_features} image features\n  - Processor prompt_ids has {n_image_tokens_processor} image tokens\n  - Number of images extracted: {len(image_data)}\n  - Trace prompt_ids length: {len(trace_prompt_ids)}\n  - Processor prompt_ids length: {len(processor_prompt_ids)}\n  - Image token ID: {image_token_id}\nThis mismatch will cause training to fail with 'Image features and image tokens do not match'.\nPossible causes:\n  1. Images were processed differently by vLLM vs our processor (different resolutions/patch sizes)\n  2. Wrong number of images extracted from messages\n  3. Image placeholders in decoded text don't match actual image count")
+                                    # Don't adjust image_grid_thw - that would corrupt the features
+                                    # Instead, raise an error to prevent silent failures
+                                    raise ValueError(f"Image token/feature count mismatch: {n_image_tokens_trace} tokens (from trace) vs {n_image_features} features (from processor). This indicates a mismatch between how vLLM processed images during rollout vs how we're reconstructing them. Check that images are extracted correctly and that the processor settings match vLLM's.")
+
+                                # Assert that text prefix matches (first few tokens should be the same)
+                                # Check first 10 tokens match (text part before image tokens)
+                                min_len = min(len(processor_prompt_ids), len(trace_prompt_ids), 10)
+                                if processor_prompt_ids[:min_len] != trace_prompt_ids[:min_len]:
+                                    logger.warning(f"Processor prompt_ids prefix ({processor_prompt_ids[:min_len]}) do not match trace prompt_ids prefix ({trace_prompt_ids[:min_len]})")
+
+                                # Extract only image-related outputs (same as vLLM does)
+                                processor_output.pop("input_ids", None)
+                                processor_output.pop("attention_mask", None)
+                                multi_modal_inputs = dict(processor_output)
+                        else:
+                            multi_modal_inputs = {}
+
+                        multi_modal_inputs_list.append(multi_modal_inputs)
+
                         # else:
                         #     chat_completions = step.chat_completions
                         #     prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask(chat_completions)
@@ -580,7 +707,16 @@ class AgentSdkEngine:
         response_mask = resp_pos < response_lengths.unsqueeze(1)
 
         attention_mask = torch.cat([prompt_mask, response_mask], dim=1).long()
-        position_ids = (torch.cumsum(attention_mask, dim=1) - 1) * attention_mask
+
+        if hasattr(self.rollout_engine, "processor") and self.rollout_engine.processor is not None:
+            position_ids = self._handle_multimodal_position_ids(
+                processor=self.rollout_engine.processor,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                multi_modal_inputs=multi_modal_inputs_list,
+            )
+        else:
+            position_ids = (torch.cumsum(attention_mask, dim=1) - 1) * attention_mask
 
         traj_mask = torch.nn.utils.rnn.pad_sequence(traj_mask, batch_first=True, padding_value=0)
         traj_mask = pad_sequence_to_length(traj_mask, max_response_length, 0, left_pad=False)
@@ -631,30 +767,70 @@ class AgentSdkEngine:
         if rollout_logprobs_batch is not None:
             tensors_dict["rollout_log_probs"] = rollout_logprobs_batch
 
+        non_tensors = {
+            # episode_ids: Format "task_id:rollout_idx:retry_attempt" (e.g., "abc123:0:1")
+            "episode_ids": np.array(episode_ids),
+            # trajectory_ids: Format "task_id_trajectory_name" (e.g., "abc123_solver")
+            # Multiple trajectories can have the same trajectory_id
+            "trajectory_ids": np.array(trajectory_ids),
+            # step_ids: Format "task_id_trajectory_name_step{idx}" (e.g., "abc123_solver_step0")
+            "step_ids": np.array(step_ids),
+            # batch_ids: Unique identifier for each training batch
+            "batch_ids": np.array([str(uuid.uuid4())] * len(episode_ids)),
+            "step_nums": np.array(step_nums),
+            "is_correct": np.array(is_correct),
+            "termination_reasons": np.array([x.value for x in termination_reasons]),
+            "metrics": np.array(metrics),
+            "is_valid": np.array(is_valid),
+            "is_last_step": np.array(is_last_step),
+            "is_pad_step": np.array([False] * len(episode_ids)),
+        }
+
+        if any(mm_inputs is not None for mm_inputs in multi_modal_inputs_list):
+            non_tensors["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
+
         return DataProto.from_dict(
             tensors=tensors_dict,
-            non_tensors={
-                # episode_ids: Format "task_id:rollout_idx:retry_attempt" (e.g., "abc123:0:1")
-                "episode_ids": np.array(episode_ids),
-                # trajectory_ids: Format "task_id_trajectory_name" (e.g., "abc123_solver")
-                # Multiple trajectories can have the same trajectory_id
-                "trajectory_ids": np.array(trajectory_ids),
-                # step_ids: Format "task_id_trajectory_name_step{idx}" (e.g., "abc123_solver_step0")
-                "step_ids": np.array(step_ids),
-                # batch_ids: Unique identifier for each training batch
-                "batch_ids": np.array([str(uuid.uuid4())] * len(episode_ids)),
-                "step_nums": np.array(step_nums),
-                "is_correct": np.array(is_correct),
-                "termination_reasons": np.array([x.value for x in termination_reasons]),
-                "metrics": np.array(metrics),
-                "is_valid": np.array(is_valid),
-                "is_last_step": np.array(is_last_step),
-                "is_pad_step": np.array([False] * len(episode_ids)),
-            },
+            non_tensors=non_tensors,
             meta_info={
                 "repeat_counts": repeat_counts,
             },
         )
+
+    def _handle_multimodal_position_ids(self, processor, input_ids: torch.Tensor, attention_mask: torch.Tensor, multi_modal_inputs: list[dict]) -> torch.Tensor:
+        """Handle multimodal position ids calculation. Borrowed from verl.utils.dataset.rl_dataset.py"""
+        batch_size = input_ids.shape[0]
+        position_ids_list = []
+
+        if processor is not None and "Qwen2VLImageProcessor" in processor.image_processor.__class__.__name__:
+            # qwen-vl mrope
+            if "Qwen3VLProcessor" in processor.__class__.__name__:
+                from verl.models.transformers.qwen3_vl import get_rope_index
+            else:
+                from verl.models.transformers.qwen2_vl import get_rope_index
+
+            for i in range(batch_size):
+                model_inputs = multi_modal_inputs[i] if i < len(multi_modal_inputs) else {}
+                vision_position_ids = get_rope_index(
+                    processor,
+                    input_ids=input_ids[i],
+                    image_grid_thw=model_inputs.get("image_grid_thw"),
+                    video_grid_thw=model_inputs.get("video_grid_thw"),
+                    second_per_grid_ts=model_inputs.get("second_per_grid_ts"),
+                    attention_mask=attention_mask[i],
+                )  # (3, seq_length)
+                valid_mask = attention_mask[i].bool()
+                text_position_ids = torch.ones((1, len(input_ids[i])), dtype=torch.long)
+                text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
+                position_ids_list.append(torch.cat((text_position_ids, vision_position_ids), dim=0))  # (4, seq_length)
+
+        else:
+            # Fallback: should not reach here if called correctly
+            raise ValueError(f"Unsupported processor type: {processor.__class__.__name__ if processor else None}")
+
+        # Stack all position_ids to form batch: (batch_size, 4, seq_length)
+        position_ids = torch.stack(position_ids_list, dim=0)
+        return position_ids
 
     def shutdown(self):
         """Shutdown the workflow engine and cleanup resources."""

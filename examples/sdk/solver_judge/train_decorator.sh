@@ -1,5 +1,32 @@
 set -x
 
+# Fix Ray permission issues by cleaning up stale sessions
+# Remove old Ray session directories that may have permission issues
+if [ -d "/tmp/ray" ]; then
+    # Remove stale Ray session directories (older than 1 hour)
+    find /tmp/ray -maxdepth 1 -type d -name "session_*" -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+    # Also remove the specific stale session if it exists
+    rm -rf /tmp/ray/session_2025-11-23_01-48-20_255610_1739350 2>/dev/null || true
+    # Fix permissions on /tmp/ray directory
+    chmod -R 755 /tmp/ray 2>/dev/null || true
+fi
+
+# Force Ray to start a local instance instead of auto-connecting to remote clusters
+# Explicitly set RAY_ADDRESS to empty string to prevent auto-discovery of remote clusters
+export RAY_ADDRESS=""
+
+# Stop any local Ray instances that might be interfering
+ray stop --force 2>/dev/null || true
+
+# Kill any remaining Ray processes (more aggressive cleanup)
+pkill -9 -f "ray::" 2>/dev/null || true
+sleep 1
+
+# Use a custom Ray temp directory to avoid conflicts with other users' Ray instances
+# This ensures your Ray instance is completely isolated
+export RAY_TMPDIR="${HOME}/.ray_tmp"
+mkdir -p "${RAY_TMPDIR}"
+
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 export VLLM_USE_V1=1
@@ -54,9 +81,9 @@ python3 -m examples.sdk.solver_judge.train_decorator \
     rllm.stepwise_advantage.mode=per_step \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='solver-judge-workflow' \
-    trainer.experiment_name='sdk-solver-judge' \
-    trainer.val_before_train=False \
+    trainer.project_name='sdk-solver-judge' \
+    trainer.experiment_name='sdk-solver-judge-13-token-is' \
+    trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=200 \
@@ -65,6 +92,10 @@ python3 -m examples.sdk.solver_judge.train_decorator \
     rllm.sdk.proxy.host=127.0.0.1 \
     rllm.sdk.proxy.port=4000 \
     rllm.sdk.proxy.mode=subprocess \
-    rllm.sdk.store.path="${HOME}/rllm-traces.db"
+    rllm.sdk.store.path="${HOME}/rllm-traces-13.db" \
+    algorithm.rollout_correction.rollout_is=token \
+    algorithm.rollout_correction.rollout_is_threshold=2.0
+    # algorithm.rollout_correction.rollout_rs=sequence \
+    # algorithm.rollout_correction.rollout_rs_threshold=2.0
 
 pkill -9 -f 'ray::WorkerDict' 

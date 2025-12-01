@@ -52,6 +52,7 @@ class AgentSdkTrainer(RayPPOTrainer):
         resource_pool_manager: ResourcePoolManager,
         ray_worker_group_cls: type[RayWorkerGroup] = RayWorkerGroup,
         agent_run_func: Callable = None,
+        processor=None,
     ):
         """Initialize AgentSdkTrainer.
 
@@ -62,10 +63,12 @@ class AgentSdkTrainer(RayPPOTrainer):
             resource_pool_manager: Manages GPU resources across workers.
             ray_worker_group_cls: Ray worker group class (default: RayWorkerGroup).
             agent_run_func: Agent workflow function to execute during rollouts.
+            processor: Optional processor for multimodal data.
         """
         super().__init__(
             config=config,
             tokenizer=tokenizer,
+            processor=processor,
             role_worker_mapping=role_worker_mapping,
             resource_pool_manager=resource_pool_manager,
             ray_worker_group_cls=ray_worker_group_cls,
@@ -137,6 +140,7 @@ class AgentSdkTrainer(RayPPOTrainer):
             config=self.config,
             rollout_manager=self.async_rollout_manager,
             tokenizer=self.tokenizer,
+            processor=self.processor,
         )
 
         # Setup proxy config for VERL engine
