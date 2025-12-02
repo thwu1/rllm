@@ -10,11 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
-import torch
 from tqdm import tqdm
 
 from rllm.agents.agent import Episode, Trajectory
-from rllm.engine.rollout import ModelOutput, RolloutEngine
+from rllm.engine.rollout import RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.misc import colorful_print
 from rllm.sdk.data_process import group_steps, trace_to_step
@@ -23,7 +22,6 @@ from rllm.sdk.proxy.proxy_manager import VerlProxyManager
 from rllm.sdk.session import SESSION_BACKEND
 from rllm.sdk.session.base import wrap_with_session_context
 from rllm.sdk.store.sqlite_store import SqliteTraceStore
-from rllm.workflows.workflow import TerminationReason
 
 # Avoid hard dependency on verl at import time; only for typing
 if TYPE_CHECKING:
@@ -409,6 +407,9 @@ class AgentSdkEngine:
     def transform_results_for_verl(self, episodes: list[Episode], task_ids: np.ndarray) -> "DataProto":
         """Transform episodes into VERL-compatible DataProto format.
 
+        Uses shared transform utilities from rllm.utils.transform_utils.
+        Note: AgentSdkEngine always uses stepwise mode.
+
         Args:
             episodes: List of Episodes from workflow execution.
             task_ids: Array of task IDs corresponding to episodes.
@@ -417,212 +418,19 @@ class AgentSdkEngine:
             DataProto with tensors (input_ids, attention_mask, responses, rewards, etc.)
             and metadata (episode_ids, trajectory_ids, step_ids, termination_reasons).
         """
-        # Local import to keep verl optional
-        from verl import DataProto
-        from verl.utils.torch_functional import pad_sequence_to_length
+        from rllm.utils.transform_utils import TransformConfig, episodes_to_dataproto
 
-        prompts = []
-        responses = []
-        traj_rewards = []
-        step_rewards = []
-        episode_ids = []
-        trajectory_ids = []
-        step_ids = []
-        step_nums = []
-        repeat_counts = []
-        is_last_step = []
-        is_correct = []
-        traj_mask = []
-        termination_reasons = []
-        metrics = []
+        # AgentSdkEngine always uses stepwise mode
+        config = TransformConfig.from_verl_config(self.config)
+        # Force stepwise mode for SDK engine
+        config.stepwise_advantage_enable = True
 
-        for i, episode in enumerate(episodes):
-            total_steps = 0
-
-            if episode is None:
-                print(f"Episode {i} is None (failed task), dropping it from the batch")
-                repeat_counts.append(0)
-                continue
-
-            if all(len(trajectory.steps) == 0 for trajectory in episode.trajectories):
-                # termination hits before an agent finishes it's first step
-                # (e.g., the initial prompt exceeds max_prompt_length or a timeout occurs)
-                # we delete the episode from the batch by setting repeat_counts to 0
-                print(f"Episode {episode.id} has no valid trajectories, dropping it from the batch")
-                repeat_counts.append(0)
-                continue
-
-            for trajectory in episode.trajectories:
-                name = trajectory.name
-                # Construct trajectory_id from task_id and trajectory name
-                # Example: "abc123_solver", "abc123_judge"
-                trajectory_id = f"{task_ids[i]}_{name}"  # e.g., "1234567890_solver"
-
-                if len(trajectory.steps) == 0:
-                    print(f"Trajectory {trajectory_id} has no steps, skipping")
-                    continue
-
-                # if not self.config.rllm.stepwise_advantage.enable:
-                #     if len(trajectory.steps) > 1:
-                #         if not trajectory.is_cumulative():
-                #             logger.warning(f"Warning: Multi-step trajectory {trajectory_id} is not cumulative, but stepwise mode is not enabled. There could be a token mismatch during trajectory generation.")
-
-                #         chat_completions = trajectory.steps[-1].chat_completions
-                #         prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask_cumulative(chat_completions)
-                #         prompts.append(prompt)
-                #         responses.append(response)
-                #         traj_mask.append(mask)
-
-                #     elif isinstance(trajectory.steps[0].model_output, ModelOutput):
-                #         step = trajectory.steps[0]
-
-                #         prompt_ids = torch.tensor(step.model_output.prompt_ids, dtype=torch.long)
-                #         prompts.append(prompt_ids)
-
-                #         response_ids = torch.tensor(step.model_output.completion_ids, dtype=torch.long)
-                #         responses.append(response_ids)
-
-                #         mask = torch.ones_like(response_ids, dtype=torch.long)
-                #         traj_mask.append(mask)
-
-                #     else:
-                #         chat_completions = trajectory.steps[0].chat_completions
-                #         prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask(chat_completions)
-                #         prompts.append(prompt)
-                #         responses.append(response)
-                #         traj_mask.append(mask)
-
-                #     step_rewards.append(trajectory.reward)
-                #     step_ids.append(trajectory_id)
-                #     n_steps = 1
-
-                # else:
-                # TODO: auto merge the steps if they share some prefix
-                for step_idx, step in enumerate(trajectory.steps):
-                    if isinstance(step.model_output, ModelOutput):
-                        prompt_ids = torch.tensor(step.model_output.prompt_ids, dtype=torch.long)
-                        prompts.append(prompt_ids)
-
-                        response_ids = torch.tensor(step.model_output.completion_ids, dtype=torch.long)
-                        responses.append(response_ids)
-
-                        mask = torch.ones_like(response_ids, dtype=torch.long)
-                        traj_mask.append(mask)
-
-                        # else:
-                        #     chat_completions = step.chat_completions
-                        #     prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask(chat_completions)
-                        #     prompts.append(prompt)
-                        #     responses.append(response)
-                        #     traj_mask.append(mask)
-
-                        step_rewards.append(step.reward)
-                        # Construct step_id from trajectory_id and step index
-                        # Format: "{trajectory_id}_step{step_idx}"
-                        # Example: "abc123_solver_step0", "abc123_judge_step1"
-                        step_ids.append(f"{trajectory_id}_step{step_idx}")  # e.g., "1234567890_solver_step0"
-
-                    n_steps = len(trajectory.steps)
-
-                trajectory_ids.extend([trajectory_id] * n_steps)
-                step_nums.extend([n_steps] * n_steps)
-                traj_rewards.extend([trajectory.reward] * n_steps)
-                is_last_step.extend([False] * n_steps)
-                is_last_step[-1] = True
-                total_steps += n_steps
-
-            episode_ids.extend([episode.id] * total_steps)
-            is_correct.extend([episode.is_correct] * total_steps)
-            termination_reasons.extend([episode.termination_reason if episode.termination_reason is not None else TerminationReason.UNKNOWN] * total_steps)
-            metrics.extend([episode.metrics] * total_steps)
-            repeat_counts.append(total_steps)
-
-        prompts_batch = torch.nn.utils.rnn.pad_sequence(
-            [torch.flip(i, dims=[0]) for i in prompts],
-            batch_first=True,
-            padding_value=self.rollout_engine.tokenizer.pad_token_id,
-        ).flip(dims=[1])
-        max_prompt_length = self.config.data.max_prompt_length
-        prompts_batch = pad_sequence_to_length(prompts_batch, max_prompt_length, self.rollout_engine.tokenizer.pad_token_id, left_pad=True)
-        prompts_batch = prompts_batch[:, -max_prompt_length:]  # truncate if necessary
-
-        response_batch = torch.nn.utils.rnn.pad_sequence(
-            responses,
-            batch_first=True,
-            padding_value=self.rollout_engine.tokenizer.pad_token_id,
-        )
-        max_response_length = self.config.data.max_response_length
-        response_batch = pad_sequence_to_length(response_batch, max_response_length, self.rollout_engine.tokenizer.pad_token_id, left_pad=False)
-        response_batch = response_batch[:, :max_response_length]  # truncate if necessary
-
-        input_ids = torch.concat([prompts_batch, response_batch], dim=1)
-
-        prompt_lengths = torch.as_tensor([len(t) for t in prompts]).clamp_(min=0, max=max_prompt_length)
-        prompt_pos = torch.arange(max_prompt_length).unsqueeze(0)
-        prompt_mask = prompt_pos >= (max_prompt_length - prompt_lengths.unsqueeze(1))
-
-        response_lengths = torch.as_tensor([len(t) for t in responses]).clamp_(min=0, max=max_response_length)
-        resp_pos = torch.arange(max_response_length).unsqueeze(0)
-        response_mask = resp_pos < response_lengths.unsqueeze(1)
-
-        attention_mask = torch.cat([prompt_mask, response_mask], dim=1).long()
-        position_ids = (torch.cumsum(attention_mask, dim=1) - 1) * attention_mask
-
-        traj_mask = torch.nn.utils.rnn.pad_sequence(traj_mask, batch_first=True, padding_value=0)
-        traj_mask = pad_sequence_to_length(traj_mask, max_response_length, 0, left_pad=False)
-        traj_mask = traj_mask[:, :max_response_length]  # truncate if necessary
-
-        # Place all rewards to last response token of the last_step response
-        traj_rewards_batch = torch.zeros_like(response_batch, dtype=torch.float32)
-        step_rewards_batch = torch.zeros_like(response_batch, dtype=torch.float32)
-
-        for i, (traj_reward, step_reward) in enumerate(zip(traj_rewards, step_rewards, strict=False)):
-            resp_len = response_lengths[i]
-            if resp_len > 0 and resp_len <= traj_rewards_batch.shape[1]:
-                traj_rewards_batch[i, resp_len - 1] = traj_reward
-                step_rewards_batch[i, resp_len - 1] = step_reward
-
-        # compact filtering
-        cf = self.config.rllm.compact_filtering
-        is_valid = [True] * len(episode_ids)
-        if cf.enable:
-            for i in range(len(episode_ids)):
-                termination_reason = termination_reasons[i]
-                if (cf.mask_max_prompt_length_exceeded and termination_reason == TerminationReason.MAX_PROMPT_LENGTH_EXCEEDED) or (cf.mask_max_response_length_exceeded and termination_reason == TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED) or (cf.mask_env_done and termination_reason == TerminationReason.ENV_DONE) or (cf.mask_max_turns_exceeded and termination_reason == TerminationReason.MAX_TURNS_EXCEEDED) or (cf.mask_timeout and termination_reason == TerminationReason.TIMEOUT) or (cf.mask_unknown and termination_reason == TerminationReason.UNKNOWN) or (cf.mask_error and termination_reason == TerminationReason.ERROR):
-                    is_valid[i] = False  # set flag to filter out the episode later (after advantages are computed)
-
-        return DataProto.from_dict(
-            tensors={
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "position_ids": position_ids,
-                "prompts": prompts_batch,
-                "responses": response_batch,
-                "response_mask": traj_mask,
-                "traj_rewards": traj_rewards_batch,
-                "step_rewards": step_rewards_batch,
-            },
-            non_tensors={
-                # episode_ids: Format "task_id:rollout_idx:retry_attempt" (e.g., "abc123:0:1")
-                "episode_ids": np.array(episode_ids),
-                # trajectory_ids: Format "task_id_trajectory_name" (e.g., "abc123_solver")
-                # Multiple trajectories can have the same trajectory_id
-                "trajectory_ids": np.array(trajectory_ids),
-                # step_ids: Format "task_id_trajectory_name_step{idx}" (e.g., "abc123_solver_step0")
-                "step_ids": np.array(step_ids),
-                # batch_ids: Unique identifier for each training batch
-                "batch_ids": np.array([str(uuid.uuid4())] * len(episode_ids)),
-                "step_nums": np.array(step_nums),
-                "is_correct": np.array(is_correct),
-                "termination_reasons": np.array([x.value for x in termination_reasons]),
-                "metrics": np.array(metrics),
-                "is_valid": np.array(is_valid),
-                "is_last_step": np.array(is_last_step),
-                "is_pad_step": np.array([False] * len(episode_ids)),
-            },
-            meta_info={
-                "repeat_counts": repeat_counts,
-            },
+        return episodes_to_dataproto(
+            episodes=episodes,
+            task_ids=list(task_ids),
+            tokenizer=self.rollout_engine.tokenizer,
+            chat_parser=self.rollout_engine.chat_parser,
+            config=config,
         )
 
     def shutdown(self):

@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
-from rllm.agents.agent import Action, BaseAgent, Trajectory
+from rllm.agents.agent import Action, BaseAgent, Episode, Trajectory
 from rllm.agents.utils import (
     convert_messages_to_tokens_and_masks,
     get_recent_assistant_user_messages,
@@ -259,6 +259,14 @@ class AgentExecutionEngine:
             action: Action = agent.update_from_model(response)
             action = action.action
 
+            # Populate Step object with token info for Episode mode (after update_from_model creates the Step)
+            cur_step = agent.get_current_state()
+            if cur_step is not None:
+                cur_step.prompt_ids = model_output.prompt_ids or []
+                cur_step.response_ids = model_output.completion_ids or []
+                cur_step.logprobs = model_output.logprobs or []
+                cur_step.model_output = model_output
+
             # Take step in environment using the executor
             start_time = time.time()
 
@@ -424,6 +432,37 @@ class AgentExecutionEngine:
                 "mc_returns": [step.mc_return for step in trajectory.steps][: len(episode_steps)],
             }
             return steps_result
+        elif mode == "Episode":
+            # Return Episode object with trajectory (Steps already populated with token info)
+            from rllm.workflows.workflow import TerminationReason as WfTerminationReason
+
+            # Map internal termination reason to TerminationReason enum
+            term_reason_map = {
+                "ENV_DONE": WfTerminationReason.ENV_DONE,
+                "TRUNCATION": WfTerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED,
+                "TIMEOUT": WfTerminationReason.TIMEOUT,
+                "ENV_TIMEOUT": WfTerminationReason.TIMEOUT,
+                "MAX_STEPS": WfTerminationReason.MAX_TURNS_EXCEEDED,
+                "PROMPT_TRUNCATION": WfTerminationReason.MAX_PROMPT_LENGTH_EXCEEDED,
+            }
+            term_reason = term_reason_map.get(termination_reason, WfTerminationReason.UNKNOWN)
+
+            episode = Episode(
+                id=str(env.idx),
+                task=trajectory.task,
+                termination_reason=term_reason,
+                is_correct=reward > 0,
+                trajectories=[trajectory],
+                metrics={
+                    "steps": len(trajectory.steps),
+                    "reward_time": reward_time,
+                    "env_time": env_time,
+                    "llm_time": llm_time,
+                    "total_time": total_time,
+                },
+                info={"idx": env.idx},
+            )
+            return episode
         else:
             raise ValueError(f"Mode {mode} not supported")
 

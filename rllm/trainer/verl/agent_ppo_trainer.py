@@ -544,22 +544,66 @@ class AgentPPOTrainer(RayPPOTrainer):
             DataProto: Representation of the agent's trajectories.
             Dict[str:float]: Metrics for the generation process.
         """
+        from rllm.utils.transform_utils import TransformConfig, episodes_to_dataproto
+
         if timing_raw is None:
             timing_raw = {}
         with marked_timer("collect_trajectory", timing_raw):
-            trajectories = []
+            episodes = []
             if self.async_rollout_mode:
-                gen_seq_generator = self.generate_agent_trajectories_async(timing_raw=timing_raw, meta_info=meta_info, mode="Token")
-                for _, trajectory in enumerate(gen_seq_generator):
-                    trajectories.append(trajectory)
+                gen_seq_generator = self.generate_agent_trajectories_async(timing_raw=timing_raw, meta_info=meta_info, mode="Episode")
+                for episode in gen_seq_generator:
+                    episodes.append(episode)
             else:
                 raise ValueError("Only async rollout mode is supported")
-        # Sort trajectories by their idx, to ensure they are in order.
-        trajectories.sort(key=lambda x: x["idx"])
+        # Sort episodes by their idx (stored in info), to ensure they are in order.
+        episodes.sort(key=lambda x: x.info.get("idx", 0))
+
+        # Collect metrics from episodes
+        metrics = {}
+        episode_metrics = {}
+        for episode in episodes:
+            if episode.metrics:
+                for k, v in episode.metrics.items():
+                    if k not in episode_metrics:
+                        episode_metrics[k] = []
+                    if v is not None and (not isinstance(v, (int, float)) or v >= 0):
+                        episode_metrics[k].append(v)
+
+        # Aggregate metrics (mean, min, max)
+        for k, v_list in episode_metrics.items():
+            if not v_list:
+                continue
+            v_array = np.array(v_list)
+            metrics.update({
+                f"traj/{k}_mean": v_array.mean(),
+                f"traj/{k}_min": v_array.min(),
+                f"traj/{k}_max": v_array.max(),
+            })
+
+        # Save chat completions to a file
+        save_dir = os.path.join(self.config.trainer.default_local_dir, "chat_completions")
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, f"{self.global_steps}.jsonl"), "w") as f:
+            for episode in episodes:
+                for traj in episode.trajectories:
+                    if traj.steps:
+                        chat_completions = traj.steps[-1].chat_completions
+                        f.write(json.dumps(chat_completions) + "\n")
 
         with marked_timer("transform_trajectory", timing_raw):
-            # Transform the raw trajectories into DataProto format.
-            final_gen_batch_output, metrics = self._transform_agent_trajectories(trajectories)
+            # Transform episodes into DataProto format using shared utilities
+            config = TransformConfig.from_verl_config(self.config)
+            task_ids = [str(episode.info.get("idx", i)) for i, episode in enumerate(episodes)]
+            final_gen_batch_output = episodes_to_dataproto(
+                episodes=episodes,
+                task_ids=task_ids,
+                tokenizer=self.tokenizer,
+                chat_parser=self.agent_execution_engine.chat_parser,
+                config=config,
+            )
+
+        self.visualize_trajectory(final_gen_batch_output)
         return final_gen_batch_output, metrics
 
     def generate_agent_steps(self, timing_raw=None, meta_info=None, uids=None):
