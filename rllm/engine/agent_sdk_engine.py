@@ -7,6 +7,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -32,6 +33,52 @@ if TYPE_CHECKING:
     from rllm.sdk.tracers import TracerProtocol
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Sequence:
+    prompt_ids: list[int]
+    response_ids: list[int]
+    response_logprobs: list[float]
+    response_masks: list[int]
+
+    def is_prefix(self, other: "Sequence") -> bool:
+        return self.prompt_ids + self.response_ids == (other.prompt_ids + other.response_ids)[: len(self.prompt_ids + self.response_ids)]
+
+    @property
+    def input_ids(self) -> list[int]:
+        return self.prompt_ids + self.response_ids
+
+    @property
+    def total_length(self) -> int:
+        return len(self.input_ids)
+
+    def merge(self, other: "Sequence") -> "Sequence":
+        assert self.is_prefix(other), "You can only merge sequence is self is a prefix of other"
+
+        p_len = len(self.prompt_ids)
+        other_input_ids = other.input_ids
+
+        other_p_len = len(other.prompt_ids)
+
+        pad_masks = [0] * (other_p_len - self.total_length) if other_p_len > self.total_length else []
+        start_idx = max(self.total_length - other_p_len, 0)
+
+        response_ids = other_input_ids[p_len:]
+        response_logprobs = self.response_logprobs + pad_masks + other.response_logprobs[start_idx:]
+        response_masks = self.response_masks + pad_masks + other.response_masks[start_idx:]
+
+        return Sequence(prompt_ids=self.prompt_ids, response_ids=response_ids, response_logprobs=response_logprobs, response_masks=response_masks)
+
+    def resize_prompt_length(self, max_prompt_length: int) -> "Sequence":
+        if len(self.prompt_ids) <= max_prompt_length:
+            return self
+
+        new_prompt_ids = self.prompt_ids[:max_prompt_length]
+        new_response_ids = self.prompt_ids[max_prompt_length:] + self.response_ids
+        new_response_logprobs = [-100] * (len(self.prompt_ids) - max_prompt_length) + self.response_logprobs
+        new_response_masks = [0] * (len(self.prompt_ids) - max_prompt_length) + self.response_masks
+        return Sequence(prompt_ids=new_prompt_ids, response_ids=new_response_ids, response_logprobs=new_response_logprobs, response_masks=new_response_masks)
 
 
 class AgentSdkEngine:
@@ -549,38 +596,57 @@ class AgentSdkEngine:
                 # TODO: auto merge the steps if they share some prefix
                 max_prompt_length = self.config.data.max_prompt_length
                 valid_step_count = 0
-                for step_idx, step in enumerate(trajectory.steps):
-                    if isinstance(step.model_output, ModelOutput):
-                        prompt_ids = torch.tensor(step.model_output.prompt_ids, dtype=torch.long)
 
-                        # Skip steps with overlong prompts to avoid OOD (train/inference mismatch)
-                        # During rollout, model saw full prompt; truncating would create OOD data
-                        if len(prompt_ids) > max_prompt_length:
-                            logger.warning(f"Skipping step {step_idx} of trajectory {trajectory_id}: prompt length {len(prompt_ids)} > max_prompt_length {max_prompt_length}")
-                            continue
+                # first merge into sequences
+                seqs = []
+                cur_seq = None
+                for step in trajectory.steps:
+                    assert isinstance(step.model_output, ModelOutput), "Step model output must be ModelOutput"
+                    new_seq = Sequence(
+                        prompt_ids=step.model_output.prompt_ids,
+                        response_ids=step.model_output.completion_ids,
+                        response_logprobs=step.model_output.logprobs,
+                        response_masks=[1] * len(step.model_output.completion_ids),
+                    )
+                    if not cur_seq:
+                        cur_seq = new_seq
+                    else:
+                        if cur_seq.is_prefix(new_seq):
+                            cur_seq = cur_seq.merge(new_seq)
+                        else:
+                            seqs.append(cur_seq)
+                            cur_seq = new_seq
 
-                        prompts.append(prompt_ids)
+                if cur_seq:
+                    seqs.append(cur_seq)
 
-                        response_ids = torch.tensor(step.model_output.completion_ids, dtype=torch.long)
-                        responses.append(response_ids)
+                # adjust the prompt_length to be less than max_prompt_length
+                seqs = [seq.resize_prompt_length(max_prompt_length) for seq in seqs]
 
-                        rollout_logprob = torch.tensor(step.model_output.logprobs, dtype=torch.float32)
-                        rollout_logprobs.append(rollout_logprob)
+                # for step_idx, step in enumerate(trajectory.steps):
+                for seq_idx, seq in enumerate(seqs):
+                    prompt_ids = torch.tensor(seq.prompt_ids, dtype=torch.long)
 
-                        mask = torch.ones_like(response_ids, dtype=torch.long)
-                        traj_mask.append(mask)
+                    # Skip steps with overlong prompts to avoid OOD (train/inference mismatch)
+                    # During rollout, model saw full prompt; truncating would create OOD data
+                    if len(prompt_ids) > max_prompt_length:
+                        raise ValueError(f"Prompt length {len(prompt_ids)} is greater than max_prompt_length {max_prompt_length}")
 
-                        # else:
-                        #     chat_completions = step.chat_completions
-                        #     prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask(chat_completions)
-                        #     prompts.append(prompt)
-                        #     responses.append(response)
-                        #     traj_mask.append(mask)
+                    prompts.append(prompt_ids)
 
-                        step_rewards.append(step.reward)
-                        step_ids.append(f"{trajectory_id}_step{step_idx}")  # e.g., "abc123_solver_step0", "abc123_judge_step1"
+                    response_ids = torch.tensor(seq.response_ids, dtype=torch.long)
+                    responses.append(response_ids)
 
-                        valid_step_count += 1
+                    rollout_logprob = torch.tensor(seq.response_logprobs, dtype=torch.float32)
+                    rollout_logprobs.append(rollout_logprob)
+
+                    mask = torch.tensor(seq.response_masks, dtype=torch.long)
+                    traj_mask.append(mask)
+
+                    step_rewards.append(0)  # this is deprecated, shouldn't use this
+                    step_ids.append(f"{trajectory_id}_step{seq_idx}")  # e.g., "abc123_solver_step0", "abc123_judge_step1"
+
+                    valid_step_count += 1
 
                 # Use valid_step_count (steps not filtered due to overlong prompts)
                 n_steps = valid_step_count
@@ -598,6 +664,7 @@ class AgentSdkEngine:
             episode_ids.extend([episode.id] * total_steps)
             is_correct.extend([episode.is_correct] * total_steps)
             termination_reasons.extend([episode.termination_reason if episode.termination_reason is not None else TerminationReason.UNKNOWN] * total_steps)
+            episode.metrics["num_merged_steps"] = total_steps
             metrics.extend([episode.metrics] * total_steps)
             repeat_counts.append(total_steps)
 
