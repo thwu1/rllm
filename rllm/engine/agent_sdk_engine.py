@@ -551,6 +551,23 @@ class AgentSdkEngine:
                 repeat_counts.append(0)
                 continue
 
+            # Check if any step in this episode has finish_reason="length" (LLM hit max token limit)
+            cf = self.config.rllm.compact_filtering
+            if cf.enable and getattr(cf, "mask_length_finish_reason", False):
+                episode_has_length_finish = False
+                for trajectory in episode.trajectories:
+                    for step in trajectory.steps:
+                        if hasattr(step, "model_output") and step.model_output is not None:
+                            if getattr(step.model_output, "finish_reason", None) == "length":
+                                episode_has_length_finish = True
+                                break
+                    if episode_has_length_finish:
+                        break
+                if episode_has_length_finish:
+                    print(f"Episode {episode.id} has step with finish_reason='length', dropping from batch")
+                    repeat_counts.append(0)
+                    continue
+
             for trajectory in episode.trajectories:
                 name = trajectory.name
                 trajectory_id = f"{task_ids[i]}_{name}"  # e.g., "abc123_solver", "abc123_judge"
@@ -558,40 +575,6 @@ class AgentSdkEngine:
                 if len(trajectory.steps) == 0:
                     print(f"Trajectory {trajectory_id} has no steps, skipping")
                     continue
-
-                # if not self.config.rllm.stepwise_advantage.enable:
-                #     if len(trajectory.steps) > 1:
-                #         if not trajectory.is_cumulative():
-                #             logger.warning(f"Warning: Multi-step trajectory {trajectory_id} is not cumulative, but stepwise mode is not enabled. There could be a token mismatch during trajectory generation.")
-
-                #         chat_completions = trajectory.steps[-1].chat_completions
-                #         prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask_cumulative(chat_completions)
-                #         prompts.append(prompt)
-                #         responses.append(response)
-                #         traj_mask.append(mask)
-
-                #     elif isinstance(trajectory.steps[0].model_output, ModelOutput):
-                #         step = trajectory.steps[0]
-
-                #         prompt_ids = torch.tensor(step.model_output.prompt_ids, dtype=torch.long)
-                #         prompts.append(prompt_ids)
-
-                #         response_ids = torch.tensor(step.model_output.completion_ids, dtype=torch.long)
-                #         responses.append(response_ids)
-
-                #         mask = torch.ones_like(response_ids, dtype=torch.long)
-                #         traj_mask.append(mask)
-
-                #     else:
-                #         chat_completions = trajectory.steps[0].chat_completions
-                #         prompt, response, mask = self.rollout_engine.chat_parser.tokenize_and_mask(chat_completions)
-                #         prompts.append(prompt)
-                #         responses.append(response)
-                #         traj_mask.append(mask)
-
-                #     step_rewards.append(trajectory.reward)
-                #     step_ids.append(trajectory_id)
-                #     n_steps = 1
 
                 # else:
                 # TODO: auto merge the steps if they share some prefix
@@ -734,6 +717,12 @@ class AgentSdkEngine:
                 termination_reason = termination_reasons[i]
                 if (cf.mask_max_prompt_length_exceeded and termination_reason == TerminationReason.MAX_PROMPT_LENGTH_EXCEEDED) or (cf.mask_max_response_length_exceeded and termination_reason == TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED) or (cf.mask_env_done and termination_reason == TerminationReason.ENV_DONE) or (cf.mask_max_turns_exceeded and termination_reason == TerminationReason.MAX_TURNS_EXCEEDED) or (cf.mask_timeout and termination_reason == TerminationReason.TIMEOUT) or (cf.mask_unknown and termination_reason == TerminationReason.UNKNOWN) or (cf.mask_error and termination_reason == TerminationReason.ERROR):
                     is_valid[i] = False  # set flag to filter out the episode later (after advantages are computed)
+                # Filter samples where response was clipped/truncated due to max_response_length
+                # Use original response length (before clamping) to detect truncation
+                if getattr(cf, "mask_response_clipped", False) and len(responses[i]) > max_response_length:
+                    is_valid[i] = False
+
+            print(f"Number of invalid samples due to compact filtering: {sum(not is_valid)} / {len(episode_ids)}")
 
         # Build tensors dict, conditionally include rollout_log_probs if available
         tensors_dict = {
