@@ -525,7 +525,7 @@ class SqliteTraceStore:
                     SELECT t.* FROM traces t
                     INNER JOIN trace_sessions ts ON t.id = ts.trace_id
                     WHERE ts.session_uid = ? AND ts.created_at >= ?
-                    ORDER BY ts.created_at DESC
+                    ORDER BY ts.created_at ASC
                 """
                 params = [session_uid, since]
                 if limit is not None:
@@ -540,7 +540,7 @@ class SqliteTraceStore:
                     SELECT t.* FROM traces t
                     INNER JOIN trace_sessions ts ON t.id = ts.trace_id
                     WHERE ts.session_uid = ?
-                    ORDER BY ts.created_at DESC
+                    ORDER BY ts.created_at ASC
                 """
                 params = [session_uid]
                 if limit is not None:

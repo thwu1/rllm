@@ -43,7 +43,7 @@ class Sequence:
     response_masks: list[int]
 
     def is_prefix(self, other: "Sequence") -> bool:
-        return self.prompt_ids + self.response_ids == (other.prompt_ids + other.response_ids)[: len(self.prompt_ids + self.response_ids)]
+        return self.input_ids == other.input_ids[: len(self.input_ids)]
 
     @property
     def input_ids(self) -> list[int]:
@@ -350,9 +350,10 @@ class AgentSdkEngine:
             if not session_name or session_name not in rollout_session_names:
                 continue
             trace_obj = Trace(**trace.data)
-            traces_by_session_name[session_name].append((trace.id, trace_obj))
+            traces_by_session_name[session_name].append((trace.id, trace_obj, trace.created_at))
 
         for session_name, traces in traces_by_session_name.items():
+            traces.sort(key=lambda x: x[2])
             steps = [trace_to_step(entry[1]) for entry in traces]
             step_id_to_step = {entry[0]: step for entry, step in zip(traces, steps, strict=False)}
 

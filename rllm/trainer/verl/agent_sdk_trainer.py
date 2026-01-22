@@ -337,10 +337,10 @@ class AgentSdkTrainer(RayPPOTrainer):
                             # TODO: we may want to add diff of probs too.
                             rollout_old_log_probs = batch.batch["rollout_log_probs"]
                             actor_old_log_probs = batch.batch["old_log_probs"]
-                            attention_mask = batch.batch["attention_mask"]
-                            responses = batch.batch["responses"]
-                            response_length = responses.size(1)
-                            response_mask = attention_mask[:, -response_length:]
+                            # attention_mask = batch.batch["attention_mask"]
+                            # responses = batch.batch["responses"]
+                            # response_length = responses.size(1)
+                            response_mask = batch.batch["response_mask"]
 
                             rollout_probs = torch.exp(rollout_old_log_probs)
                             actor_probs = torch.exp(actor_old_log_probs)
