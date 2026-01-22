@@ -722,7 +722,7 @@ class AgentSdkEngine:
                 if getattr(cf, "mask_response_clipped", False) and len(responses[i]) > max_response_length:
                     is_valid[i] = False
 
-            print(f"Number of invalid samples due to compact filtering: {sum(not is_valid)} / {len(episode_ids)}")
+            print(f"Number of invalid samples due to compact filtering: {sum(1 for v in is_valid if not v)} / {len(episode_ids)}")
 
         # Build tensors dict, conditionally include rollout_log_probs if available
         tensors_dict = {
