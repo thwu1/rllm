@@ -534,6 +534,7 @@ class AgentSdkEngine:
         traj_mask = []
         termination_reasons = []
         metrics = []
+        has_length_finish_reason = []  # Track episodes with finish_reason="length"
 
         for i, episode in enumerate(episodes):
             total_steps = 0
@@ -552,21 +553,16 @@ class AgentSdkEngine:
                 continue
 
             # Check if any step in this episode has finish_reason="length" (LLM hit max token limit)
-            cf = self.config.rllm.compact_filtering
-            if cf.enable and getattr(cf, "mask_length_finish_reason", False):
-                episode_has_length_finish = False
-                for trajectory in episode.trajectories:
-                    for step in trajectory.steps:
-                        if hasattr(step, "model_output") and step.model_output is not None:
-                            if getattr(step.model_output, "finish_reason", None) == "length":
-                                episode_has_length_finish = True
-                                break
-                    if episode_has_length_finish:
-                        break
+            # We track this but don't drop the episode - it will be marked as is_valid=False later
+            episode_has_length_finish = False
+            for trajectory in episode.trajectories:
+                for step in trajectory.steps:
+                    if hasattr(step, "model_output") and step.model_output is not None:
+                        if getattr(step.model_output, "finish_reason", None) == "length":
+                            episode_has_length_finish = True
+                            break
                 if episode_has_length_finish:
-                    print(f"Episode {episode.id} has step with finish_reason='length', dropping from batch")
-                    repeat_counts.append(0)
-                    continue
+                    break
 
             for trajectory in episode.trajectories:
                 name = trajectory.name
@@ -650,6 +646,7 @@ class AgentSdkEngine:
             termination_reasons.extend([episode.termination_reason if episode.termination_reason is not None else TerminationReason.UNKNOWN] * total_steps)
             episode.metrics["num_merged_steps"] = total_steps
             metrics.extend([episode.metrics] * total_steps)
+            has_length_finish_reason.extend([episode_has_length_finish] * total_steps)
             repeat_counts.append(total_steps)
 
         prompts_batch = torch.nn.utils.rnn.pad_sequence(
@@ -712,6 +709,7 @@ class AgentSdkEngine:
         # compact filtering
         cf = self.config.rllm.compact_filtering
         is_valid = [True] * len(episode_ids)
+        assert len(has_length_finish_reason) == len(episode_ids), f"Length mismatch: has_length_finish_reason={len(has_length_finish_reason)}, episode_ids={len(episode_ids)}"
         if cf.enable:
             for i in range(len(episode_ids)):
                 termination_reason = termination_reasons[i]
@@ -720,6 +718,9 @@ class AgentSdkEngine:
                 # Filter samples where response was clipped/truncated due to max_response_length
                 # Use original response length (before clamping) to detect truncation
                 if getattr(cf, "mask_response_clipped", False) and len(responses[i]) > max_response_length:
+                    is_valid[i] = False
+                # Filter samples where any step had finish_reason="length" (LLM hit max token limit)
+                if getattr(cf, "mask_length_finish_reason", False) and has_length_finish_reason[i]:
                     is_valid[i] = False
 
             print(f"Number of invalid samples due to compact filtering: {sum(1 for v in is_valid if not v)} / {len(episode_ids)}")
