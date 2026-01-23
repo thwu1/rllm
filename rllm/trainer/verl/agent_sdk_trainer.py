@@ -428,6 +428,10 @@ class AgentSdkTrainer(RayPPOTrainer):
 
                     # remove invalid items filtered out due to compact filtering
                     is_valid = batch.non_tensor_batch["is_valid"]
+                    num_invalid = np.sum(is_valid == False)
+                    num_total = len(is_valid)
+                    metrics["batch/num_invalid_samples"] = num_invalid
+                    metrics["batch/invalid_sample_ratio"] = num_invalid / num_total if num_total > 0 else 0.0
                     valid_idxs = np.where(is_valid == True)[0]
                     batch = batch.select_idxs(valid_idxs)
 
