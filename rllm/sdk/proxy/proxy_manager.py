@@ -12,6 +12,7 @@ import atexit
 import logging
 import os
 import resource
+import socket
 import subprocess
 import sys
 import time
@@ -24,21 +25,117 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def get_auto_host() -> str:
+    """Auto-detect the host IP address.
+
+    Tries to get the primary IP address that can reach external networks.
+    Falls back to localhost if detection fails.
+
+    Returns:
+        str: The detected IP address or "127.0.0.1" as fallback.
+    """
+    try:
+        # Create a socket and connect to an external address (doesn't actually send data)
+        # This gives us the IP address of the interface that would be used
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            logger.info(f"Auto-detected host IP: {ip}")
+            return ip
+    except Exception as e:
+        logger.warning(f"Failed to auto-detect host IP: {e}, falling back to 127.0.0.1")
+        return "127.0.0.1"
+
+
+def get_auto_port(host: str = "127.0.0.1", start_port: int = 4000, max_attempts: int = 100) -> int:
+    """Find an available port starting from start_port.
+
+    Args:
+        host: The host address to check port availability on.
+        start_port: The starting port number to try.
+        max_attempts: Maximum number of ports to try before giving up.
+
+    Returns:
+        int: An available port number.
+
+    Raises:
+        RuntimeError: If no available port is found within max_attempts.
+    """
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, port))
+                logger.info(f"Auto-selected available port: {port}")
+                return port
+        except OSError:
+            continue
+
+    raise RuntimeError(f"Could not find an available port in range {start_port}-{start_port + max_attempts}")
+
+
+def resolve_host_port(host: str | None, port: int | str | None, default_host: str = "127.0.0.1", default_port: int = 4000) -> tuple[str, int]:
+    """Resolve host and port, supporting 'auto' values.
+
+    Args:
+        host: Host address, "auto" for auto-detection, or None for default.
+        port: Port number, "auto" for auto-selection, or None for default.
+        default_host: Default host if not specified.
+        default_port: Default/starting port for auto-selection.
+
+    Returns:
+        tuple[str, int]: Resolved (host, port) tuple.
+    """
+    # Resolve host
+    if host is None:
+        resolved_host = default_host
+    elif isinstance(host, str) and host.lower() == "auto":
+        resolved_host = get_auto_host()
+    else:
+        resolved_host = host
+
+    # Resolve port
+    if port is None:
+        resolved_port = default_port
+    elif isinstance(port, str) and port.lower() == "auto":
+        resolved_port = get_auto_port(resolved_host, default_port)
+    elif isinstance(port, str):
+        resolved_port = int(port)
+    else:
+        resolved_port = port
+
+    return resolved_host, resolved_port
+
+
 class ProxyManager:
-    """Generic LiteLLM proxy manager with shared lifecycle helpers."""
+    """Generic LiteLLM proxy manager with shared lifecycle helpers.
+
+    Args:
+        proxy_host: Host address for proxy. Use "auto" to auto-detect IP.
+        proxy_port: Port number for proxy. Use "auto" to find available port.
+        admin_token: Optional admin token for authentication.
+        proxy_access_log: If True, enable access logging.
+    """
 
     def __init__(
         self,
-        proxy_host: str = "127.0.0.1",
-        proxy_port: int = 4000,
+        proxy_host: str | None = "auto",
+        proxy_port: int | str | None = "auto",
         admin_token: str | None = None,
         proxy_access_log: bool = False,
     ) -> None:
-        self.proxy_host = proxy_host
-        self.proxy_port = proxy_port
+        # Resolve "auto" values for host and port
+        self.proxy_host, self.proxy_port = resolve_host_port(
+            host=proxy_host,
+            port=proxy_port,
+            default_host="127.0.0.1",
+            default_port=4000,
+        )
         self.proxy_access_log = proxy_access_log
         self.admin_token = admin_token
         self._proxy_process: subprocess.Popen | None = None
+
+        logger.info(f"ProxyManager initialized with host={self.proxy_host}, port={self.proxy_port}")
 
     async def flush_tracer(self, timeout: float = 30.0) -> bool:
         """Ask LiteLLM proxy to flush the tracer queue."""
@@ -143,7 +240,7 @@ class ProxyManager:
             "-m",
             "rllm.sdk.proxy.litellm_server",
             "--host",
-            self.proxy_host,
+            "0.0.0.0",
             "--port",
             str(self.proxy_port),
         ]
@@ -291,8 +388,8 @@ class VerlProxyManager(ProxyManager):
         self,
         rollout_engine,
         model_name: str,
-        proxy_host: str = "127.0.0.1",
-        proxy_port: int = 4000,
+        proxy_host: str | None = "127.0.0.1",
+        proxy_port: int | str | None = 4000,
         admin_token: str | None = None,
         auto_instrument_vllm: bool = True,
         proxy_access_log: bool = False,
@@ -303,8 +400,8 @@ class VerlProxyManager(ProxyManager):
         Args:
             rollout_engine: The VERL rollout engine instance.
             model_name: Model name for the proxy configuration.
-            proxy_host: Host address for the proxy server.
-            proxy_port: Port number for the proxy server.
+            proxy_host: Host address for the proxy server. Use "auto" to auto-detect IP.
+            proxy_port: Port number for the proxy server. Use "auto" to find available port.
             admin_token: Optional admin token for proxy authentication.
             auto_instrument_vllm: If True, automatically instrument vLLM servers.
             proxy_access_log: If True, enable proxy access logging.

@@ -139,6 +139,10 @@ class AgentSdkEngine:
 
         When using OpenTelemetry-based sessions, sync storage mode is required to ensure
         synchronization between tracer persistence and session reads.
+
+        Supports "auto" values for proxy_host and proxy_port:
+        - proxy_host="auto": Auto-detect the machine's IP address
+        - proxy_port="auto": Find an available port starting from 4000
         """
         model_name = proxy_config.get("model_name")
         if not model_name:
