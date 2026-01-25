@@ -718,6 +718,9 @@ class AgentSdkEngine:
         is_valid = [True] * len(episode_ids)
         assert len(has_length_finish_reason) == len(episode_ids), f"Length mismatch: has_length_finish_reason={len(has_length_finish_reason)}, episode_ids={len(episode_ids)}"
         if cf.enable:
+            # Some filtering conditions are really episode-level (e.g. any step got clipped).
+            # In those cases, we want to mask *all* steps belonging to that episode.
+            invalid_episode_ids: set[str] = set()
             for i in range(len(episode_ids)):
                 termination_reason = termination_reasons[i]
                 if (cf.mask_max_prompt_length_exceeded and termination_reason == TerminationReason.MAX_PROMPT_LENGTH_EXCEEDED) or (cf.mask_max_response_length_exceeded and termination_reason == TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED) or (cf.mask_env_done and termination_reason == TerminationReason.ENV_DONE) or (cf.mask_max_turns_exceeded and termination_reason == TerminationReason.MAX_TURNS_EXCEEDED) or (cf.mask_timeout and termination_reason == TerminationReason.TIMEOUT) or (cf.mask_unknown and termination_reason == TerminationReason.UNKNOWN) or (cf.mask_error and termination_reason == TerminationReason.ERROR):
@@ -725,10 +728,15 @@ class AgentSdkEngine:
                 # Filter samples where response was clipped/truncated due to max_response_length
                 # Use original response length (before clamping) to detect truncation
                 if getattr(cf, "mask_response_clipped", False) and len(responses[i]) > max_response_length:
-                    is_valid[i] = False
+                    invalid_episode_ids.add(episode_ids[i])
                 # Filter samples where any step had finish_reason="length" (LLM hit max token limit)
                 if getattr(cf, "mask_length_finish_reason", False) and has_length_finish_reason[i]:
-                    is_valid[i] = False
+                    invalid_episode_ids.add(episode_ids[i])
+
+            if invalid_episode_ids:
+                for i in range(len(episode_ids)):
+                    if episode_ids[i] in invalid_episode_ids:
+                        is_valid[i] = False
 
             print(f"Number of invalid samples due to compact filtering: {sum(1 for v in is_valid if not v)} / {len(episode_ids)}")
 
