@@ -531,6 +531,7 @@ class AgentSdkEngine:
         episode_ids = []
         trajectory_ids = []
         step_ids = []
+        traj_uuids = []
         step_nums = []
         repeat_counts = []
         is_last_step = []
@@ -569,6 +570,7 @@ class AgentSdkEngine:
                     break
 
             for trajectory in episode.trajectories:
+                traj_uuid = str(uuid.uuid4())
                 name = trajectory.name
                 trajectory_id = f"{task_ids[i]}_{name}"  # e.g., "abc123_solver", "abc123_judge"
 
@@ -629,6 +631,7 @@ class AgentSdkEngine:
 
                     step_rewards.append(0)  # this is deprecated, shouldn't use this
                     step_ids.append(f"{trajectory_id}_step{seq_idx}")  # e.g., "abc123_solver_step0", "abc123_judge_step1"
+                    traj_uuids.append(traj_uuid)
 
                     valid_step_count += 1
 
@@ -752,6 +755,7 @@ class AgentSdkEngine:
                 # Multiple trajectories can have the same trajectory_id
                 "trajectory_ids": np.array(trajectory_ids),
                 # step_ids: Format "task_id_trajectory_name_step{idx}" (e.g., "abc123_solver_step0")
+                "traj_uuids": np.array(traj_uuids),
                 "step_ids": np.array(step_ids),
                 # batch_ids: Unique identifier for each training batch
                 "batch_ids": np.array([str(uuid.uuid4())] * len(episode_ids)),
